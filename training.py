@@ -1,11 +1,13 @@
 import logging
 
 import torch
+import wandb
 import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
+from sklearn.utils.class_weight import compute_class_weight
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -19,14 +21,40 @@ from config import (
     EPOCHS,
     GRAD_ACCUM,
     LR,
-    MAX_TOKENS,
     MODEL_NAME,
     OUTPUT_DIR,
     SEED,
+    WANDB_ENTITY,
+    WANDB_PROJECT,
 )
 from dataset import ClassiflowDataset, prepare_text
+from reporting import generate_html_report
 
 log = logging.getLogger(__name__)
+
+
+class WeightedTrainer(Trainer):
+    """Trainer subclass that applies class weights to the cross-entropy loss."""
+
+    def __init__(self, *args, class_weights: torch.Tensor | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels  = inputs.get("labels")
+        outputs = model(**inputs)
+        logits  = outputs.get("logits")
+
+        if self.class_weights is not None:
+            # Cast weights to match logit dtype (bf16/fp16/fp32) to avoid overflow
+            loss_fct = torch.nn.CrossEntropyLoss(
+                weight=self.class_weights.to(device=logits.device, dtype=logits.dtype)
+            )
+            loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
+        else:
+            loss = outputs.loss
+
+        return (loss, outputs) if return_outputs else loss
 
 
 def compute_metrics(eval_pred) -> dict:
@@ -38,7 +66,7 @@ def compute_metrics(eval_pred) -> dict:
     }
 
 
-def train(df: pd.DataFrame) -> tuple[Trainer, LabelEncoder]:
+def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncoder]:
     log.info("=" * 60)
     log.info("CLASSIFLOW — DEBERTA FINE-TUNING")
     log.info("=" * 60)
@@ -64,6 +92,15 @@ def train(df: pd.DataFrame) -> tuple[Trainer, LabelEncoder]:
 
     log.info("Split — train=%d  val=%d  test=%d", len(train_df), len(val_df), len(test_df))
 
+    # Class weights — compensate for imbalanced class sizes
+    raw_weights = compute_class_weight(
+        class_weight="balanced",
+        classes=np.unique(train_df["label_id"]),
+        y=train_df["label_id"].to_numpy(),
+    )
+    class_weights = torch.tensor(raw_weights, dtype=torch.float)
+    log.info("Class weights: %s", dict(zip(le.classes_, raw_weights.round(3))))
+
     log.info("Loading tokenizer: %s", MODEL_NAME)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
@@ -88,6 +125,33 @@ def train(df: pd.DataFrame) -> tuple[Trainer, LabelEncoder]:
     use_fp16 = torch.cuda.is_available() and not use_bf16
     log.info("Mixed precision: %s", "bf16" if use_bf16 else "fp16" if use_fp16 else "none (CPU)")
 
+    # Compute warmup steps explicitly (replaces deprecated warmup_ratio)
+    steps_per_epoch = max(1, len(train_ds) // (BATCH_SIZE * GRAD_ACCUM))
+    total_steps     = steps_per_epoch * EPOCHS
+    warmup_steps    = max(1, int(total_steps * 0.1))
+    log.info("Steps — total=%d  warmup=%d", total_steps, warmup_steps)
+
+    hyperparams = {
+        "model":          MODEL_NAME,
+        "epochs":         EPOCHS,
+        "batch_size":     BATCH_SIZE,
+        "grad_accum":     GRAD_ACCUM,
+        "effective_batch": BATCH_SIZE * GRAD_ACCUM,
+        "learning_rate":  LR,
+        "warmup_steps":   warmup_steps,
+        "precision":      "bf16" if use_bf16 else "fp16" if use_fp16 else "fp32",
+        "train_docs":     len(train_df),
+        "num_classes":    num_labels,
+    }
+
+    if use_wandb:
+        wandb.init(
+            entity=WANDB_ENTITY,
+            project=WANDB_PROJECT,
+            config=hyperparams,
+        )
+        log.info("W&B run started: %s/%s", WANDB_ENTITY, WANDB_PROJECT)
+
     args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         num_train_epochs=EPOCHS,
@@ -95,8 +159,9 @@ def train(df: pd.DataFrame) -> tuple[Trainer, LabelEncoder]:
         per_device_eval_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUM,
         learning_rate=LR,
-        warmup_ratio=0.1,
+        warmup_steps=warmup_steps,
         weight_decay=0.01,
+        max_grad_norm=0.5,
         bf16=use_bf16,
         fp16=use_fp16,
         eval_strategy="epoch",
@@ -104,19 +169,20 @@ def train(df: pd.DataFrame) -> tuple[Trainer, LabelEncoder]:
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",
         greater_is_better=True,
-        logging_steps=50,
-        report_to="none",
+        logging_steps=10,
+        report_to="wandb" if use_wandb else "none",
         seed=SEED,
         dataloader_num_workers=4,
     )
 
-    trainer = Trainer(
+    trainer = WeightedTrainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         compute_metrics=compute_metrics,
         processing_class=tokenizer,
+        class_weights=class_weights,
     )
 
     log.info("Training started — %d epochs, effective batch %d", EPOCHS, BATCH_SIZE * GRAD_ACCUM)
@@ -128,12 +194,34 @@ def train(df: pd.DataFrame) -> tuple[Trainer, LabelEncoder]:
     y_pred = np.argmax(preds_out.predictions, axis=-1)
     y_true = test_df["label_id"].tolist()
 
-    report = classification_report(y_true, y_pred, target_names=le.classes_, digits=3, zero_division=0)
-    cm = confusion_matrix(y_true, y_pred)
-    cm_df = pd.DataFrame(cm, index=le.classes_, columns=le.classes_)
+    report_str  = classification_report(y_true, y_pred, target_names=le.classes_, digits=3, zero_division=0)
+    report_dict = classification_report(y_true, y_pred, target_names=le.classes_, zero_division=0, output_dict=True)
+    cm          = confusion_matrix(y_true, y_pred)
+    cm_df       = pd.DataFrame(cm, index=le.classes_, columns=le.classes_)
 
-    log.info("Per-class report:\n%s", report)
+    log.info("Per-class report:\n%s", report_str)
     log.info("Confusion matrix:\n%s", cm_df.to_string())
+
+    if use_wandb:
+        wandb.log({
+            "test/macro_f1": report_dict["macro avg"]["f1-score"],
+            "test/accuracy":  report_dict["accuracy"],
+            "confusion_matrix": wandb.plot.confusion_matrix(
+                y_true=y_true,
+                preds=y_pred.tolist(),
+                class_names=list(le.classes_),
+            ),
+        })
+        wandb.finish()
+
+    generate_html_report(
+        label_names=list(le.classes_),
+        y_true=y_true,
+        y_pred=y_pred,
+        cm=cm,
+        report_dict=report_dict,
+        hyperparams=hyperparams,
+    )
 
     save_path = f"{OUTPUT_DIR}/final"
     log.info("Saving model to %s", save_path)

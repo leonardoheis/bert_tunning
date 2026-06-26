@@ -48,6 +48,12 @@ htmlcov/
 # Logs
 logs/
 *.log
+
+# W&B
+wandb/
+
+# Reports
+reports/
 *.tmp
 *.bak
 

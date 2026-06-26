@@ -66,6 +66,8 @@ def main() -> None:
                         help="Confidence threshold (default 0.70)")
     parser.add_argument("--clean",              action="store_true",
                         help="Wipe logs, cache and model checkpoints before running")
+    parser.add_argument("--no_wandb",           action="store_true",
+                        help="Disable Weights & Biases logging")
     parser.add_argument("--debug",              action="store_true",
                         help="Enable DEBUG level logging")
     args = parser.parse_args()
@@ -93,7 +95,7 @@ def main() -> None:
         if len(df) == 0:
             log.error("No documents found. Check --docs_root path: %s", args.docs_root)
         else:
-            train(df)
+            train(df, use_wandb=not args.no_wandb)
 
     elif args.mode == "predict":
         if not args.pdf:

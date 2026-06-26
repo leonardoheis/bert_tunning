@@ -92,6 +92,13 @@ def build_dataset(
     return df
 
 
+def _resolve_cache_path(base_path: str, max_docs_per_class: Optional[int]) -> Path:
+    p = Path(base_path)
+    if max_docs_per_class:
+        return p.parent / f"{p.stem}_{max_docs_per_class}{p.suffix}"
+    return p
+
+
 def load_or_build_dataset(
     docs_root: str,
     cache_path: str = "./classiflow_cache.parquet",
@@ -99,31 +106,26 @@ def load_or_build_dataset(
     rebuild: bool = False,
     max_docs_per_class: Optional[int] = None,
 ) -> pd.DataFrame:
-    cache = Path(cache_path)
-
-    # Skip cache entirely in sample mode — avoid polluting the full cache
-    if max_docs_per_class:
-        log.info("Sample mode active — cache disabled")
-        return build_dataset(docs_root, use_ocr=use_ocr, max_docs_per_class=max_docs_per_class)
+    cache = _resolve_cache_path(cache_path, max_docs_per_class)
 
     if not rebuild and cache.exists():
-        log.info("Cache found — loading from %s", cache_path)
-        df = pd.read_parquet(cache_path)
+        log.info("Cache found — loading from %s", cache)
+        df = pd.read_parquet(cache)
         log.info("Loaded %d docs from cache", len(df))
         log.info("Class distribution (cached):\n%s", df["label"].value_counts().to_string())
         return df
 
     if rebuild and cache.exists():
-        log.info("--rebuild_cache flag set — removing existing cache: %s", cache_path)
+        log.info("--rebuild_cache flag set — removing existing cache: %s", cache)
         cache.unlink()
 
     log.info("Extracting PDFs from: %s", docs_root)
     log.info("One-time extraction — may take several hours for large corpora")
-    df = build_dataset(docs_root, use_ocr=use_ocr)
+    df = build_dataset(docs_root, use_ocr=use_ocr, max_docs_per_class=max_docs_per_class)
 
     if len(df) > 0:
-        df.to_parquet(cache_path, index=False)
-        size_mb = Path(cache_path).stat().st_size / 1_048_576
-        log.info("Cached %d docs → %s (%.1f MB)", len(df), cache_path, size_mb)
+        df.to_parquet(cache, index=False)
+        size_mb = cache.stat().st_size / 1_048_576
+        log.info("Cached %d docs → %s (%.1f MB)", len(df), cache, size_mb)
 
     return df
