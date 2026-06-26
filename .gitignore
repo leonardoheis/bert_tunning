@@ -68,5 +68,5 @@ models/hub/
 models/classiflow_deberta_model/
 
 # Cache
-classiflow_cache.parquet
+classiflow_cache*.parquet
 classiflow_predictions.csv

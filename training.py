@@ -11,6 +11,7 @@ from sklearn.utils.class_weight import compute_class_weight
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
+    EarlyStoppingCallback,
     Trainer,
     TrainingArguments,
 )
@@ -34,6 +35,9 @@ from reporting import generate_html_report
 log = logging.getLogger(__name__)
 
 
+_EARLY_STOP_PATIENCE = 3  # epochs without macro_f1 improvement before stopping
+
+
 class WeightedTrainer(Trainer):
     """Trainer subclass that applies class weights to the cross-entropy loss."""
 
@@ -41,19 +45,23 @@ class WeightedTrainer(Trainer):
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
 
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        labels  = inputs.get("labels")
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None, **kwargs):
+        labels = inputs.pop("labels", None)
         outputs = model(**inputs)
-        logits  = outputs.get("logits")
+        logits = outputs.get("logits")
 
-        if self.class_weights is not None:
-            # Cast weights to match logit dtype (bf16/fp16/fp32) to avoid overflow
+        if self.class_weights is not None and labels is not None:
             loss_fct = torch.nn.CrossEntropyLoss(
                 weight=self.class_weights.to(device=logits.device, dtype=logits.dtype)
             )
             loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
         else:
             loss = outputs.loss
+
+        # Normalize for gradient accumulation (transformers >=4.46 contract)
+        if num_items_in_batch is not None and self.args.gradient_accumulation_steps > 1:
+            local_batch = logits.shape[0]
+            loss = loss * local_batch / num_items_in_batch
 
         return (loss, outputs) if return_outputs else loss
 
@@ -184,7 +192,9 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
         compute_metrics=compute_metrics,
         processing_class=tokenizer,
         class_weights=class_weights,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=_EARLY_STOP_PATIENCE)],
     )
+    log.info("Early stopping: patience=%d epochs on macro_f1", _EARLY_STOP_PATIENCE)
 
     log.info("Training started — %d epochs, effective batch %d", EPOCHS, BATCH_SIZE * GRAD_ACCUM)
     trainer.train()

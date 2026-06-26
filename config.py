@@ -1,13 +1,19 @@
 DOCS_ROOT = r"C:\Users\YourUser\Downloads\downloadsdocs\downloads"
-MODEL_NAME = "microsoft/deberta-v3-base"
-OUTPUT_DIR = "./models/classiflow_deberta_model"
+
+# Model options (pick one):
+#   "xlm-roberta-base"                  — recommended: stable multilingual, strong Spanish
+#   "PlanTL-GOB-ES/roberta-base-bne"    — Spanish-only RoBERTa (National Library corpus)
+#   "dccuchile/bert-base-spanish-wwm-cased"  — BETO: original Spanish BERT
+#   "microsoft/deberta-v3-base"         — high accuracy but numerically unstable in practice
+MODEL_NAME = "xlm-roberta-base"
+OUTPUT_DIR = "./models/classiflow_model"
 MAX_TOKENS = 512
 CHUNK_STRATEGY = "first"  # "first" | "middle"
-BATCH_SIZE = 4  # 8
-GRAD_ACCUM = 16  # 8  # effective batch = 8 × 8 = 64
+BATCH_SIZE = 8
+GRAD_ACCUM = 8   # effective batch = 64
 EPOCHS = 15
-LR = 1e-5
-FORCE_FP32 = True  # DeBERTa-v3 disentangled attention overflows in bf16/fp16
+LR = 2e-5
+FORCE_FP32 = False  # xlm-roberta trains fine in bf16/fp16
 
 WANDB_ENTITY = "leonardo-a-heis"
 WANDB_PROJECT = "bert_tunning"
