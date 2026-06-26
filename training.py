@@ -19,6 +19,7 @@ from config import (
     BATCH_SIZE,
     CHUNK_STRATEGY,
     EPOCHS,
+    FORCE_FP32,
     GRAD_ACCUM,
     LR,
     MODEL_NAME,
@@ -121,9 +122,9 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
         ignore_mismatched_sizes=True,
     )
 
-    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    use_fp16 = torch.cuda.is_available() and not use_bf16
-    log.info("Mixed precision: %s", "bf16" if use_bf16 else "fp16" if use_fp16 else "none (CPU)")
+    use_bf16 = not FORCE_FP32 and torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    use_fp16 = not FORCE_FP32 and torch.cuda.is_available() and not use_bf16
+    log.info("Mixed precision: %s", "bf16" if use_bf16 else "fp16" if use_fp16 else "fp32 (forced)")
 
     # Compute warmup steps explicitly (replaces deprecated warmup_ratio)
     steps_per_epoch = max(1, len(train_ds) // (BATCH_SIZE * GRAD_ACCUM))
