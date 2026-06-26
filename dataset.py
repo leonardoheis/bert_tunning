@@ -1,13 +1,12 @@
 import logging
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import torch
 from torch.utils.data import Dataset as TorchDataset
 from transformers import AutoTokenizer
 
-from config import MAX_TOKENS, EXCLUDE_LABELS, FOLDER_TO_LABEL
+from config import EXCLUDE_LABELS, FOLDER_TO_LABEL, MAX_TOKENS
 from extraction import extract_pdf
 
 log = logging.getLogger(__name__)
@@ -53,7 +52,7 @@ class ClassiflowDataset(TorchDataset):
 def build_dataset(
     docs_root: str,
     use_ocr: bool = True,
-    max_docs_per_class: Optional[int] = None,
+    max_docs_per_class: int | None = None,
 ) -> pd.DataFrame:
     root = Path(docs_root)
     records = []
@@ -92,7 +91,7 @@ def build_dataset(
     return df
 
 
-def _resolve_cache_path(base_path: str, max_docs_per_class: Optional[int]) -> Path:
+def _resolve_cache_path(base_path: str, max_docs_per_class: int | None) -> Path:
     p = Path(base_path)
     if max_docs_per_class:
         return p.parent / f"{p.stem}_{max_docs_per_class}{p.suffix}"
@@ -104,7 +103,7 @@ def load_or_build_dataset(
     cache_path: str = "./classiflow_cache.parquet",
     use_ocr: bool = True,
     rebuild: bool = False,
-    max_docs_per_class: Optional[int] = None,
+    max_docs_per_class: int | None = None,
 ) -> pd.DataFrame:
     cache = _resolve_cache_path(cache_path, max_docs_per_class)
 

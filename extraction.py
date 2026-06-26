@@ -1,10 +1,9 @@
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
-import fitz
 import easyocr
+import fitz
 import numpy as np
 import torch
 from markitdown import MarkItDown
@@ -14,7 +13,7 @@ log = logging.getLogger(__name__)
 _md = MarkItDown()
 
 # Initialized once on first OCR call — loading the EasyOCR model takes ~10s
-_ocr_reader: Optional[easyocr.Reader] = None
+_ocr_reader: easyocr.Reader | None = None
 
 
 def _get_ocr_reader() -> easyocr.Reader:
@@ -48,15 +47,15 @@ def _ocr_fallback(pdf_path: str) -> str:
 def clean_text(text: str) -> str:
     text = text.replace("\f", " ")
     text = text.replace("\xa0", " ")
-    text = re.sub(r'\|[-: ]+\|[-: |]+', '', text)
-    text = re.sub(r'^\|.*\|$', '', text, flags=re.M)
-    text = re.sub(r'#+ ', '', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r"\|[-: ]+\|[-: |]+", "", text)
+    text = re.sub(r"^\|.*\|$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"#+ ", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
 
 
-def extract_pdf(pdf_path: str, use_ocr_fallback: bool = True) -> Optional[str]:
+def extract_pdf(pdf_path: str, use_ocr_fallback: bool = True) -> str | None:
     try:
         result = _md.convert(pdf_path)
         text = clean_text(result.text_content or "")

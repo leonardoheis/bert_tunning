@@ -3,8 +3,6 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-import plotly.figure_factory as ff
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 

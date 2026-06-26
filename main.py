@@ -6,8 +6,8 @@ from pathlib import Path
 
 os.environ.setdefault("HF_HOME", str(Path(__file__).parent / "models"))
 
-from config import CACHE_PATH, DOCS_ROOT, OUTPUT_DIR
 from classifier import ClassiflowClassifier
+from config import CACHE_PATH, DOCS_ROOT, MODEL_NAME, OUTPUT_DIR
 from dataset import load_or_build_dataset
 from logger import setup_logging
 from training import train
@@ -47,7 +47,9 @@ def clean_state() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Classiflow DeBERTa pipeline")
+    parser = argparse.ArgumentParser(
+        description=f"Classiflow — Spanish municipal document classifier (model: {MODEL_NAME})"
+    )
     parser.add_argument("--mode", choices=["train", "predict", "predict_folder", "clean"],
                         default="train")
     parser.add_argument("--docs_root",          default=DOCS_ROOT,

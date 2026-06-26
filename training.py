@@ -1,9 +1,8 @@
 import logging
 
-import torch
-import wandb
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -16,6 +15,7 @@ from transformers import (
     TrainingArguments,
 )
 
+import wandb
 from config import (
     BATCH_SIZE,
     CHUNK_STRATEGY,
