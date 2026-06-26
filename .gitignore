@@ -71,3 +71,6 @@ models/classiflow_deberta_model/
 # Cache / data
 data/
 classiflow_predictions.csv
+
+#Sample files
+samples/
