@@ -65,8 +65,9 @@ desktop.ini
 # Models — large binary weights, tracked via Git LFS or stored externally
 # Keep the models/ folder structure but ignore downloaded/trained weights
 models/hub/
+models/classiflow_model/
 models/classiflow_deberta_model/
 
-# Cache
-classiflow_cache*.parquet
+# Cache / data
+data/
 classiflow_predictions.csv

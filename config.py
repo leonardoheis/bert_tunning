@@ -10,15 +10,16 @@ OUTPUT_DIR = "./models/classiflow_model"
 MAX_TOKENS = 512
 CHUNK_STRATEGY = "first"  # "first" | "middle"
 BATCH_SIZE = 8
-GRAD_ACCUM = 8   # effective batch = 64
+GRAD_ACCUM = 8  # effective batch = 64
 EPOCHS = 15
 LR = 2e-5
 FORCE_FP32 = False  # xlm-roberta trains fine in bf16/fp16
+EARLY_STOP_PATIENCE = 5  # eval epochs without macro_f1 improvement before stopping
 
 WANDB_ENTITY = "leonardo-a-heis"
 WANDB_PROJECT = "bert_tunning"
 SEED = 42
-CACHE_PATH = "./classiflow_cache.parquet"
+CACHE_PATH = "./data/classiflow_cache.parquet"
 
 EXCLUDE_LABELS = {"convenios"}  # set()  # include everything
 

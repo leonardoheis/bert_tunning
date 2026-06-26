@@ -19,6 +19,7 @@ from transformers import (
 from config import (
     BATCH_SIZE,
     CHUNK_STRATEGY,
+    EARLY_STOP_PATIENCE,
     EPOCHS,
     FORCE_FP32,
     GRAD_ACCUM,
@@ -33,9 +34,6 @@ from dataset import ClassiflowDataset, prepare_text
 from reporting import generate_html_report
 
 log = logging.getLogger(__name__)
-
-
-_EARLY_STOP_PATIENCE = 3  # epochs without macro_f1 improvement before stopping
 
 
 class WeightedTrainer(Trainer):
@@ -77,7 +75,7 @@ def compute_metrics(eval_pred) -> dict:
 
 def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncoder]:
     log.info("=" * 60)
-    log.info("CLASSIFLOW — DEBERTA FINE-TUNING")
+    log.info("CLASSIFLOW — FINE-TUNING %s", MODEL_NAME)
     log.info("=" * 60)
 
     le = LabelEncoder()
@@ -170,7 +168,7 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
         learning_rate=LR,
         warmup_steps=warmup_steps,
         weight_decay=0.01,
-        max_grad_norm=0.5,
+        max_grad_norm=1.0,
         bf16=use_bf16,
         fp16=use_fp16,
         eval_strategy="epoch",
@@ -192,9 +190,9 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
         compute_metrics=compute_metrics,
         processing_class=tokenizer,
         class_weights=class_weights,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=_EARLY_STOP_PATIENCE)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=EARLY_STOP_PATIENCE)],
     )
-    log.info("Early stopping: patience=%d epochs on macro_f1", _EARLY_STOP_PATIENCE)
+    log.info("Early stopping: patience=%d epochs on macro_f1", EARLY_STOP_PATIENCE)
 
     log.info("Training started — %d epochs, effective batch %d", EPOCHS, BATCH_SIZE * GRAD_ACCUM)
     trainer.train()
