@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 import numpy as np
 import torch
@@ -20,7 +21,7 @@ class ClassiflowClassifier:
         self.model.to(self.device)
         log.info("Classifier ready on %s", self.device)
 
-    def predict_text(self, text: str) -> dict:
+    def predict_text(self, text: str) -> dict[str, Any]:
         inputs = self.tokenizer(
             clean_text(text),
             truncation=True,

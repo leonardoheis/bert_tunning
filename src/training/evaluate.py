@@ -1,6 +1,8 @@
 import logging
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
@@ -16,16 +18,17 @@ def run_evaluation(
     trainer: Trainer,
     test_ds: ClassiflowDataset,
     le: LabelEncoder,
-    hyperparams: dict,
-) -> tuple[dict, np.ndarray, list[int]]:
+    hyperparams: dict[str, Any],
+) -> tuple[dict[str, Any], npt.NDArray[np.int_], list[int]]:
     preds_out = trainer.predict(test_ds)
-    y_pred = np.argmax(preds_out.predictions, axis=-1)
-    y_true: list[int] = preds_out.label_ids.tolist()
+    y_pred: npt.NDArray[np.int_] = np.argmax(preds_out.predictions, axis=-1)
+    label_ids: npt.NDArray[np.int_] = np.asarray(preds_out.label_ids)
+    y_true: list[int] = label_ids.tolist()
 
     report_str = classification_report(
         y_true, y_pred, target_names=le.classes_, digits=3, zero_division=0
     )
-    report_dict = classification_report(
+    report_dict: dict[str, Any] = classification_report(
         y_true, y_pred, target_names=le.classes_, zero_division=0, output_dict=True
     )
     cm = confusion_matrix(y_true, y_pred)
@@ -36,8 +39,6 @@ def run_evaluation(
 
     generate_html_report(
         label_names=list(le.classes_),
-        y_true=y_true,
-        y_pred=y_pred,
         cm=cm,
         report_dict=report_dict,
         hyperparams=hyperparams,

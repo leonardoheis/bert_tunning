@@ -15,6 +15,7 @@ class ModelConfig(BaseModel):
 
 def _build_registry() -> dict[str, ModelConfig]:
     from src.training.models import beto, xlm_roberta  # noqa: PLC0415
+
     return {
         "xlm-roberta": xlm_roberta.config,
         "beto": beto.config,

@@ -1,9 +1,11 @@
+from typing import Any
+
 import torch
 from torch.utils.data import Dataset as TorchDataset
-from transformers import AutoTokenizer
+from transformers import PreTrainedTokenizerBase
 
 
-def prepare_text(text: str, tokenizer: AutoTokenizer, strategy: str = "first") -> str:
+def prepare_text(text: str, tokenizer: PreTrainedTokenizerBase, strategy: str = "first") -> str:
     if strategy == "first":
         return text
     tokens = tokenizer.encode(text, add_special_tokens=False)
@@ -13,16 +15,16 @@ def prepare_text(text: str, tokenizer: AutoTokenizer, strategy: str = "first") -
             return text
         half = (max_t - 2) // 2
         selected = tokens[:half] + tokens[-half:]
-        return tokenizer.decode(selected, skip_special_tokens=True)
+        return str(tokenizer.decode(selected, skip_special_tokens=True))
     return text
 
 
-class ClassiflowDataset(TorchDataset):
+class ClassiflowDataset(TorchDataset):  # type: ignore[type-arg]
     def __init__(
         self,
         texts: list[str],
         labels: list[int],
-        tokenizer: AutoTokenizer,
+        tokenizer: PreTrainedTokenizerBase,
         max_length: int = 512,
     ) -> None:
         self.encodings = tokenizer(
@@ -37,7 +39,7 @@ class ClassiflowDataset(TorchDataset):
     def __len__(self) -> int:
         return len(self.labels)
 
-    def __getitem__(self, idx: int) -> dict:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         return {
             "input_ids": self.encodings["input_ids"][idx],
             "attention_mask": self.encodings["attention_mask"][idx],

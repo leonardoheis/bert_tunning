@@ -33,9 +33,7 @@ def _ocr_fallback(pdf_path: str) -> str:
         text = ""
         for page in doc:
             pix = page.get_pixmap(dpi=200)
-            img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-                pix.height, pix.width, pix.n
-            )
+            img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
             results = reader.readtext(img, detail=0, paragraph=True)
             text += " ".join(results) + "\n"
         doc.close()

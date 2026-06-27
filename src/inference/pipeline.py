@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -15,7 +16,7 @@ def predict_pdf(
     *,
     threshold: float = 0.70,
     use_ocr: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     clf = ClassiflowClassifier(model_path, confidence_threshold=threshold)
     log.info("Classifying: %s", Path(pdf_path).name)
     text = extract_pdf(pdf_path, use_ocr_fallback=use_ocr)
@@ -47,7 +48,7 @@ def predict_folder(
     pdfs = sorted(Path(folder_path).glob("*.pdf"))
     log.info("Classifying %d PDFs in %s", len(pdfs), folder_path)
 
-    results = []
+    results: list[dict[str, Any]] = []
     for pdf in pdfs:
         text = extract_pdf(str(pdf), use_ocr_fallback=use_ocr)
         if text is None:

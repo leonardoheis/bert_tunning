@@ -1,8 +1,10 @@
 import logging
+from typing import Any
 
 import numpy as np
-
+import numpy.typing as npt
 import wandb
+
 from config import WANDB_ENTITY, WANDB_PROJECT
 
 log = logging.getLogger(__name__)
@@ -24,7 +26,7 @@ class WandbLogger:
     def report_to(self) -> str:
         return "wandb" if self._enabled else "none"
 
-    def init(self, hyperparams: dict) -> None:
+    def init(self, hyperparams: dict[str, Any]) -> None:
         if not self._enabled:
             return
         wandb.init(entity=self._entity, project=self._project, config=hyperparams)
@@ -32,9 +34,9 @@ class WandbLogger:
 
     def log_results(
         self,
-        report_dict: dict,
+        report_dict: dict[str, Any],
         y_true: list[int],
-        y_pred: np.ndarray,
+        y_pred: npt.NDArray[np.int_],
         class_names: list[str],
     ) -> None:
         if not self._enabled:

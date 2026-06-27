@@ -1,8 +1,10 @@
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -13,11 +15,9 @@ _REPORTS_DIR = Path(__file__).parent / "reports"
 
 def generate_html_report(
     label_names: list[str],
-    y_true: list[int],
-    y_pred: np.ndarray,
-    cm: np.ndarray,
-    report_dict: dict,
-    hyperparams: dict,
+    cm: npt.NDArray[np.int_],
+    report_dict: dict[str, Any],
+    hyperparams: dict[str, Any],
 ) -> Path:
     _REPORTS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -84,11 +84,15 @@ def generate_html_report(
     # Hyperparameters table
     fig.add_trace(
         go.Table(
-            header=dict(values=["Parameter", "Value"], fill_color="steelblue", font_color="white"),
-            cells=dict(
-                values=[list(hyperparams.keys()), list(hyperparams.values())],
-                fill_color="lavender",
-            ),
+            header={
+                "values": ["Parameter", "Value"],
+                "fill_color": "steelblue",
+                "font_color": "white",
+            },
+            cells={
+                "values": [list(hyperparams.keys()), list(hyperparams.values())],
+                "fill_color": "lavender",
+            },
         ),
         row=2,
         col=2,

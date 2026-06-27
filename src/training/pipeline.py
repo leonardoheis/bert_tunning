@@ -9,6 +9,7 @@ from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
     EarlyStoppingCallback,
+    PreTrainedTokenizerBase,
     Trainer,
     TrainingArguments,
 )
@@ -55,7 +56,7 @@ def run(  # noqa: PLR0913
     class_weights = torch.tensor(raw_weights, dtype=torch.float)
     log.info("Class weights: %s", dict(zip(le.classes_, raw_weights.round(3), strict=True)))
 
-    tokenizer = AutoTokenizer.from_pretrained(model_cfg.hf_id)
+    tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(model_cfg.hf_id)
 
     def _texts(split_df: pd.DataFrame, strategy: str) -> list[str]:
         return [prepare_text(t, tokenizer, strategy) for t in split_df["text"]]

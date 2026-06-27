@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import torch
 from sklearn.metrics import f1_score
@@ -8,19 +10,19 @@ class WeightedTrainer(Trainer):
     """Trainer subclass that applies per-class weights to cross-entropy loss."""
 
     def __init__(
-        self, *args: object, class_weights: torch.Tensor | None = None, **kwargs: object
+        self, *args: Any, class_weights: torch.Tensor | None = None, **kwargs: Any
     ) -> None:
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
 
-    def compute_loss(
+    def compute_loss(  # type: ignore[override]
         self,
         model: torch.nn.Module,
-        inputs: dict,
+        inputs: dict[str, Any],
         return_outputs: bool = False,  # noqa: FBT001, FBT002
         num_items_in_batch: int | None = None,
         **_kwargs: object,
-    ) -> torch.Tensor | tuple[torch.Tensor, object]:
+    ) -> torch.Tensor | tuple[torch.Tensor, Any]:
         labels = inputs.pop("labels", None)
         outputs = model(**inputs)
         logits = outputs.get("logits")
@@ -29,7 +31,7 @@ class WeightedTrainer(Trainer):
             loss_fct = torch.nn.CrossEntropyLoss(
                 weight=self.class_weights.to(device=logits.device, dtype=logits.dtype)
             )
-            loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
+            loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))  # type: ignore[union-attr]
         else:
             loss = outputs.loss
 
@@ -39,7 +41,7 @@ class WeightedTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-def compute_metrics(eval_pred: tuple) -> dict:
+def compute_metrics(eval_pred: tuple[Any, Any]) -> dict[str, float]:
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
     return {

@@ -25,4 +25,4 @@ def test_get_model_config_raises_on_unknown() -> None:
 def test_model_config_is_immutable() -> None:
     cfg = get_model_config("xlm-roberta")
     with pytest.raises(ValidationError):  # Pydantic frozen=True raises ValidationError
-        cfg.name = "other"  # type: ignore[misc]
+        cfg.name = "other"
