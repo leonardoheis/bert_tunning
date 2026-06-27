@@ -34,3 +34,6 @@ FOLDER_TO_LABEL = {
     "declaraciones_concejo_municipal": "declaracion_concejo_municipal",
     "convenios": "convenio",
 }
+
+API_HOST = "0.0.0.0"  # noqa: S104
+API_PORT = 8000
