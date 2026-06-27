@@ -15,7 +15,6 @@ from transformers import (
     TrainingArguments,
 )
 
-import wandb
 from config import (
     BATCH_SIZE,
     CHUNK_STRATEGY,
@@ -27,11 +26,10 @@ from config import (
     MODEL_NAME,
     OUTPUT_DIR,
     SEED,
-    WANDB_ENTITY,
-    WANDB_PROJECT,
 )
 from dataset import ClassiflowDataset, prepare_text
 from reporting import generate_html_report
+from wandb_logger import WandbLogger
 
 log = logging.getLogger(__name__)
 
@@ -39,11 +37,20 @@ log = logging.getLogger(__name__)
 class WeightedTrainer(Trainer):
     """Trainer subclass that applies class weights to the cross-entropy loss."""
 
-    def __init__(self, *args, class_weights: torch.Tensor | None = None, **kwargs):
+    def __init__(
+        self, *args: object, class_weights: torch.Tensor | None = None, **kwargs: object
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
 
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None, **kwargs):
+    def compute_loss(
+        self,
+        model: torch.nn.Module,
+        inputs: dict,
+        return_outputs: bool = False,
+        num_items_in_batch: int | None = None,
+        **_kwargs: object,
+    ) -> torch.Tensor | tuple[torch.Tensor, object]:
         labels = inputs.pop("labels", None)
         outputs = model(**inputs)
         logits = outputs.get("logits")
@@ -64,7 +71,7 @@ class WeightedTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-def compute_metrics(eval_pred) -> dict:
+def compute_metrics(eval_pred: tuple) -> dict:
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
     return {
@@ -73,15 +80,15 @@ def compute_metrics(eval_pred) -> dict:
     }
 
 
-def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncoder]:
+def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncoder]:  # noqa: FBT001, FBT002
     log.info("=" * 60)
     log.info("CLASSIFLOW — FINE-TUNING %s", MODEL_NAME)
     log.info("=" * 60)
 
     le = LabelEncoder()
     df["label_id"] = le.fit_transform(df["label"])
-    label2id   = {l: int(i) for i, l in enumerate(le.classes_)}
-    id2label   = {int(i): l for l, i in label2id.items()}
+    label2id = {l: int(i) for i, l in enumerate(le.classes_)}
+    id2label = {int(i): l for l, i in label2id.items()}
     num_labels = len(le.classes_)
     log.info("%d classes: %s", num_labels, list(le.classes_))
 
@@ -95,7 +102,7 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
     except ValueError as e:
         log.warning("Stratified split failed (%s) — using random split", e)
         train_df, temp_df = train_test_split(df, test_size=0.30, random_state=SEED)
-        val_df, test_df   = train_test_split(temp_df, test_size=0.50, random_state=SEED)
+        val_df, test_df = train_test_split(temp_df, test_size=0.50, random_state=SEED)
 
     log.info("Split — train=%d  val=%d  test=%d", len(train_df), len(val_df), len(test_df))
 
@@ -112,12 +119,12 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
     train_texts = [prepare_text(t, tokenizer, CHUNK_STRATEGY) for t in train_df["text"]]
-    val_texts   = [prepare_text(t, tokenizer, "first")        for t in val_df["text"]]
-    test_texts  = [prepare_text(t, tokenizer, "first")        for t in test_df["text"]]
+    val_texts = [prepare_text(t, tokenizer, "first") for t in val_df["text"]]
+    test_texts = [prepare_text(t, tokenizer, "first") for t in test_df["text"]]
 
     train_ds = ClassiflowDataset(train_texts, train_df["label_id"].tolist(), tokenizer)
-    val_ds   = ClassiflowDataset(val_texts,   val_df["label_id"].tolist(),   tokenizer)
-    test_ds  = ClassiflowDataset(test_texts,  test_df["label_id"].tolist(),  tokenizer)
+    val_ds = ClassiflowDataset(val_texts, val_df["label_id"].tolist(), tokenizer)
+    test_ds = ClassiflowDataset(test_texts, test_df["label_id"].tolist(), tokenizer)
 
     log.info("Loading model: %s", MODEL_NAME)
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -134,30 +141,25 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
 
     # Compute warmup steps explicitly (replaces deprecated warmup_ratio)
     steps_per_epoch = max(1, len(train_ds) // (BATCH_SIZE * GRAD_ACCUM))
-    total_steps     = steps_per_epoch * EPOCHS
-    warmup_steps    = max(1, int(total_steps * 0.1))
+    total_steps = steps_per_epoch * EPOCHS
+    warmup_steps = max(1, int(total_steps * 0.1))
     log.info("Steps — total=%d  warmup=%d", total_steps, warmup_steps)
 
     hyperparams = {
-        "model":          MODEL_NAME,
-        "epochs":         EPOCHS,
-        "batch_size":     BATCH_SIZE,
-        "grad_accum":     GRAD_ACCUM,
+        "model": MODEL_NAME,
+        "epochs": EPOCHS,
+        "batch_size": BATCH_SIZE,
+        "grad_accum": GRAD_ACCUM,
         "effective_batch": BATCH_SIZE * GRAD_ACCUM,
-        "learning_rate":  LR,
-        "warmup_steps":   warmup_steps,
-        "precision":      "bf16" if use_bf16 else "fp16" if use_fp16 else "fp32",
-        "train_docs":     len(train_df),
-        "num_classes":    num_labels,
+        "learning_rate": LR,
+        "warmup_steps": warmup_steps,
+        "precision": "bf16" if use_bf16 else "fp16" if use_fp16 else "fp32",
+        "train_docs": len(train_df),
+        "num_classes": num_labels,
     }
 
-    if use_wandb:
-        wandb.init(
-            entity=WANDB_ENTITY,
-            project=WANDB_PROJECT,
-            config=hyperparams,
-        )
-        log.info("W&B run started: %s/%s", WANDB_ENTITY, WANDB_PROJECT)
+    wb = WandbLogger(enabled=use_wandb)
+    wb.init(hyperparams)
 
     args = TrainingArguments(
         output_dir=OUTPUT_DIR,
@@ -177,7 +179,7 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
         metric_for_best_model="macro_f1",
         greater_is_better=True,
         logging_steps=10,
-        report_to="wandb" if use_wandb else "none",
+        report_to=wb.report_to,
         seed=SEED,
         dataloader_num_workers=4,
     )
@@ -203,25 +205,20 @@ def train(df: pd.DataFrame, use_wandb: bool = True) -> tuple[Trainer, LabelEncod
     y_pred = np.argmax(preds_out.predictions, axis=-1)
     y_true = test_df["label_id"].tolist()
 
-    report_str  = classification_report(y_true, y_pred, target_names=le.classes_, digits=3, zero_division=0)
-    report_dict = classification_report(y_true, y_pred, target_names=le.classes_, zero_division=0, output_dict=True)
-    cm          = confusion_matrix(y_true, y_pred)
-    cm_df       = pd.DataFrame(cm, index=le.classes_, columns=le.classes_)
+    report_str = classification_report(
+        y_true, y_pred, target_names=le.classes_, digits=3, zero_division=0
+    )
+    report_dict = classification_report(
+        y_true, y_pred, target_names=le.classes_, zero_division=0, output_dict=True
+    )
+    cm = confusion_matrix(y_true, y_pred)
+    cm_df = pd.DataFrame(cm, index=le.classes_, columns=le.classes_)
 
     log.info("Per-class report:\n%s", report_str)
     log.info("Confusion matrix:\n%s", cm_df.to_string())
 
-    if use_wandb:
-        wandb.log({
-            "test/macro_f1": report_dict["macro avg"]["f1-score"],
-            "test/accuracy":  report_dict["accuracy"],
-            "confusion_matrix": wandb.plot.confusion_matrix(
-                y_true=y_true,
-                preds=y_pred.tolist(),
-                class_names=list(le.classes_),
-            ),
-        })
-        wandb.finish()
+    wb.log_results(report_dict, y_true, y_pred, list(le.classes_))
+    wb.finish()
 
     generate_html_report(
         label_names=list(le.classes_),

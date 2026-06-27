@@ -22,12 +22,12 @@ class ClassiflowClassifier:
         print(clf.predict_text("Licitación Pública para construcción de puente..."))
     """
 
-    def __init__(self, model_path: str, confidence_threshold: float = 0.70):
+    def __init__(self, model_path: str, confidence_threshold: float = 0.70) -> None:
         log.info("Loading classifier from %s", model_path)
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model     = AutoModelForSequenceClassification.from_pretrained(model_path)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
         self.threshold = confidence_threshold
-        self.device    = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.eval()
         self.model.to(self.device)
         log.info("Classifier ready on %s", self.device)
@@ -44,19 +44,18 @@ class ClassiflowClassifier:
         with torch.no_grad():
             probs = torch.softmax(self.model(**inputs).logits, dim=-1)[0].cpu().numpy()
 
-        pred_idx   = int(np.argmax(probs))
+        pred_idx = int(np.argmax(probs))
         confidence = float(probs[pred_idx])
-        label      = self.model.config.id2label[pred_idx]
+        label = self.model.config.id2label[pred_idx]
 
         log.debug("Inference result: label=%s confidence=%.4f", label, confidence)
 
         return {
-            "label":      label,
+            "label": label,
             "confidence": round(confidence, 4),
-            "certain":    confidence >= self.threshold,
+            "certain": confidence >= self.threshold,
             "all_scores": {
-                self.model.config.id2label[i]: round(float(p), 4)
-                for i, p in enumerate(probs)
+                self.model.config.id2label[i]: round(float(p), 4) for i, p in enumerate(probs)
             },
         }
 
@@ -77,7 +76,9 @@ class ClassiflowClassifier:
             }
         result = self._infer(text)
         result["filename"] = Path(pdf_path).name
-        log.info("%s → %s (%.2f%%)", Path(pdf_path).name, result["label"], result["confidence"] * 100)
+        log.info(
+            "%s → %s (%.2f%%)", Path(pdf_path).name, result["label"], result["confidence"] * 100
+        )
         return result
 
     def predict_folder(self, folder_path: str) -> pd.DataFrame:

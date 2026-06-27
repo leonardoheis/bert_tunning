@@ -28,7 +28,13 @@ def prepare_text(text: str, tokenizer: AutoTokenizer, strategy: str = "first") -
 
 
 class ClassiflowDataset(TorchDataset):
-    def __init__(self, texts: list[str], labels: list[int], tokenizer: AutoTokenizer, max_length: int = MAX_TOKENS):
+    def __init__(
+        self,
+        texts: list[str],
+        labels: list[int],
+        tokenizer: AutoTokenizer,
+        max_length: int = MAX_TOKENS,
+    ) -> None:
         self.encodings = tokenizer(
             texts,
             truncation=True,
@@ -43,9 +49,9 @@ class ClassiflowDataset(TorchDataset):
 
     def __getitem__(self, idx: int) -> dict:
         return {
-            "input_ids":      self.encodings["input_ids"][idx],
+            "input_ids": self.encodings["input_ids"][idx],
             "attention_mask": self.encodings["attention_mask"][idx],
-            "labels":         self.labels[idx],
+            "labels": self.labels[idx],
         }
 
 
@@ -70,7 +76,7 @@ def build_dataset(
             continue
 
         label = FOLDER_TO_LABEL.get(folder_name, folder_name)
-        pdfs  = list(folder.glob("*.pdf"))
+        pdfs = list(folder.glob("*.pdf"))
         if max_docs_per_class:
             pdfs = pdfs[:max_docs_per_class]
         total = len(pdfs)
