@@ -2,6 +2,8 @@ import torch
 from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
+from src.settings import Settings
+
 
 def prepare_text(text: str, tokenizer: PreTrainedTokenizerBase, strategy: str = "first") -> str:
     if strategy == "first":
@@ -23,7 +25,7 @@ class ClassiflowDataset(TorchDataset):  # type: ignore[type-arg]
         texts: list[str],
         labels: list[int],
         tokenizer: PreTrainedTokenizerBase,
-        max_length: int = 512,
+        max_length: int = Settings.max_length,
     ) -> None:
         self.encodings = tokenizer(
             texts,

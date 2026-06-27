@@ -18,13 +18,12 @@ class WeightedTrainer(Trainer):
         super().__init__(model=model, args=args, **kwargs)  # type: ignore[arg-type]
         self.class_weights = class_weights
 
-    def compute_loss(  # type: ignore[override]
+    def compute_loss(
         self,
         model: torch.nn.Module,
         inputs: dict[str, torch.Tensor],
         return_outputs: bool = False,  # noqa: FBT001, FBT002
-        num_items_in_batch: int | None = None,
-        **_kwargs: object,
+        num_items_in_batch: torch.Tensor | int | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, object]:
         labels = inputs.pop("labels", None)
         outputs = model(**inputs)

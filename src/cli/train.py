@@ -38,10 +38,11 @@ def train_cmd(  # noqa: PLR0913
     docs_root: str,
     model_key: str,
     max_docs_per_class: int | None,
-    rebuild_cache: bool,  # noqa: FBT001
-    no_ocr: bool,  # noqa: FBT001
-    no_wandb: bool,  # noqa: FBT001
-    debug: bool,  # noqa: FBT001
+    *,
+    rebuild_cache: bool,
+    no_ocr: bool,
+    no_wandb: bool,
+    debug: bool,
 ) -> None:
     """Fine-tune a transformer model on municipal PDF documents."""
     setup_logging(level=logging.DEBUG if debug else logging.INFO)

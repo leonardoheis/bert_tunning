@@ -21,8 +21,9 @@ def predict_cmd(
     pdf_path: str,
     model_path: str,
     threshold: float,
-    no_ocr: bool,  # noqa: FBT001
-    debug: bool,  # noqa: FBT001
+    *,
+    no_ocr: bool,
+    debug: bool,
 ) -> None:
     """Classify a single PDF document."""
     setup_logging(level=logging.DEBUG if debug else logging.INFO)
@@ -50,9 +51,10 @@ def predict_folder_cmd(  # noqa: PLR0913
     folder_path: str,
     model_path: str,
     threshold: float,
-    no_ocr: bool,  # noqa: FBT001
+    *,
+    no_ocr: bool,
     output: str,
-    debug: bool,  # noqa: FBT001
+    debug: bool,
 ) -> None:
     """Classify all PDFs in a folder and save results to CSV."""
     setup_logging(level=logging.DEBUG if debug else logging.INFO)

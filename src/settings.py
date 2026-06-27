@@ -14,6 +14,8 @@ class _Settings(BaseSettings):
     THRESHOLD: float = 0.70
     HF_HOME: str = str(_PROJECT_ROOT / "models")
 
+    MAX_LENGTH: int = 512
+
     # ── Paths ─────────────────────────────────────────────────────────────────
     DOCS_ROOT: str = r"C:\Users\YourUser\Downloads\downloadsdocs\downloads"
     OUTPUT_DIR: str = "./models/classiflow_model"
@@ -37,6 +39,10 @@ class _Settings(BaseSettings):
     # ── W&B ───────────────────────────────────────────────────────────────────
     WANDB_ENTITY: str = "leonardo-a-heis"
     WANDB_PROJECT: str = "bert_tunning"
+
+    # ── Extraction ────────────────────────────────────────────────────────────
+    MIN_TEXT_FOR_OCR: int = 50
+    MIN_USABLE_TEXT: int = 20
 
     # ── Label mapping ─────────────────────────────────────────────────────────
     EXCLUDE_LABELS: set[str] = {"convenios"}
@@ -65,6 +71,10 @@ class _Settings(BaseSettings):
     @property
     def model_threshold(self) -> float:
         return self.THRESHOLD
+
+    @property
+    def max_length(self) -> int:
+        return self.MAX_LENGTH
 
 
 Settings = _Settings()
