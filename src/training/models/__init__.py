@@ -1,8 +1,9 @@
-from dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass(frozen=True)
-class ModelConfig:
+class ModelConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     name: str
     hf_id: str
     max_tokens: int
