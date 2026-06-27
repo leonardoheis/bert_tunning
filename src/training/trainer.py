@@ -1,28 +1,31 @@
-from typing import Any
-
 import numpy as np
+import numpy.typing as npt
 import torch
 from sklearn.metrics import f1_score
-from transformers import Trainer
+from transformers import EvalPrediction, PreTrainedModel, Trainer, TrainingArguments
 
 
 class WeightedTrainer(Trainer):
     """Trainer subclass that applies per-class weights to cross-entropy loss."""
 
     def __init__(
-        self, *args: Any, class_weights: torch.Tensor | None = None, **kwargs: Any
+        self,
+        model: PreTrainedModel | torch.nn.Module | None = None,
+        args: TrainingArguments | None = None,
+        class_weights: torch.Tensor | None = None,
+        **kwargs: object,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__(model=model, args=args, **kwargs)  # type: ignore[arg-type]
         self.class_weights = class_weights
 
     def compute_loss(  # type: ignore[override]
         self,
         model: torch.nn.Module,
-        inputs: dict[str, Any],
+        inputs: dict[str, torch.Tensor],
         return_outputs: bool = False,  # noqa: FBT001, FBT002
         num_items_in_batch: int | None = None,
         **_kwargs: object,
-    ) -> torch.Tensor | tuple[torch.Tensor, Any]:
+    ) -> torch.Tensor | tuple[torch.Tensor, object]:
         labels = inputs.pop("labels", None)
         outputs = model(**inputs)
         logits = outputs.get("logits")
@@ -41,10 +44,11 @@ class WeightedTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-def compute_metrics(eval_pred: tuple[Any, Any]) -> dict[str, float]:
-    logits, labels = eval_pred
+def compute_metrics(eval_pred: EvalPrediction) -> dict[str, float]:
+    logits: npt.NDArray[np.float32] = np.asarray(eval_pred.predictions)
+    labels: npt.NDArray[np.int_] = np.asarray(eval_pred.label_ids)
     predictions = np.argmax(logits, axis=-1)
     return {
-        "macro_f1": f1_score(labels, predictions, average="macro", zero_division=0),
+        "macro_f1": float(f1_score(labels, predictions, average="macro", zero_division=0)),
         "accuracy": float((predictions == labels).mean()),
     }

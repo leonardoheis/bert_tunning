@@ -1,11 +1,11 @@
 import logging
-from typing import Any
 
 import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from src.ingestion.extract import clean_text
+from src.schema import PredictResult
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class ClassiflowClassifier:
         self.model.to(self.device)
         log.info("Classifier ready on %s", self.device)
 
-    def predict_text(self, text: str) -> dict[str, Any]:
+    def predict_text(self, text: str) -> PredictResult:
         inputs = self.tokenizer(
             clean_text(text),
             truncation=True,
@@ -37,11 +37,11 @@ class ClassiflowClassifier:
         confidence = float(probs[pred_idx])
         label = self.model.config.id2label[pred_idx]
 
-        return {
-            "label": label,
-            "confidence": round(confidence, 4),
-            "certain": confidence >= self.threshold,
-            "all_scores": {
+        return PredictResult(
+            label=label,
+            confidence=round(confidence, 4),
+            certain=confidence >= self.threshold,
+            all_scores={
                 self.model.config.id2label[i]: round(float(p), 4) for i, p in enumerate(probs)
             },
-        }
+        )

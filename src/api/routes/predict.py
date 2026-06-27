@@ -44,4 +44,12 @@ async def predict(file: Annotated[UploadFile, File()]) -> PredictResponse:
     finally:
         Path(tmp_path).unlink(missing_ok=True)  # noqa: ASYNC240
 
-    return PredictResponse(**result)
+    data = result.model_dump()
+    return PredictResponse(
+        filename=data["filename"],
+        label=data["label"],
+        confidence=data["confidence"],
+        certain=data["certain"],
+        all_scores=data["all_scores"],
+        error=data["error"] or None,
+    )

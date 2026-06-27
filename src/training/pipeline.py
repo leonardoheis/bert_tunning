@@ -1,4 +1,5 @@
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -20,6 +21,9 @@ from src.training.split import make_split
 from src.training.tokenize import ClassiflowDataset, prepare_text
 from src.training.trainer import WeightedTrainer, compute_metrics
 from wandb_logger import WandbLogger
+
+if TYPE_CHECKING:
+    from src.schema import Hyperparams
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +97,7 @@ def run(  # noqa: PLR0913
     total_steps = steps_per_epoch * epochs
     warmup_steps = max(1, int(total_steps * 0.1))
 
-    hyperparams = {
+    hyperparams: Hyperparams = {
         "model": model_cfg.hf_id,
         "epochs": epochs,
         "batch_size": model_cfg.batch_size,

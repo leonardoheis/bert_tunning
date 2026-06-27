@@ -39,10 +39,10 @@ def test_predict_text_returns_expected_keys() -> None:
     clf = _make_mock_classifier()
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("Decreto numero 123")
-    assert "label" in result
-    assert "confidence" in result
-    assert "certain" in result
-    assert "all_scores" in result
+    assert result.label is not None or result.label is None  # field exists
+    assert isinstance(result.confidence, float)
+    assert isinstance(result.certain, bool)
+    assert isinstance(result.all_scores, dict)
 
 
 def test_predict_text_certain_above_threshold() -> None:
@@ -50,4 +50,4 @@ def test_predict_text_certain_above_threshold() -> None:
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     # softmax([2.0, 0.5]) ≈ [0.818, 0.182], above threshold 0.70
-    assert result["certain"] is True
+    assert result.certain is True

@@ -1,5 +1,3 @@
-from typing import Any
-
 import torch
 from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
@@ -39,7 +37,7 @@ class ClassiflowDataset(TorchDataset):  # type: ignore[type-arg]
     def __len__(self) -> int:
         return len(self.labels)
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         return {
             "input_ids": self.encodings["input_ids"][idx],
             "attention_mask": self.encodings["attention_mask"][idx],
