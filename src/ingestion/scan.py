@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import EXCLUDE_LABELS, FOLDER_TO_LABEL
 from src.ingestion.extract import extract_pdf
+from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -26,11 +26,11 @@ def build_dataset(
         if not folder.is_dir():
             continue
         folder_name = folder.name.lower()
-        if folder_name in EXCLUDE_LABELS:
+        if folder_name in Settings.EXCLUDE_LABELS:
             log.info("Skipping excluded folder: %s", folder_name)
             continue
 
-        label = FOLDER_TO_LABEL.get(folder_name, folder_name)
+        label = Settings.FOLDER_TO_LABEL.get(folder_name, folder_name)
         pdfs = list(folder.glob("*.pdf"))
         if max_docs_per_class:
             pdfs = pdfs[:max_docs_per_class]

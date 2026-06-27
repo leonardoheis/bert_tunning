@@ -2,13 +2,13 @@ import logging
 
 import click
 
-from config import OUTPUT_DIR
 from logger import setup_logging
 from src.inference.pipeline import predict_folder, predict_pdf
+from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = f"{OUTPUT_DIR}/final"
+_DEFAULT_MODEL = f"{Settings.OUTPUT_DIR}/final"
 
 
 @click.command("predict")

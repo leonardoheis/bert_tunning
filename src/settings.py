@@ -1,0 +1,70 @@
+import os
+from pathlib import Path
+
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_PROJECT_ROOT = Path(__file__).parent.parent
+
+
+class _Settings(BaseSettings):
+    # ── Server ────────────────────────────────────────────────────────────────
+    API_PORT: int = 8000
+    HOST: str = "127.0.0.1"
+    THRESHOLD: float = 0.70
+    HF_HOME: str = str(_PROJECT_ROOT / "models")
+
+    # ── Paths ─────────────────────────────────────────────────────────────────
+    DOCS_ROOT: str = r"C:\Users\YourUser\Downloads\downloadsdocs\downloads"
+    OUTPUT_DIR: str = "./models/classiflow_model"
+    CACHE_PATH: str = "./data/classiflow_cache.parquet"
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    MODEL_NAME: str = "xlm-roberta-base"
+    MODEL_KEY: str = "xlm-roberta"
+
+    # ── Training ──────────────────────────────────────────────────────────────
+    MAX_TOKENS: int = 512
+    CHUNK_STRATEGY: str = "first"
+    BATCH_SIZE: int = 8
+    GRAD_ACCUM: int = 8
+    EPOCHS: int = 15
+    LR: float = 2e-5
+    FORCE_FP32: bool = False
+    EARLY_STOP_PATIENCE: int = 5
+    SEED: int = 42
+
+    # ── W&B ───────────────────────────────────────────────────────────────────
+    WANDB_ENTITY: str = "leonardo-a-heis"
+    WANDB_PROJECT: str = "bert_tunning"
+
+    # ── Label mapping ─────────────────────────────────────────────────────────
+    EXCLUDE_LABELS: set[str] = {"convenios"}
+    FOLDER_TO_LABEL: dict[str, str] = {
+        "decretos": "decreto",
+        "decreto_concejo_municipal": "decreto_concejo_municipal",
+        "ordenanzas": "ordenanza",
+        "decreto_ordenanzas": "decreto_ordenanza",
+        "resoluciones": "resolucion",
+        "resoluciones_concejo_municipal": "resolucion_concejo_municipal",
+        "declaraciones_concejo_municipal": "declaracion_concejo_municipal",
+        "convenios": "convenio",
+    }
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    @model_validator(mode="after")
+    def _apply_hf_home(self) -> "_Settings":
+        os.environ.setdefault("HF_HOME", self.HF_HOME)
+        return self
+
+    @property
+    def model_threshold(self) -> float:
+        return self.THRESHOLD
+
+
+Settings = _Settings()

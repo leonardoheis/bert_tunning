@@ -2,18 +2,9 @@ import logging
 
 import click
 
-from config import (
-    CACHE_PATH,
-    CHUNK_STRATEGY,
-    DOCS_ROOT,
-    EARLY_STOP_PATIENCE,
-    EPOCHS,
-    MODEL_KEY,
-    OUTPUT_DIR,
-    SEED,
-)
 from logger import setup_logging
 from src.ingestion.pipeline import run as ingest
+from src.settings import Settings
 from src.training.models import get_model_config
 from src.training.pipeline import run as train_run
 
@@ -23,14 +14,14 @@ log = logging.getLogger(__name__)
 @click.command("train")
 @click.option(
     "--docs-root",
-    default=DOCS_ROOT,
+    default=Settings.DOCS_ROOT,
     show_default=True,
     help="Root folder with labeled PDF subfolders",
 )
 @click.option(
     "--model",
     "model_key",
-    default=MODEL_KEY,
+    default=Settings.MODEL_KEY,
     show_default=True,
     help="Model registry key (e.g. xlm-roberta, beto)",
 )
@@ -60,7 +51,7 @@ def train_cmd(  # noqa: PLR0913
 
     df = ingest(
         docs_root,
-        cache_path=CACHE_PATH,
+        cache_path=Settings.CACHE_PATH,
         use_ocr=not no_ocr,
         rebuild=rebuild_cache,
         max_docs_per_class=max_docs_per_class,
@@ -73,10 +64,10 @@ def train_cmd(  # noqa: PLR0913
     train_run(
         df,
         model_cfg,
-        epochs=EPOCHS,
-        early_stop_patience=EARLY_STOP_PATIENCE,
-        chunk_strategy=CHUNK_STRATEGY,
-        seed=SEED,
-        output_dir=OUTPUT_DIR,
+        epochs=Settings.EPOCHS,
+        early_stop_patience=Settings.EARLY_STOP_PATIENCE,
+        chunk_strategy=Settings.CHUNK_STRATEGY,
+        seed=Settings.SEED,
+        output_dir=Settings.OUTPUT_DIR,
         use_wandb=not no_wandb,
     )

@@ -4,8 +4,8 @@ import numpy as np
 import numpy.typing as npt
 
 import wandb
-from config import WANDB_ENTITY, WANDB_PROJECT
 from src.schema import Hyperparams, ReportDict
+from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -15,8 +15,8 @@ class WandbLogger:
 
     def __init__(self, *, enabled: bool = True) -> None:
         self._enabled = enabled
-        self._entity = WANDB_ENTITY
-        self._project = WANDB_PROJECT
+        self._entity = Settings.WANDB_ENTITY
+        self._project = Settings.WANDB_PROJECT
 
     @property
     def enabled(self) -> bool:

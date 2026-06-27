@@ -4,14 +4,14 @@ from pathlib import Path
 
 import click
 
-from config import CACHE_PATH, OUTPUT_DIR
 from logger import setup_logging
+from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
 _LOG_FILE = Path("logs/classiflow.log")
-_CACHE = Path(CACHE_PATH)
-_MODEL_DIR = Path(OUTPUT_DIR)
+_CACHE = Path(Settings.CACHE_PATH)
+_MODEL_DIR = Path(Settings.OUTPUT_DIR)
 
 
 def _release_log_file() -> None:
