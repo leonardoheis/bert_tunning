@@ -6,6 +6,7 @@ DOCS_ROOT = r"C:\Users\YourUser\Downloads\downloadsdocs\downloads"
 #   "dccuchile/bert-base-spanish-wwm-cased"  — BETO: original Spanish BERT
 #   "microsoft/deberta-v3-base"         — high accuracy but numerically unstable in practice
 MODEL_NAME = "xlm-roberta-base"
+MODEL_KEY = "xlm-roberta"   # key into src.training.models.MODEL_REGISTRY
 OUTPUT_DIR = "./models/classiflow_model"
 MAX_TOKENS = 512
 CHUNK_STRATEGY = "first"  # "first" | "middle"
