@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -20,11 +20,12 @@ def generate_html_report(
     hyperparams: dict,
 ) -> Path:
     _REPORTS_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_path = _REPORTS_DIR / f"run_{timestamp}.html"
 
     fig = make_subplots(
-        rows=2, cols=2,
+        rows=2,
+        cols=2,
         subplot_titles=(
             "Confusion Matrix",
             "Per-class F1",
@@ -33,7 +34,7 @@ def generate_html_report(
         ),
         specs=[
             [{"type": "heatmap"}, {"type": "bar"}],
-            [{"type": "bar"},     {"type": "table"}],
+            [{"type": "bar"}, {"type": "table"}],
         ],
         vertical_spacing=0.18,
         horizontal_spacing=0.12,
@@ -55,22 +56,30 @@ def generate_html_report(
             colorscale="Blues",
             showscale=False,
         ),
-        row=1, col=1,
+        row=1,
+        col=1,
     )
 
     # Per-class F1 bar
-    classes   = [k for k in report_dict if k not in ("accuracy", "macro avg", "weighted avg")]
+    classes = [k for k in report_dict if k not in ("accuracy", "macro avg", "weighted avg")]
     f1_scores = [report_dict[c]["f1-score"] for c in classes]
     fig.add_trace(
         go.Bar(x=classes, y=f1_scores, marker_color="steelblue", name="F1"),
-        row=1, col=2,
+        row=1,
+        col=2,
     )
 
     # Precision vs Recall bar
     precision = [report_dict[c]["precision"] for c in classes]
-    recall    = [report_dict[c]["recall"]    for c in classes]
-    fig.add_trace(go.Bar(x=classes, y=precision, name="Precision", marker_color="cornflowerblue"), row=2, col=1)
-    fig.add_trace(go.Bar(x=classes, y=recall,    name="Recall",    marker_color="lightcoral"),     row=2, col=1)
+    recall = [report_dict[c]["recall"] for c in classes]
+    fig.add_trace(
+        go.Bar(x=classes, y=precision, name="Precision", marker_color="cornflowerblue"),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(x=classes, y=recall, name="Recall", marker_color="lightcoral"), row=2, col=1
+    )
 
     # Hyperparameters table
     fig.add_trace(
@@ -81,7 +90,8 @@ def generate_html_report(
                 fill_color="lavender",
             ),
         ),
-        row=2, col=2,
+        row=2,
+        col=2,
     )
 
     macro = report_dict.get("macro avg", {})

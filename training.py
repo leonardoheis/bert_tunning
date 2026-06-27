@@ -47,6 +47,7 @@ class WeightedTrainer(Trainer):
         self,
         model: torch.nn.Module,
         inputs: dict,
+        *,
         return_outputs: bool = False,
         num_items_in_batch: int | None = None,
         **_kwargs: object,

@@ -107,6 +107,7 @@ def _resolve_cache_path(base_path: str, max_docs_per_class: int | None) -> Path:
 def load_or_build_dataset(
     docs_root: str,
     cache_path: str = "./classiflow_cache.parquet",
+    *,
     use_ocr: bool = True,
     rebuild: bool = False,
     max_docs_per_class: int | None = None,
