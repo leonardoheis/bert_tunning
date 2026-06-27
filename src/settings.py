@@ -18,8 +18,8 @@ class _Settings(BaseSettings):
 
     # ── Paths ─────────────────────────────────────────────────────────────────
     DOCS_ROOT: str = r"C:\Users\YourUser\Downloads\downloadsdocs\downloads"
-    OUTPUT_DIR: str = "./models/classiflow_model"
-    CACHE_PATH: str = "./data/classiflow_cache.parquet"
+    OUTPUT_DIR: str = "./models/bert_tunning_model"
+    CACHE_PATH: str = "./data/bert_tunning_cache.parquet"
 
     # ── Model ─────────────────────────────────────────────────────────────────
     MODEL_NAME: str = "xlm-roberta-base"

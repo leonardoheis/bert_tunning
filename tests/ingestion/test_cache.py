@@ -4,13 +4,13 @@ from src.ingestion.cache import _resolve_path
 
 
 def test_resolve_path_no_cap() -> None:
-    result = _resolve_path("./data/classiflow_cache.parquet", None)
-    assert result == Path("./data/classiflow_cache.parquet")
+    result = _resolve_path("./data/bert_tunning_cache.parquet", None)
+    assert result == Path("./data/bert_tunning_cache.parquet")
 
 
 def test_resolve_path_with_cap() -> None:
-    result = _resolve_path("./data/classiflow_cache.parquet", 100)
-    assert result == Path("./data/classiflow_cache_100.parquet")
+    result = _resolve_path("./data/bert_tunning_cache.parquet", 100)
+    assert result == Path("./data/bert_tunning_cache_100.parquet")
 
 
 def test_resolve_path_preserves_extension() -> None:

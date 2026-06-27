@@ -10,7 +10,7 @@ from src.schema import PredictResult
 log = logging.getLogger(__name__)
 
 
-class ClassiflowClassifier:
+class BertTunningClassifier:
     def __init__(self, model_path: str, *, confidence_threshold: float = 0.70) -> None:
         log.info("Loading classifier from %s", model_path)
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)

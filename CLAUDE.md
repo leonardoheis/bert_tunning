@@ -1,8 +1,8 @@
-# CLAUDE.md — Classiflow
+# CLAUDE.md — Bert Tunning
 
 ## Project Purpose
 
-Classiflow fine-tunes transformer models on Spanish municipal PDF documents to classify them by document type (decreto, ordenanza, resolución, etc.). Built for Argentine municipalities.
+Bert Tunning fine-tunes transformer models on Spanish municipal PDF documents to classify them by document type (decreto, ordenanza, resolución, etc.). Built for Argentine municipalities.
 
 ## Current State (June 2026)
 
@@ -63,7 +63,7 @@ uv run python main.py train --docs-root "C:\path\to\downloads"
 uv run python main.py train --model beto --max-docs-per-class 100
 uv run python main.py predict path/to/doc.pdf
 uv run python main.py predict-folder path/to/folder
-uv run python main.py serve --model-path ./models/classiflow_model/final
+uv run python main.py serve --model-path ./models/bert_tunning_model/final
 uv run python main.py clean
 ```
 
@@ -82,12 +82,12 @@ src/
 │   │   ├── xlm_roberta.py
 │   │   └── beto.py
 │   ├── split.py        stratified train/val/test split
-│   ├── tokenize.py     ClassiflowDataset, prepare_text
+│   ├── tokenize.py     Bert TunningDataset, prepare_text
 │   ├── trainer.py      WeightedTrainer, compute_metrics
 │   ├── evaluate.py     classification_report, confusion_matrix, HTML report
 │   └── pipeline.py     orchestrates split → tokenize → train → evaluate
 ├── inference/
-│   ├── classify.py     ClassiflowClassifier, predict_text
+│   ├── classify.py     Bert TunningClassifier, predict_text
 │   └── pipeline.py     predict_pdf, predict_folder
 ├── api/
 │   ├── app.py          FastAPI create_app()
@@ -130,12 +130,12 @@ To add a model: create `src/training/models/my_model.py` with `config = ModelCon
 |---|---|---|
 | `DOCS_ROOT` | *(set this)* | Root folder with labeled PDF subfolders |
 | `MODEL_KEY` | `"xlm-roberta"` | Key into `MODEL_REGISTRY` |
-| `OUTPUT_DIR` | `./models/classiflow_model` | Fine-tuned model output path |
+| `OUTPUT_DIR` | `./models/bert_tunning_model` | Fine-tuned model output path |
 | `EPOCHS` | `15` | Max training epochs |
 | `EARLY_STOP_PATIENCE` | `5` | Patience (eval epochs) for macro-F1 early stopping |
 | `CHUNK_STRATEGY` | `"first"` | `"first"` or `"middle"` (first 256 + last 256 tokens) |
 | `SEED` | `42` | Random seed |
-| `CACHE_PATH` | `./data/classiflow_cache.parquet` | Parquet dataset cache |
+| `CACHE_PATH` | `./data/bert_tunning_cache.parquet` | Parquet dataset cache |
 | `WANDB_ENTITY` | `leonardo-a-heis` | W&B account |
 | `WANDB_PROJECT` | `bert_tunning` | W&B project name |
 

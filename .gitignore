@@ -205,12 +205,11 @@ desktop.ini
 # Models — large binary weights, tracked via Git LFS or stored externally
 # Keep the models/ folder structure but ignore downloaded/trained weights
 models/hub/
-models/classiflow_model/
-models/classiflow_deberta_model/
+models/bert_tunning_model/
 
 # Cache / data
 data/
-classiflow_predictions.csv
+bert_tunning_predictions.csv
 
 #Sample files
 samples/

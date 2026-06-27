@@ -106,7 +106,7 @@ def generate_html_report(
     accuracy = float(accuracy_raw) if isinstance(accuracy_raw, float) else 0.0
     fig.update_layout(
         title_text=(
-            f"Classiflow — Experiment Report  |  "
+            f"Bert Tunning — Experiment Report  |  "
             f"macro F1: {macro_f1:.3f}  "
             f"accuracy: {accuracy:.3f}  |  {timestamp}"
         ),

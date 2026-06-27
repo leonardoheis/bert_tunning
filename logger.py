@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 _LOG_DIR = Path(__file__).parent / "logs"
-_LOG_FILE = _LOG_DIR / "classiflow.log"
+_LOG_FILE = _LOG_DIR / "bert_tunning.log"
 
 _FMT = "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"

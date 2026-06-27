@@ -1,5 +1,5 @@
 [project]
-name = "classiflow"
+name = "bert-tunning"
 version = "0.1.0"
 description = "Spanish municipal document classifier — fine-tunes transformer models on PDF corpora"
 readme = "README.md"

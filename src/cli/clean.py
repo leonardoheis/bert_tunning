@@ -9,7 +9,7 @@ from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
-_LOG_FILE = Path("logs/classiflow.log")
+_LOG_FILE = Path("logs/bert_tunning.log")
 _CACHE = Path(Settings.CACHE_PATH)
 _MODEL_DIR = Path(Settings.OUTPUT_DIR)
 

@@ -10,7 +10,7 @@ from src.settings import Settings
 
 @click.group()
 def cli() -> None:
-    """Classiflow — Spanish municipal document classifier."""
+    """Bert Tunning — Spanish municipal document classifier."""
 
 
 cli.add_command(train_cmd, name="train")

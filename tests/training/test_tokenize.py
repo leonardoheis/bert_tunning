@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import torch
 
-from src.training.tokenize import ClassiflowDataset, prepare_text
+from src.training.tokenize import BertTunningDataset, prepare_text
 
 
 def _mock_tokenizer(max_length: int = 512) -> MagicMock:
@@ -33,13 +33,13 @@ DATASET_SIZE = 2
 
 def test_dataset_len() -> None:
     tok = _mock_tokenizer()
-    ds = ClassiflowDataset(["doc1", "doc2"], [0, 1], tok, max_length=512)
+    ds = BertTunningDataset(["doc1", "doc2"], [0, 1], tok, max_length=512)
     assert len(ds) == DATASET_SIZE
 
 
 def test_dataset_getitem_keys() -> None:
     tok = _mock_tokenizer()
-    ds = ClassiflowDataset(["doc1", "doc2"], [0, 1], tok, max_length=512)
+    ds = BertTunningDataset(["doc1", "doc2"], [0, 1], tok, max_length=512)
     item = ds[0]
     assert "input_ids" in item
     assert "attention_mask" in item

@@ -45,7 +45,7 @@ def predict_cmd(
 @click.option("--model-path", default=_DEFAULT_MODEL, show_default=True)
 @click.option("--threshold", default=0.70, show_default=True)
 @click.option("--no-ocr", is_flag=True, default=False)
-@click.option("--output", default="classiflow_predictions.csv", show_default=True)
+@click.option("--output", default="bert_tunning_predictions.csv", show_default=True)
 @click.option("--debug", is_flag=True, default=False)
 def predict_folder_cmd(  # noqa: PLR0913
     folder_path: str,

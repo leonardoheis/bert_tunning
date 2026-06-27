@@ -2,13 +2,13 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.exceptions import ClassiflowError
+from src.exceptions import BertTunningError
 
 log = logging.getLogger(__name__)
 
 
 @dataclass
-class PDFExtractionError(ClassiflowError):
+class PDFExtractionError(BertTunningError):
     pdf_path: str
     cause: Exception
 
@@ -22,7 +22,7 @@ class PDFExtractionError(ClassiflowError):
 
 
 @dataclass
-class OCRError(ClassiflowError):
+class OCRError(BertTunningError):
     pdf_path: str
     cause: Exception
 

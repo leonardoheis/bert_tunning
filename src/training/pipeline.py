@@ -18,7 +18,7 @@ from transformers import (
 from src.training.evaluate import run_evaluation
 from src.training.models import ModelConfig
 from src.training.split import make_split
-from src.training.tokenize import ClassiflowDataset, prepare_text
+from src.training.tokenize import BertTunningDataset, prepare_text
 from src.training.trainer import WeightedTrainer, compute_metrics
 from wandb_logger import WandbLogger
 
@@ -40,7 +40,7 @@ def run(  # noqa: PLR0913
     use_wandb: bool = True,
 ) -> tuple[Trainer, LabelEncoder]:
     log.info("=" * 60)
-    log.info("CLASSIFLOW — FINE-TUNING %s", model_cfg.hf_id)
+    log.info("BERT TUNNING — FINE-TUNING %s", model_cfg.hf_id)
     log.info("=" * 60)
 
     le = LabelEncoder()
@@ -65,16 +65,16 @@ def run(  # noqa: PLR0913
     def _texts(split_df: pd.DataFrame, strategy: str) -> list[str]:
         return [prepare_text(t, tokenizer, strategy) for t in split_df["text"]]
 
-    train_ds = ClassiflowDataset(
+    train_ds = BertTunningDataset(
         _texts(train_df, chunk_strategy),
         train_df["label_id"].tolist(),
         tokenizer,
         model_cfg.max_tokens,
     )
-    val_ds = ClassiflowDataset(
+    val_ds = BertTunningDataset(
         _texts(val_df, "first"), val_df["label_id"].tolist(), tokenizer, model_cfg.max_tokens
     )
-    test_ds = ClassiflowDataset(
+    test_ds = BertTunningDataset(
         _texts(test_df, "first"), test_df["label_id"].tolist(), tokenizer, model_cfg.max_tokens
     )
 

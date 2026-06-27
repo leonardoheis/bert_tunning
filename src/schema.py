@@ -1,10 +1,10 @@
-"""Shared Pydantic model definitions used across the Classiflow pipeline."""
+"""Shared Pydantic model definitions used across the Bert Tunning pipeline."""
 
 from pydantic import BaseModel
 
 
 class PredictResult(BaseModel):
-    """Return value from ClassiflowClassifier.predict_text and predict_pdf."""
+    """Return value from BertTunningClassifier.predict_text and predict_pdf."""
 
     label: str | None = None
     confidence: float = 0.0

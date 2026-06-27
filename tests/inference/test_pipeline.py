@@ -2,10 +2,10 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from src.inference.classify import ClassiflowClassifier
+from src.inference.classify import BertTunningClassifier
 
 
-def _make_mock_classifier() -> ClassiflowClassifier:
+def _make_mock_classifier() -> BertTunningClassifier:
     asc_path = "src.inference.classify.AutoModelForSequenceClassification.from_pretrained"
     with (
         patch("src.inference.classify.AutoTokenizer.from_pretrained") as mock_tok,
@@ -27,7 +27,7 @@ def _make_mock_classifier() -> ClassiflowClassifier:
         model.return_value.logits = logits
         mock_mdl.return_value = model
 
-        clf = ClassiflowClassifier.__new__(ClassiflowClassifier)
+        clf = BertTunningClassifier.__new__(BertTunningClassifier)
         clf.tokenizer = tokenizer
         clf.model = model
         clf.threshold = 0.70

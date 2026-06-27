@@ -8,7 +8,7 @@ def create_app(model_path: str, threshold: float = 0.70) -> FastAPI:
     configure(model_path, threshold)
 
     app = FastAPI(
-        title="Classiflow API",
+        title="Bert Tunning API",
         description="Classifies Spanish municipal PDF documents",
         version="0.1.0",
     )

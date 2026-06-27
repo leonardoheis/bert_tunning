@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.inference.classify import ClassiflowClassifier
+from src.inference.classify import BertTunningClassifier
 from src.ingestion.extract import extract_pdf
 from src.schema import PredictResult
 
@@ -17,7 +17,7 @@ def predict_pdf(
     threshold: float = 0.70,
     use_ocr: bool = True,
 ) -> PredictResult:
-    clf = ClassiflowClassifier(model_path, confidence_threshold=threshold)
+    clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
     log.info("Classifying: %s", Path(pdf_path).name)
     text = extract_pdf(pdf_path, use_ocr_fallback=use_ocr)
 
@@ -44,7 +44,7 @@ def predict_folder(
     threshold: float = 0.70,
     use_ocr: bool = True,
 ) -> pd.DataFrame:
-    clf = ClassiflowClassifier(model_path, confidence_threshold=threshold)
+    clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
     pdfs = sorted(Path(folder_path).glob("*.pdf"))
     log.info("Classifying %d PDFs in %s", len(pdfs), folder_path)
 

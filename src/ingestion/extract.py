@@ -2,7 +2,7 @@ import contextlib
 import logging
 from pathlib import Path
 
-from src.exceptions import ClassiflowError
+from src.exceptions import BertTunningError
 from src.ingestion._text import clean_text
 from src.ingestion.extractors import ExtractorBase, MarkItDownExtractor, OCRExtractor
 from src.settings import Settings
@@ -20,7 +20,7 @@ def extract_pdf(pdf_path: str, *, use_ocr_fallback: bool = True) -> str | None:
     for extractor in chain:
         if len(text) >= Settings.MIN_TEXT_FOR_OCR:
             break
-        with contextlib.suppress(ClassiflowError):
+        with contextlib.suppress(BertTunningError):
             text = extractor.extract(pdf_path)
 
     if len(text) < Settings.MIN_USABLE_TEXT:

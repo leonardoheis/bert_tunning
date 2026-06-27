@@ -1,4 +1,4 @@
-# Classiflow
+# Bert Tunning
 
 Fine-tunes transformer models on Spanish municipal PDF documents to classify them by document type (decreto, ordenanza, resolución, etc.).
 
@@ -55,7 +55,7 @@ Edit `config.py` before running:
 |---|---|---|
 | `DOCS_ROOT` | *(set this)* | Root folder containing labeled subfolders of PDFs |
 | `MODEL_KEY` | `xlm-roberta` | Model registry key — see `src/training/models/` |
-| `OUTPUT_DIR` | `./models/classiflow_model` | Where the fine-tuned model is saved |
+| `OUTPUT_DIR` | `./models/bert_tunning_model` | Where the fine-tuned model is saved |
 | `EPOCHS` | `15` | Max training epochs |
 | `EARLY_STOP_PATIENCE` | `5` | Epochs without macro-F1 improvement before stopping |
 | `CHUNK_STRATEGY` | `first` | `first` = first 512 tokens; `middle` = first 256 + last 256 |
@@ -109,7 +109,7 @@ uv run python main.py train --docs-root "C:\path\to\downloads" --no-wandb
 # Single PDF
 uv run python main.py predict path/to/documento.pdf
 
-# Folder of PDFs (saves results to classiflow_predictions.csv)
+# Folder of PDFs (saves results to bert_tunning_predictions.csv)
 uv run python main.py predict-folder path/to/folder
 ```
 
@@ -129,7 +129,7 @@ Output:
 ### Serve inference API
 
 ```powershell
-uv run python main.py serve --model-path ./models/classiflow_model/final
+uv run python main.py serve --model-path ./models/bert_tunning_model/final
 ```
 
 - `POST /predict` — upload a PDF, returns JSON with label, confidence, and all scores
@@ -163,7 +163,7 @@ uv run poe coverage   # test coverage report
 
 ## Logging
 
-Every run appends to `logs/classiflow.log`:
+Every run appends to `logs/bert_tunning.log`:
 
 ```
 2026-06-27 14:32:01 [INFO] training — Training started — 15 epochs, effective batch 64

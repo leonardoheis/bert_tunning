@@ -9,14 +9,14 @@ from transformers import Trainer
 
 from reporting import generate_html_report
 from src.schema import Hyperparams, ReportDict
-from src.training.tokenize import ClassiflowDataset
+from src.training.tokenize import BertTunningDataset
 
 log = logging.getLogger(__name__)
 
 
 def run_evaluation(
     trainer: Trainer,
-    test_ds: ClassiflowDataset,
+    test_ds: BertTunningDataset,
     le: LabelEncoder,
     hyperparams: Hyperparams,
 ) -> tuple[ReportDict, npt.NDArray[np.int_], list[int]]:
