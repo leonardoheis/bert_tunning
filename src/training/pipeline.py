@@ -17,6 +17,7 @@ from transformers import (
 
 from src.training.evaluate import run_evaluation
 from src.training.models import ModelConfig
+from src.training.options import TrainingRequest
 from src.training.split import make_split
 from src.training.tokenize import BertTunningDataset, prepare_text
 from src.training.trainer import WeightedTrainer, compute_metrics
@@ -28,16 +29,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def run(  # noqa: PLR0913
+def run(
     df: pd.DataFrame,
     model_cfg: ModelConfig,
-    *,
-    epochs: int,
-    early_stop_patience: int,
-    chunk_strategy: str,
-    seed: int,
-    output_dir: str,
-    use_wandb: bool = True,
+    request: TrainingRequest,
 ) -> tuple[Trainer, LabelEncoder]:
     log.info("=" * 60)
     log.info("BERT TUNNING — FINE-TUNING %s", model_cfg.hf_id)
@@ -50,7 +45,7 @@ def run(  # noqa: PLR0913
     num_labels = len(le.classes_)
     log.info("%d classes: %s", num_labels, list(le.classes_))
 
-    train_df, val_df, test_df = make_split(df, seed=seed)
+    train_df, val_df, test_df = make_split(df, seed=request.seed)
 
     raw_weights = compute_class_weight(
         class_weight="balanced",
@@ -66,7 +61,7 @@ def run(  # noqa: PLR0913
         return [prepare_text(t, tokenizer, strategy) for t in split_df["text"]]
 
     train_ds = BertTunningDataset(
-        _texts(train_df, chunk_strategy),
+        _texts(train_df, request.chunk_strategy),
         train_df["label_id"].tolist(),
         tokenizer,
         model_cfg.max_tokens,
@@ -94,12 +89,12 @@ def run(  # noqa: PLR0913
     log.info("Mixed precision: %s", precision)
 
     steps_per_epoch = max(1, len(train_ds) // (model_cfg.batch_size * model_cfg.grad_accum))
-    total_steps = steps_per_epoch * epochs
+    total_steps = steps_per_epoch * request.epochs
     warmup_steps = max(1, int(total_steps * 0.1))
 
     hyperparams: Hyperparams = {
         "model": model_cfg.hf_id,
-        "epochs": epochs,
+        "epochs": request.epochs,
         "batch_size": model_cfg.batch_size,
         "grad_accum": model_cfg.grad_accum,
         "effective_batch": model_cfg.batch_size * model_cfg.grad_accum,
@@ -110,12 +105,12 @@ def run(  # noqa: PLR0913
         "num_classes": num_labels,
     }
 
-    wb = WandbLogger(enabled=use_wandb)
+    wb = WandbLogger(enabled=request.use_wandb)
     wb.init(hyperparams)
 
     args = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=epochs,
+        output_dir=request.output_dir,
+        num_train_epochs=request.epochs,
         per_device_train_batch_size=model_cfg.batch_size,
         per_device_eval_batch_size=model_cfg.batch_size,
         gradient_accumulation_steps=model_cfg.grad_accum,
@@ -132,7 +127,7 @@ def run(  # noqa: PLR0913
         greater_is_better=True,
         logging_steps=10,
         report_to=wb.report_to,
-        seed=seed,
+        seed=request.seed,
         dataloader_num_workers=4,
     )
 
@@ -144,12 +139,12 @@ def run(  # noqa: PLR0913
         compute_metrics=compute_metrics,
         processing_class=tokenizer,
         class_weights=class_weights,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=early_stop_patience)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=request.early_stop_patience)],
     )
-    log.info("Early stopping: patience=%d epochs on macro_f1", early_stop_patience)
+    log.info("Early stopping: patience=%d epochs on macro_f1", request.early_stop_patience)
     log.info(
         "Training — %d epochs, effective batch %d",
-        epochs,
+        request.epochs,
         model_cfg.batch_size * model_cfg.grad_accum,
     )
 
@@ -160,7 +155,7 @@ def run(  # noqa: PLR0913
     wb.log_results(report_dict, y_true, y_pred, list(le.classes_))
     wb.finish()
 
-    save_path = f"{output_dir}/final"
+    save_path = f"{request.output_dir}/final"
     trainer.save_model(save_path)
     tokenizer.save_pretrained(save_path)
     log.info("Model saved to %s", save_path)

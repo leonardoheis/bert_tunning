@@ -1,14 +1,47 @@
 import logging
 
 import click
+from pydantic import BaseModel
 
 from logger import setup_logging
 from src.ingestion.pipeline import run as ingest
 from src.settings import Settings
 from src.training.models import get_model_config
+from src.training.options import TrainingRequest
 from src.training.pipeline import run as train_run
 
 log = logging.getLogger(__name__)
+
+
+class TrainOptions(BaseModel):
+    docs_root: str = Settings.DOCS_ROOT
+    model_key: str = Settings.MODEL_KEY
+    max_docs_per_class: int | None = None
+    rebuild_cache: bool = False
+    no_ocr: bool = False
+    no_wandb: bool = False
+    debug: bool = False
+
+
+def _run_train(opts: TrainOptions) -> None:
+    setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+
+    model_cfg = get_model_config(opts.model_key)
+    log.info("Using model: %s (%s)", model_cfg.name, model_cfg.hf_id)
+
+    df = ingest(
+        opts.docs_root,
+        cache_path=Settings.CACHE_PATH,
+        use_ocr=not opts.no_ocr,
+        rebuild=opts.rebuild_cache,
+        max_docs_per_class=opts.max_docs_per_class,
+    )
+
+    if len(df) == 0:
+        log.error("No documents found. Check --docs-root: %s", opts.docs_root)
+        return
+
+    train_run(df, model_cfg, TrainingRequest(use_wandb=not opts.no_wandb))
 
 
 @click.command("train")
@@ -34,41 +67,6 @@ log = logging.getLogger(__name__)
 @click.option("--no-ocr", is_flag=True, default=False, help="Skip OCR fallback")
 @click.option("--no-wandb", is_flag=True, default=False, help="Disable W&B logging")
 @click.option("--debug", is_flag=True, default=False, help="Enable DEBUG logging")
-def train_cmd(  # noqa: PLR0913
-    docs_root: str,
-    model_key: str,
-    max_docs_per_class: int | None,
-    *,
-    rebuild_cache: bool,
-    no_ocr: bool,
-    no_wandb: bool,
-    debug: bool,
-) -> None:
+def train_cmd(**kwargs: str | int | bool | None) -> None:
     """Fine-tune a transformer model on municipal PDF documents."""
-    setup_logging(level=logging.DEBUG if debug else logging.INFO)
-
-    model_cfg = get_model_config(model_key)
-    log.info("Using model: %s (%s)", model_cfg.name, model_cfg.hf_id)
-
-    df = ingest(
-        docs_root,
-        cache_path=Settings.CACHE_PATH,
-        use_ocr=not no_ocr,
-        rebuild=rebuild_cache,
-        max_docs_per_class=max_docs_per_class,
-    )
-
-    if len(df) == 0:
-        log.error("No documents found. Check --docs-root: %s", docs_root)
-        return
-
-    train_run(
-        df,
-        model_cfg,
-        epochs=Settings.EPOCHS,
-        early_stop_patience=Settings.EARLY_STOP_PATIENCE,
-        chunk_strategy=Settings.CHUNK_STRATEGY,
-        seed=Settings.SEED,
-        output_dir=Settings.OUTPUT_DIR,
-        use_wandb=not no_wandb,
-    )
+    _run_train(TrainOptions.model_validate(kwargs))
