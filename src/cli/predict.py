@@ -29,12 +29,12 @@ def predict_cmd(
     result = predict_pdf(model_path, pdf_path, threshold=threshold, use_ocr=not no_ocr)
 
     click.echo(f"\n{'─' * 50}")
-    click.echo(f"  File      : {result.get('filename', pdf_path)}")
-    click.echo(f"  Label     : {result['label']}")
-    click.echo(f"  Confidence: {result['confidence']:.2%}")
-    click.echo(f"  Certain   : {result['certain']}")
+    click.echo(f"  File      : {result.filename or pdf_path}")
+    click.echo(f"  Label     : {result.label}")
+    click.echo(f"  Confidence: {result.confidence:.2%}")
+    click.echo(f"  Certain   : {result.certain}")
     click.echo("\n  All scores:")
-    for lbl, sc in sorted(result.get("all_scores", {}).items(), key=lambda x: -x[1]):
+    for lbl, sc in sorted(result.all_scores.items(), key=lambda x: -x[1]):
         bar = "█" * int(sc * 40)
         click.echo(f"    {lbl:<38} {sc:.4f}  {bar}")
 

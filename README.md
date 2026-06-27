@@ -1,36 +1,36 @@
 # Classiflow
 
-Fine-tunes a transformer model on municipal PDF documents to classify them by document type (decreto, ordenanza, resolución, etc.).
+Fine-tunes transformer models on Spanish municipal PDF documents to classify them by document type (decreto, ordenanza, resolución, etc.).
 
-The default model is [xlm-roberta-base](https://huggingface.co/xlm-roberta-base), a stable multilingual model with strong Spanish support. Alternative Spanish models can be selected in `config.py`.
+The default model is [xlm-roberta-base](https://huggingface.co/xlm-roberta-base) — stable multilingual model with strong Spanish support. Additional models (e.g. BETO) are available via the model registry in `src/training/models/`.
 
 ## How it works
 
 ```
 PDF files
-   └── extraction.py   →  MarkItDown extracts text; EasyOCR fallback for scanned pages
-         └── dataset.py    →  builds a labeled DataFrame, caches full text to Parquet (data/)
-               └── training.py   →  fine-tunes the model, saves best checkpoint by macro-F1
-                     └── classifier.py →  loads saved model, runs inference on new PDFs
+   └── src/ingestion/    →  extract text (MarkItDown + EasyOCR fallback), scan folders, cache to Parquet
+         └── src/training/   →  fine-tune model, save best checkpoint by macro-F1, log to W&B
+               └── src/inference/  →  load saved model, classify new PDFs
+                     └── src/api/        →  expose POST /predict via FastAPI
 ```
-
-Base model weights download once to `models/hub/`. Fine-tuned weights are saved to `models/classiflow_model/final/`. All runs are logged to `logs/classiflow.log` and the console.
 
 ## Project structure
 
 ```
-.
-├── main.py                  # CLI entry point
-├── config.py                # all constants and hyperparameters
-├── extraction.py            # PDF → text (MarkItDown + EasyOCR fallback)
-├── dataset.py               # dataset builder, Parquet cache, PyTorch Dataset
-├── training.py              # training loop, evaluation, model saving
-├── classifier.py            # inference wrapper for trained model
-├── logger.py                # logging setup (console + file)
-├── data/                    # Parquet cache files (git-ignored)
-├── models/                  # base model cache + fine-tuned checkpoints (git-ignored)
-├── logs/                    # run logs (git-ignored)
-└── pyproject.toml
+src/
+├── ingestion/     extract.py · scan.py · cache.py · pipeline.py
+├── training/
+│   ├── models/    __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py
+│   └──            split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py
+├── inference/     classify.py · pipeline.py
+├── api/           app.py · routes/predict.py
+└── cli/           train.py · predict.py · clean.py
+
+config.py          constants and MODEL_KEY
+wandb_logger.py    WandbLogger class
+reporting.py       HTML evaluation report
+logger.py          logging setup
+main.py            Click CLI entry point
 ```
 
 ## Requirements
@@ -45,7 +45,7 @@ Base model weights download once to `models/hub/`. Fine-tuned weights are saved 
 uv sync
 ```
 
-> `torch` and `torchvision` are pulled from the PyTorch CUDA 11.8 index automatically via `[tool.uv.sources]` in `pyproject.toml`.
+> `torch` is pulled from the PyTorch CUDA 11.8 index automatically via `[tool.uv.sources]` in `pyproject.toml`.
 
 ## Configuration
 
@@ -54,24 +54,20 @@ Edit `config.py` before running:
 | Variable | Default | Description |
 |---|---|---|
 | `DOCS_ROOT` | *(set this)* | Root folder containing labeled subfolders of PDFs |
-| `MODEL_NAME` | `xlm-roberta-base` | Base HuggingFace model (see options below) |
+| `MODEL_KEY` | `xlm-roberta` | Model registry key — see `src/training/models/` |
 | `OUTPUT_DIR` | `./models/classiflow_model` | Where the fine-tuned model is saved |
-| `BATCH_SIZE` | `8` | Per-device batch size |
-| `GRAD_ACCUM` | `8` | Gradient accumulation steps (effective batch = 64) |
 | `EPOCHS` | `15` | Max training epochs |
 | `EARLY_STOP_PATIENCE` | `5` | Epochs without macro-F1 improvement before stopping |
-| `LR` | `2e-5` | Learning rate |
 | `CHUNK_STRATEGY` | `first` | `first` = first 512 tokens; `middle` = first 256 + last 256 |
 
-### Model options
+Model hyperparameters (lr, batch size, etc.) live in the model registry — see `src/training/models/xlm_roberta.py`.
 
-```python
-# config.py
-MODEL_NAME = "xlm-roberta-base"                       # recommended: stable, strong Spanish
-# MODEL_NAME = "PlanTL-GOB-ES/roberta-base-bne"       # Spanish-only RoBERTa
-# MODEL_NAME = "dccuchile/bert-base-spanish-wwm-cased" # BETO: original Spanish BERT
-# MODEL_NAME = "microsoft/deberta-v3-base"             # high accuracy, numerically unstable
-```
+### Available models
+
+| Key | Model | Notes |
+|---|---|---|
+| `xlm-roberta` | `xlm-roberta-base` | Default — stable, strong Spanish support |
+| `beto` | `dccuchile/bert-base-spanish-wwm-cased` | Spanish-only BERT |
 
 ## Expected folder structure
 
@@ -84,70 +80,40 @@ downloads/
 ├── resoluciones/
 ├── resoluciones_concejo_municipal/
 ├── declaraciones_concejo_municipal/
-└── convenios/                        ← excluded by default (see EXCLUDE_LABELS in config.py)
+└── convenios/                        ← excluded by default
 ```
-
-Each subfolder name maps to a label via `FOLDER_TO_LABEL` in `config.py`.
 
 ## Usage
 
 ### Train
 
 ```powershell
-uv run python main.py --mode train --docs_root "C:\path\to\downloads"
+uv run python main.py train --docs-root "C:\path\to\downloads"
+
+# Use BETO instead of XLM-RoBERTa
+uv run python main.py train --docs-root "C:\path\to\downloads" --model beto
+
+# Quick test run (100 docs per class)
+uv run python main.py train --docs-root "C:\path\to\downloads" --max-docs-per-class 100
+
+# Force re-extraction
+uv run python main.py train --docs-root "C:\path\to\downloads" --rebuild-cache
+
+# Disable W&B logging
+uv run python main.py train --docs-root "C:\path\to\downloads" --no-wandb
 ```
 
-On the first run, text is extracted from all PDFs and cached to `data/classiflow_cache.parquet` (one-time cost — can take several hours for large corpora). Subsequent runs load from cache. The best checkpoint by macro-F1 is saved automatically and early stopping halts training if no improvement is seen for `EARLY_STOP_PATIENCE` epochs.
+### Classify
 
 ```powershell
-# Force re-extraction (e.g. after adding new documents)
-uv run python main.py --mode train --rebuild_cache
+# Single PDF
+uv run python main.py predict path/to/documento.pdf
 
-# Skip OCR fallback for faster extraction (digital PDFs only)
-uv run python main.py --mode train --no_ocr
-```
-
-### Quick test run (sample mode)
-
-Cap how many PDFs are read per class to verify the pipeline end-to-end without waiting for full extraction. A separate cache file is created for each cap value so the full dataset cache is never overwritten.
-
-```powershell
-uv run python main.py --mode train --docs_root "C:\path\to\downloads" --max_docs_per_class 100
-```
-
-### Clean state
-
-Wipes logs, dataset cache, and model checkpoints so the next run starts completely fresh.
-
-```powershell
-# Reset everything, then train
-uv run python main.py --mode train --docs_root "C:\path\to\downloads" --clean
-
-# Quick clean + sample run to verify the pipeline
-uv run python main.py --mode train --docs_root "C:\path\to\downloads" --clean --max_docs_per_class 100
-
-# Just wipe state without running anything
-uv run python main.py --mode clean
-```
-
-What gets deleted:
-
-| Target | Path |
-|---|---|
-| Log file | `logs/classiflow.log` |
-| Dataset cache | `data/classiflow_cache*.parquet` |
-| Model checkpoints | `models/classiflow_model/` |
-
-> The base model weights in `models/hub/` are **not** deleted — re-downloading hundreds of MB on every clean would be wasteful.
-
-### Classify a single PDF
-
-```powershell
-uv run python main.py --mode predict --pdf "C:\path\to\documento.pdf"
+# Folder of PDFs (saves results to classiflow_predictions.csv)
+uv run python main.py predict-folder path/to/folder
 ```
 
 Output:
-
 ```
 ──────────────────────────────────────────────────
   File      : documento.pdf
@@ -158,43 +124,48 @@ Output:
   All scores:
     decreto                                0.9732  ████████████████████████████████████████
     ordenanza                              0.0121  ▌
-    ...
 ```
 
-### Classify a folder of PDFs
+### Serve inference API
 
 ```powershell
-uv run python main.py --mode predict_folder --folder "C:\path\to\folder"
+uv run python main.py serve --model-path ./models/classiflow_model/final
 ```
 
-Results are saved to `classiflow_predictions.csv`.
+- `POST /predict` — upload a PDF, returns JSON with label, confidence, and all scores
+- `GET /health` — returns `{"status": "ok"}`
 
-### All flags
+API docs at `http://localhost:8000/docs` (Swagger UI).
+
+### Clean state
+
+```powershell
+uv run python main.py clean
+```
+
+Deletes logs, dataset cache, and model checkpoints. Base model weights in `models/hub/` are preserved.
+
+### All options
 
 ```powershell
 uv run python main.py --help
+uv run python main.py train --help
+uv run python main.py serve --help
 ```
 
-| Flag | Default | Description |
-|---|---|---|
-| `--mode` | `train` | `train`, `predict`, `predict_folder`, or `clean` |
-| `--docs_root` | *(config)* | Root folder with labeled PDF subfolders (train mode) |
-| `--model_path` | `OUTPUT_DIR/final` | Path to saved model (predict modes) |
-| `--pdf` | — | Single PDF to classify |
-| `--folder` | — | Folder of PDFs to classify |
-| `--max_docs_per_class` | — | Cap docs per class for quick test runs |
-| `--rebuild_cache` | off | Force re-extraction even if cache exists |
-| `--no_ocr` | off | Skip OCR fallback (faster, digital PDFs only) |
-| `--threshold` | `0.70` | Min confidence to mark a prediction as certain |
-| `--clean` | off | Wipe logs, cache and model before running |
-| `--no_wandb` | off | Disable Weights & Biases logging |
-| `--debug` | off | Enable DEBUG level logging |
+## Development
+
+```powershell
+uv run poe check      # lint + typecheck + test
+uv run poe fmt        # auto-format
+uv run poe coverage   # test coverage report
+```
 
 ## Logging
 
-Every run appends to `logs/classiflow.log`. The same output is shown in the console:
+Every run appends to `logs/classiflow.log`:
 
 ```
-2026-06-25 14:32:01 [INFO    ] training — Training started — 15 epochs, effective batch 64
-2026-06-25 14:32:01 [WARNING ] extraction — Skipping doc.pdf — could not extract usable text
+2026-06-27 14:32:01 [INFO] training — Training started — 15 epochs, effective batch 64
+2026-06-27 14:32:01 [WARNING] extraction — Skipping doc.pdf — could not extract usable text
 ```

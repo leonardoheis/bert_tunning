@@ -2,10 +2,10 @@ import logging
 import sys
 from pathlib import Path
 
-_LOG_DIR  = Path(__file__).parent / "logs"
+_LOG_DIR = Path(__file__).parent / "logs"
 _LOG_FILE = _LOG_DIR / "classiflow.log"
 
-_FMT    = "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s"
+_FMT = "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -32,7 +32,14 @@ def setup_logging(level: int = logging.INFO) -> None:
 
     # Suppress noisy third-party loggers
     for noisy in (
-        "transformers", "accelerate", "datasets", "filelock", "urllib3",
-        "httpx", "httpcore", "huggingface_hub", "huggingface_hub.utils._http",
+        "transformers",
+        "accelerate",
+        "datasets",
+        "filelock",
+        "urllib3",
+        "httpx",
+        "httpcore",
+        "huggingface_hub",
+        "huggingface_hub.utils._http",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)

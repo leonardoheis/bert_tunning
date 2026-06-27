@@ -3,8 +3,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+from src.schema import Hyperparams, ReportDict
 
 log = logging.getLogger(__name__)
 
@@ -13,11 +16,9 @@ _REPORTS_DIR = Path(__file__).parent / "reports"
 
 def generate_html_report(
     label_names: list[str],
-    y_true: list[int],
-    y_pred: np.ndarray,
-    cm: np.ndarray,
-    report_dict: dict,
-    hyperparams: dict,
+    cm: npt.NDArray[np.int_],
+    report_dict: ReportDict,
+    hyperparams: Hyperparams,
 ) -> Path:
     _REPORTS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -60,9 +61,10 @@ def generate_html_report(
         col=1,
     )
 
-    # Per-class F1 bar
+    # Per-class F1 bar — skip summary rows and scalar entries
     classes = [k for k in report_dict if k not in ("accuracy", "macro avg", "weighted avg")]
-    f1_scores = [report_dict[c]["f1-score"] for c in classes]
+    class_dicts = [report_dict[c] for c in classes if isinstance(report_dict[c], dict)]
+    f1_scores = [float(m["f1-score"]) for m in class_dicts]  # type: ignore[index]
     fig.add_trace(
         go.Bar(x=classes, y=f1_scores, marker_color="steelblue", name="F1"),
         row=1,
@@ -70,8 +72,8 @@ def generate_html_report(
     )
 
     # Precision vs Recall bar
-    precision = [report_dict[c]["precision"] for c in classes]
-    recall = [report_dict[c]["recall"] for c in classes]
+    precision = [float(m["precision"]) for m in class_dicts]  # type: ignore[index]
+    recall = [float(m["recall"]) for m in class_dicts]  # type: ignore[index]
     fig.add_trace(
         go.Bar(x=classes, y=precision, name="Precision", marker_color="cornflowerblue"),
         row=2,
@@ -84,22 +86,28 @@ def generate_html_report(
     # Hyperparameters table
     fig.add_trace(
         go.Table(
-            header=dict(values=["Parameter", "Value"], fill_color="steelblue", font_color="white"),
-            cells=dict(
-                values=[list(hyperparams.keys()), list(hyperparams.values())],
-                fill_color="lavender",
-            ),
+            header={
+                "values": ["Parameter", "Value"],
+                "fill_color": "steelblue",
+                "font_color": "white",
+            },
+            cells={
+                "values": [list(hyperparams.keys()), list(hyperparams.values())],
+                "fill_color": "lavender",
+            },
         ),
         row=2,
         col=2,
     )
 
-    macro = report_dict.get("macro avg", {})
-    accuracy = report_dict.get("accuracy", 0.0)
+    macro_raw = report_dict.get("macro avg", {})
+    macro_f1 = float(macro_raw["f1-score"]) if isinstance(macro_raw, dict) else 0.0
+    accuracy_raw = report_dict.get("accuracy", 0.0)
+    accuracy = float(accuracy_raw) if isinstance(accuracy_raw, float) else 0.0
     fig.update_layout(
         title_text=(
             f"Classiflow — Experiment Report  |  "
-            f"macro F1: {macro.get('f1-score', 0):.3f}  "
+            f"macro F1: {macro_f1:.3f}  "
             f"accuracy: {accuracy:.3f}  |  {timestamp}"
         ),
         height=900,

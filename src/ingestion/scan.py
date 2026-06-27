@@ -16,7 +16,7 @@ def build_dataset(
     max_docs_per_class: int | None = None,
 ) -> pd.DataFrame:
     root = Path(docs_root)
-    records: list[dict] = []
+    records: list[dict[str, str]] = []
     skipped = 0
 
     if max_docs_per_class:
