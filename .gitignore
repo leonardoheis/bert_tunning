@@ -214,3 +214,6 @@ classiflow_predictions.csv
 
 #Sample files
 samples/
+
+# Claude Code session state
+.claude/
