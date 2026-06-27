@@ -2,8 +2,8 @@ import logging
 
 import numpy as np
 import numpy.typing as npt
-import wandb
 
+import wandb
 from config import WANDB_ENTITY, WANDB_PROJECT
 from src.schema import Hyperparams, ReportDict
 
