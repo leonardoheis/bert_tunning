@@ -17,7 +17,9 @@
 - All parquet caches go to `data/` (root, git-ignored)
 - All HTML reports go to `reports/` (root, git-ignored)
 - `ruff`, `mypy`, `pytest` must all pass after each task
-- Each task ends with a `git commit`
+- Each task ends with a `git commit` and a PR targeting **`feature/scaffold-migration`** (not `master`)
+- Worktrees branch off `feature/scaffold-migration`: `git worktree add -b task/N-name ../bert_tunning-taskN feature/scaffold-migration`
+- Final PR merges `feature/scaffold-migration` → `master` after all tasks are reviewed
 
 ---
 
