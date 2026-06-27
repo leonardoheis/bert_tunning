@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(uv:*)",
+      "Bash(pre-commit:*)",
+      "Bash(git:*)"
+    ]
+  }
+}
