@@ -1,5 +1,4 @@
 import logging
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -15,6 +14,7 @@ from transformers import (
     TrainingArguments,
 )
 
+from src.schema import Hyperparams
 from src.training.evaluate import run_evaluation
 from src.training.models import ModelConfig
 from src.training.options import TrainingRequest
@@ -22,9 +22,6 @@ from src.training.split import make_split
 from src.training.tokenize import BertTunningDataset, prepare_text
 from src.training.trainer import WeightedTrainer, compute_metrics
 from wandb_logger import WandbLogger
-
-if TYPE_CHECKING:
-    from src.schema import Hyperparams
 
 log = logging.getLogger(__name__)
 
@@ -92,18 +89,18 @@ def run(
     total_steps = steps_per_epoch * request.epochs
     warmup_steps = max(1, int(total_steps * 0.1))
 
-    hyperparams: Hyperparams = {
-        "model": model_cfg.hf_id,
-        "epochs": request.epochs,
-        "batch_size": model_cfg.batch_size,
-        "grad_accum": model_cfg.grad_accum,
-        "effective_batch": model_cfg.batch_size * model_cfg.grad_accum,
-        "learning_rate": model_cfg.lr,
-        "warmup_steps": warmup_steps,
-        "precision": precision,
-        "train_docs": len(train_df),
-        "num_classes": num_labels,
-    }
+    hyperparams = Hyperparams(
+        model=model_cfg.hf_id,
+        epochs=request.epochs,
+        batch_size=model_cfg.batch_size,
+        grad_accum=model_cfg.grad_accum,
+        effective_batch=model_cfg.batch_size * model_cfg.grad_accum,
+        learning_rate=model_cfg.lr,
+        warmup_steps=warmup_steps,
+        precision=precision,
+        train_docs=len(train_df),
+        num_classes=num_labels,
+    )
 
     wb = WandbLogger(enabled=request.use_wandb)
     wb.init(hyperparams)

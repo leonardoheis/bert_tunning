@@ -92,7 +92,10 @@ def generate_html_report(
                 "font_color": "white",
             },
             cells={
-                "values": [list(hyperparams.keys()), list(hyperparams.values())],
+                "values": [
+                    list(hyperparams.model_dump().keys()),
+                    list(hyperparams.model_dump().values()),
+                ],
                 "fill_color": "lavender",
             },
         ),

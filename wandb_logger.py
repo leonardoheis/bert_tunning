@@ -29,7 +29,7 @@ class WandbLogger:
     def init(self, hyperparams: Hyperparams) -> None:
         if not self._enabled:
             return
-        wandb.init(entity=self._entity, project=self._project, config=hyperparams)
+        wandb.init(entity=self._entity, project=self._project, config=hyperparams.model_dump())
         log.info("W&B run started: %s/%s", self._entity, self._project)
 
     def log_results(

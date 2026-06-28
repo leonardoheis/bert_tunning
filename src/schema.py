@@ -1,6 +1,6 @@
 """Shared Pydantic model definitions used across the Bert Tunning pipeline."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class PredictResult(BaseModel):
@@ -17,5 +17,17 @@ class PredictResult(BaseModel):
 # classification_report(output_dict=True) returns per-class dicts and scalar floats.
 ReportDict = dict[str, "dict[str, float] | float"]
 
-# Hyperparameters forwarded to W&B / HTML report — scalar values only.
-Hyperparams = dict[str, "str | int | float | bool"]
+
+class Hyperparams(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    epochs: int
+    batch_size: int
+    grad_accum: int
+    effective_batch: int
+    learning_rate: float
+    warmup_steps: int
+    precision: str
+    train_docs: int
+    num_classes: int
