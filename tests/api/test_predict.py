@@ -11,7 +11,7 @@ def test_health_endpoint() -> None:
     client = TestClient(app)
     response = client.get("/health")
     assert response.status_code == HTTPStatus.OK
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "healthy", "message": "The API is running smoothly."}
 
 
 def test_predict_rejects_non_pdf() -> None:

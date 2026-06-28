@@ -10,7 +10,7 @@ from src.ingestion.extract import extract_pdf
 
 from .schemas import PredictResponse
 
-router = APIRouter(prefix="/prediction", tags=["Prediction"])
+router = APIRouter(tags=["Prediction"])
 
 
 def _get_clf(request: Request) -> BertTunningClassifier:
