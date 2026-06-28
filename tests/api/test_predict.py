@@ -1,4 +1,5 @@
 from http import HTTPStatus
+from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +16,7 @@ def test_health_endpoint() -> None:
 
 def test_predict_rejects_non_pdf() -> None:
     app = create_app(model_path="fake/path")
+    app.state.clf = MagicMock()  # satisfy dependency; classifier is irrelevant to this assertion
     client = TestClient(app)
     response = client.post(
         "/predict",

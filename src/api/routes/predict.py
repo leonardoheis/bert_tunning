@@ -1,11 +1,13 @@
+import asyncio
 import tempfile
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from src.inference.pipeline import predict_pdf
+from src.inference.classify import BertTunningClassifier
+from src.ingestion.extract import extract_pdf
 
 router = APIRouter()
 
@@ -19,18 +21,15 @@ class PredictResponse(BaseModel):
     error: str | None = None
 
 
-_model_path: str = ""
-_threshold: float = 0.70
-
-
-def configure(model_path: str, threshold: float = 0.70) -> None:
-    global _model_path, _threshold  # noqa: PLW0603
-    _model_path = model_path
-    _threshold = threshold
+def _get_clf(request: Request) -> BertTunningClassifier:
+    return request.app.state.clf  # type: ignore[no-any-return]
 
 
 @router.post("/predict")
-async def predict(file: Annotated[UploadFile, File()]) -> PredictResponse:
+async def predict(
+    file: Annotated[UploadFile, File()],
+    clf: Annotated[BertTunningClassifier, Depends(_get_clf)],
+) -> PredictResponse:
     if not file.filename or not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
@@ -40,10 +39,21 @@ async def predict(file: Annotated[UploadFile, File()]) -> PredictResponse:
         tmp_path = tmp.name
 
     try:
-        result = predict_pdf(_model_path, tmp_path, threshold=_threshold, use_ocr=True)
+        text = await asyncio.to_thread(extract_pdf, tmp_path, use_ocr_fallback=True)
     finally:
-        Path(tmp_path).unlink(missing_ok=True)  # noqa: ASYNC240
+        await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
+    if text is None:
+        return PredictResponse(
+            filename=file.filename,
+            label=None,
+            confidence=0.0,
+            certain=False,
+            error="empty/unreadable document",
+        )
+
+    result = await asyncio.to_thread(clf.predict_text, text)
+    result.filename = file.filename
     data = result.model_dump()
     return PredictResponse(
         filename=data["filename"],
