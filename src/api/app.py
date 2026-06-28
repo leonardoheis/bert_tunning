@@ -3,8 +3,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from src.api.routes.predict import router as predict_router
 from src.inference.classify import BertTunningClassifier
+
+from .routes import ROUTERS
 
 
 def create_app(model_path: str, threshold: float = 0.70) -> FastAPI:
@@ -20,10 +21,7 @@ def create_app(model_path: str, threshold: float = 0.70) -> FastAPI:
         lifespan=lifespan,
     )
 
-    app.include_router(predict_router)
-
-    @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    for router in ROUTERS:
+        app.include_router(router)
 
     return app

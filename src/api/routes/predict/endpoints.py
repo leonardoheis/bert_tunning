@@ -4,21 +4,13 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from pydantic import BaseModel
 
 from src.inference.classify import BertTunningClassifier
 from src.ingestion.extract import extract_pdf
 
-router = APIRouter()
+from .schemas import PredictResponse
 
-
-class PredictResponse(BaseModel):
-    filename: str
-    label: str | None
-    confidence: float
-    certain: bool
-    all_scores: dict[str, float] = {}
-    error: str | None = None
+router = APIRouter(prefix="/prediction", tags=["Prediction"])
 
 
 def _get_clf(request: Request) -> BertTunningClassifier:

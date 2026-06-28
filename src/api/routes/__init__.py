@@ -1,3 +1,13 @@
-from src.api.routes.predict import PredictResponse, router
+from collections.abc import Iterable
 
-__all__ = ["PredictResponse", "router"]
+from fastapi import APIRouter
+
+from .health import health_router
+from .predict import PredictResponse, prediction_router
+
+ROUTERS: Iterable[APIRouter] = (
+    health_router,
+    prediction_router,
+)
+
+__all__ = ["ROUTERS", "PredictResponse", "health_router", "prediction_router"]
