@@ -1,6 +1,7 @@
 import logging
 
 import click
+from pydantic import BaseModel
 
 from logger import setup_logging
 from src.inference.pipeline import predict_folder, predict_pdf
@@ -8,13 +9,22 @@ from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = f"{Settings.OUTPUT_DIR}/final"
+
+class PredictFolderOptions(BaseModel):
+    folder_path: str
+    model_path: str = Settings.default_model_path
+    threshold: float = Settings.THRESHOLD
+    no_ocr: bool = False
+    output: str = "bert_tunning_predictions.csv"
+    debug: bool = False
 
 
 @click.command("predict")
 @click.argument("pdf_path", type=click.Path(exists=True))
-@click.option("--model-path", default=_DEFAULT_MODEL, show_default=True)
-@click.option("--threshold", default=0.70, show_default=True, help="Confidence threshold")
+@click.option("--model-path", default=Settings.default_model_path, show_default=True)
+@click.option(
+    "--threshold", default=Settings.THRESHOLD, show_default=True, help="Confidence threshold"
+)
 @click.option("--no-ocr", is_flag=True, default=False)
 @click.option("--debug", is_flag=True, default=False)
 def predict_cmd(
@@ -40,24 +50,24 @@ def predict_cmd(
         click.echo(f"    {lbl:<38} {sc:.4f}  {bar}")
 
 
+def _run_predict_folder(opts: PredictFolderOptions) -> None:
+    setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    df_out = predict_folder(
+        opts.model_path, opts.folder_path, threshold=opts.threshold, use_ocr=not opts.no_ocr
+    )
+    df_out.to_csv(opts.output, index=False)
+    log.info("Results saved to %s", opts.output)
+
+
 @click.command("predict-folder")
 @click.argument("folder_path", type=click.Path(exists=True, file_okay=False))
-@click.option("--model-path", default=_DEFAULT_MODEL, show_default=True)
-@click.option("--threshold", default=0.70, show_default=True)
+@click.option("--model-path", default=Settings.default_model_path, show_default=True)
+@click.option(
+    "--threshold", default=Settings.THRESHOLD, show_default=True, help="Confidence threshold"
+)
 @click.option("--no-ocr", is_flag=True, default=False)
 @click.option("--output", default="bert_tunning_predictions.csv", show_default=True)
 @click.option("--debug", is_flag=True, default=False)
-def predict_folder_cmd(  # noqa: PLR0913
-    folder_path: str,
-    model_path: str,
-    threshold: float,
-    *,
-    no_ocr: bool,
-    output: str,
-    debug: bool,
-) -> None:
+def predict_folder_cmd(**kwargs: str | float | bool) -> None:
     """Classify all PDFs in a folder and save results to CSV."""
-    setup_logging(level=logging.DEBUG if debug else logging.INFO)
-    df_out = predict_folder(model_path, folder_path, threshold=threshold, use_ocr=not no_ocr)
-    df_out.to_csv(output, index=False)
-    log.info("Results saved to %s", output)
+    _run_predict_folder(PredictFolderOptions.model_validate(kwargs))

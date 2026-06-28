@@ -30,10 +30,13 @@ class WeightedTrainer(Trainer):
         logits = outputs.get("logits")
 
         if self.class_weights is not None and labels is not None:
+            if not isinstance(self.model, PreTrainedModel):
+                msg = "WeightedTrainer requires a PreTrainedModel"
+                raise TypeError(msg)
             loss_fct = torch.nn.CrossEntropyLoss(
                 weight=self.class_weights.to(device=logits.device, dtype=logits.dtype)
             )
-            loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))  # type: ignore[union-attr]
+            loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
         else:
             loss = outputs.loss
 

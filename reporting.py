@@ -63,8 +63,8 @@ def generate_html_report(
 
     # Per-class F1 bar — skip summary rows and scalar entries
     classes = [k for k in report_dict if k not in ("accuracy", "macro avg", "weighted avg")]
-    class_dicts = [report_dict[c] for c in classes if isinstance(report_dict[c], dict)]
-    f1_scores = [float(m["f1-score"]) for m in class_dicts]  # type: ignore[index]
+    class_dicts = [v for c in classes if isinstance(v := report_dict[c], dict)]
+    f1_scores = [float(m["f1-score"]) for m in class_dicts]
     fig.add_trace(
         go.Bar(x=classes, y=f1_scores, marker_color="steelblue", name="F1"),
         row=1,
@@ -72,8 +72,8 @@ def generate_html_report(
     )
 
     # Precision vs Recall bar
-    precision = [float(m["precision"]) for m in class_dicts]  # type: ignore[index]
-    recall = [float(m["recall"]) for m in class_dicts]  # type: ignore[index]
+    precision = [float(m["precision"]) for m in class_dicts]
+    recall = [float(m["recall"]) for m in class_dicts]
     fig.add_trace(
         go.Bar(x=classes, y=precision, name="Precision", marker_color="cornflowerblue"),
         row=2,

@@ -76,5 +76,9 @@ class _Settings(BaseSettings):
     def max_length(self) -> int:
         return self.MAX_LENGTH
 
+    @property
+    def default_model_path(self) -> str:
+        return str(Path(self.OUTPUT_DIR) / "final")
+
 
 Settings = _Settings()

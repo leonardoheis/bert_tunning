@@ -19,7 +19,7 @@ def prepare_text(text: str, tokenizer: PreTrainedTokenizerBase, strategy: str = 
     return text
 
 
-class BertTunningDataset(TorchDataset):  # type: ignore[type-arg]
+class BertTunningDataset(TorchDataset[dict[str, torch.Tensor]]):
     def __init__(
         self,
         texts: list[str],
