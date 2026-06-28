@@ -76,6 +76,225 @@ indent-style = "space"
 line-ending = "auto"
 
 #########################
+# Bandit
+#########################
+
+[tool.bandit]
+skips = ["B101"]
+
+#########################
+# Pylint
+#########################
+
+[tool.pylint.main]
+extension-pkg-whitelist = ["mypy", "dependency_injector"]
+fail-on = ["I"]
+fail-under = 10
+ignore = []
+ignore-paths = []
+jobs = 0
+limit-inference-results = 1000
+load-plugins = [
+    "pylint.extensions.bad_builtin",
+    "pylint.extensions.code_style",
+    "pylint.extensions.comparison_placement",
+    "pylint.extensions.consider_refactoring_into_while_condition",
+    "pylint.extensions.docparams",
+    "pylint.extensions.dunder",
+    "pylint.extensions.eq_without_hash",
+    "pylint.extensions.for_any_all",
+    "pylint.extensions.magic_value",
+    "pylint.extensions.mccabe",
+    "pylint.extensions.no_self_use",
+    "pylint.extensions.overlapping_exceptions",
+    "pylint.extensions.private_import",
+    "pylint.extensions.redefined_loop_name",
+    "pylint.extensions.redefined_variable_type",
+    "pylint.extensions.set_membership",
+    "pylint.extensions.typing",
+    "pylint.extensions.while_used",
+    "pylint_pydantic",
+]
+py-version = "3.12"
+suggestion-mode = true
+
+[tool.pylint.basic]
+argument-naming-style = "snake_case"
+argument-rgx = "[a-z_][a-z0-9_]{2,30}$"
+attr-naming-style = "snake_case"
+attr-rgx = "[a-z_][a-z0-9_]{2,30}$"
+bad-names = ["foo", "bar", "baz", "toto", "tutu", "tata"]
+
+class-attribute-naming-style = "any"
+class-attribute-rgx = "([A-Za-z_][A-Za-z0-9_]{2,30}|(__.*__))$"
+class-const-naming-style = "UPPER_CASE"
+class-naming-style = "PascalCase"
+class-rgx = "[A-Z_][a-zA-Z0-9]+$"
+const-naming-style = "UPPER_CASE"
+const-rgx = "(([A-Z_][A-Z0-9_]*)|(__.*__))$"
+docstring-min-length = -1
+function-naming-style = "snake_case"
+function-rgx = "[a-z_][a-z0-9_]{2,30}$"
+good-names = ["i", "j", "k", "ex", "Run", "_"]
+include-naming-hint = true
+
+inlinevar-naming-style = "any"
+inlinevar-rgx = "[A-Za-z_][A-Za-z0-9_]*$"
+method-naming-style = "snake_case"
+method-rgx = "[a-z_][a-z0-9_]{2,30}$"
+module-naming-style = "snake_case"
+module-rgx = "(([a-z_][a-z0-9_]*)|([A-Z][a-zA-Z0-9]+))$"
+no-docstring-rgx = "^_"
+property-classes = ["abc.abstractproperty"]
+variable-naming-style = "snake_case"
+variable-rgx = "[a-z_][a-z0-9_]{2,30}$"
+
+[tool.pylint.classes]
+defining-attr-methods = ["__init__", "__new__", "setUp"]
+exclude-protected = ["_asdict", "_fields", "_replace", "_source", "_make"]
+valid-classmethod-first-arg = ["cls"]
+valid-metaclass-classmethod-first-arg = ["mcs"]
+
+[tool.pylint.deprecated_builtins]
+bad-functions = ["map", "filter"]
+
+[tool.pylint.design]
+max-args = 7
+max-attributes = 7
+max-bool-expr = 5
+max-branches = 12
+max-complexity = 10
+max-locals = 15
+max-parents = 7
+max-public-methods = 20
+max-returns = 6
+max-statements = 50
+
+[tool.pylint.exceptions]
+overgeneral-exceptions = ["'builtins.Exception'"]
+
+[tool.pylint.format]
+indent-after-paren = 4
+indent-string = "    "
+max-line-length = 120
+max-module-lines = 400
+
+
+[tool.pylint.imports]
+deprecated-modules = ["regsub", "TERMIOS", "Bastion", "rexec"]
+known-third-party = ["enchant"]
+
+
+[tool.pylint.logging]
+logging-format-style = "old"
+
+logging-modules = ["logging"]
+
+[tool.pylint."messages control"]
+confidence = [
+    "HIGH",
+    "CONTROL_FLOW",
+    "INFERENCE",
+    "INFERENCE_FAILURE",
+    "UNDEFINED",
+]
+
+disable = [
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "missing-module-docstring",
+    "subprocess-run-check",
+    "redefined-outer-name",                   # Incompatible with PyTest fixtures
+    "consider-using-assignment-expr",         # Too new syntax
+    "unused-import",                          # Check and fix by Ruff
+    "unused-variable",                        # Too many false positives
+    "invalid-name",                           # Too many false positives
+    "not-an-iterable",                        # Too many false positives
+    "assignment-from-no-return",              # Too many false positives
+    "magic-value-comparison",
+    "consider-using-namedtuple-or-dataclass",
+]
+
+enable = [
+    "bad-inline-option",
+    "file-ignored",
+    "useless-suppression",
+    "deprecated-pragma",
+    "use-symbolic-message-instead",
+    "deprecated-pragma",
+    "file-ignored",
+]
+
+[tool.pylint.method_args]
+timeout-methods = [
+    "requests.api.delete",
+    "requests.api.get",
+    "requests.api.head",
+    "requests.api.options",
+    "requests.api.patch",
+    "requests.api.post",
+    "requests.api.put",
+    "requests.api.request",
+]
+
+[tool.pylint.miscellaneous]
+notes = ["FIXME", "XXX", "TODO"]
+
+[tool.pylint.string_constant]
+check-quote-consistency = true
+
+[tool.pylint.parameter_documentation]
+accept-no-param-doc = true
+accept-no-raise-doc = true
+accept-no-return-doc = true
+accept-no-yields-doc = true
+default-docstring-type = "default"
+
+[tool.pylint.refactoring]
+max-nested-blocks = 5
+never-returning-functions = ["sys.exit", "argparse.parse_error"]
+
+[tool.pylint.reports]
+evaluation = "10.0 - ((float(5 * error + warning + refactor + convention) / statement) * 10)"
+score = true
+
+[tool.pylint.similarities]
+ignore-comments = true
+ignore-docstrings = true
+ignore-signatures = true
+min-similarity-lines = 6
+
+[tool.pylint.spelling]
+max-spelling-suggestions = 4
+spelling-ignore-comment-directives = "fmt: on,fmt: off,noqa:,noqa,nosec,isort:skip,mypy:"
+
+[tool.pylint.string]
+check-str-concat-over-line-jumps = true
+
+[tool.pylint.typecheck]
+contextmanager-decorators = ["contextlib.contextmanager"]
+ignore-none = true
+ignore-on-opaque-inference = true
+ignored-checks-for-mixins = [
+    "no-member",
+    "not-async-context-manager",
+    "not-context-manager",
+    "attribute-defined-outside-init",
+]
+ignored-classes = ["optparse.Values", "thread._local", "_thread._local"]
+missing-member-hint = true
+missing-member-hint-distance = 1
+missing-member-max-choices = 1
+mixin-class-rgx = ".*[Mm]ixin"
+
+[tool.pylint.variables]
+allow-global-unused-variables = false
+callbacks = ["cb_", "_cb"]
+dummy-variables-rgx = "(_+[a-zA-Z0-9]*?$)|dummy"
+ignored-argument-names = "_.*"
+redefining-builtins-modules = ["six.moves", "future.builtins"]
+
+#########################
 # MyPy
 #########################
 
@@ -102,10 +321,47 @@ pythonpath = ["."]
 #########################
 
 [tool.poe.tasks]
+serve = "uv run python -m app"
+serve-api = "uv run python -m app.api"
 lint       = { shell = "ruff check . && ruff format --check ." }
 fmt        = "ruff format ."
 typecheck  = "mypy ."
 test       = "pytest"
+check-coverage = "uv run coverage report --fail-under=80"
 coverage   = { shell = "pytest -v --override-ini=addopts= --log-level=CRITICAL --cov=. --cov-branch --cov-report=html --cov-report=term-missing:skip-covered" }
 check      = ["lint", "typecheck", "test"]
 precommit  = "uv run pre-commit run --all-files --verbose"
+docker-build = "docker buildx build --progress plain -t app ."
+docker-run = "docker container run --env-file .env --publish 8000:8000 --publish 10000:10000 app"
+version-bump = "uv run semantic-release -v version --no-tag --no-commit --skip-build --changelog"
+
+[tool.poe.tasks.train]
+cmd = "python main.py train"
+
+[tool.poe.tasks.predict]
+cmd = "python main.py predict"
+
+#########################
+# Semantic Release
+#########################
+
+[tool.semantic_release.branches.main]
+match = "*"
+
+[tool.semantic_release]
+commit_message = "chore(release): bump version and update changelog"
+version_source = "tag"
+version_variables = ["src/__init__.py:__version__"]
+version_toml = [
+    "pyproject.toml:project.version:nf",
+]
+allow_zero_version = true
+
+[tool.semantic_release.changelog]
+exclude_commit_patterns = ["chore*", "Merge*"]
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["chore", "feat", "fix"]
+minor_tags = ["feat"]
+patch_tags = ["fix"]
+
