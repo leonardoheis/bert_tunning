@@ -27,11 +27,14 @@ def _make_mock_classifier() -> BertTunningClassifier:
         model.return_value.logits = logits
         mock_mdl.return_value = model
 
+        model.config.max_position_embeddings = 512
+
         clf = BertTunningClassifier.__new__(BertTunningClassifier)
         clf.tokenizer = tokenizer
         clf.model = model
         clf.threshold = 0.70
         clf.device = "cpu"
+        clf.max_length = 512
         return clf
 
 

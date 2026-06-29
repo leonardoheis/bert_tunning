@@ -19,14 +19,18 @@ class BertTunningClassifier:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.eval()
         self.model.to(self.device)
-        log.info("Classifier ready on %s", self.device)
+        self.max_length = min(
+            self.tokenizer.model_max_length,
+            self.model.config.max_position_embeddings,
+        )
+        log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
 
     def predict_text(self, text: str) -> PredictResult:
         inputs = self.tokenizer(
             clean_text(text),
             truncation=True,
             padding="max_length",
-            max_length=self.tokenizer.model_max_length,
+            max_length=self.max_length,
             return_tensors="pt",
         ).to(self.device)
 
