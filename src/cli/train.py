@@ -17,6 +17,7 @@ class TrainOptions(BaseModel):
     docs_root: str = Settings.DOCS_ROOT
     model_key: str = Settings.MODEL_KEY
     output_dir: str = Settings.OUTPUT_DIR
+    epochs: int = Settings.EPOCHS
     max_docs_per_class: int | None = None
     rebuild_cache: bool = False
     no_ocr: bool = False
@@ -43,7 +44,11 @@ def _run_train(opts: TrainOptions) -> None:
         return
 
     train_run(
-        df, model_cfg, TrainingRequest(output_dir=opts.output_dir, use_wandb=not opts.no_wandb)
+        df,
+        model_cfg,
+        TrainingRequest(
+            output_dir=opts.output_dir, use_wandb=not opts.no_wandb, epochs=opts.epochs
+        ),
     )
 
 
@@ -66,6 +71,13 @@ def _run_train(opts: TrainOptions) -> None:
     default=Settings.OUTPUT_DIR,
     show_default=True,
     help="Directory to save the fine-tuned model",
+)
+@click.option(
+    "--epochs",
+    type=int,
+    default=Settings.EPOCHS,
+    show_default=True,
+    help="Number of training epochs",
 )
 @click.option(
     "--max-docs-per-class", type=int, default=None, help="Cap docs per class for quick test runs"
