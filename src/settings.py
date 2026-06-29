@@ -55,6 +55,7 @@ class _Settings(BaseSettings):
         "resoluciones_concejo_municipal": "resolucion_concejo_municipal",
         "declaraciones_concejo_municipal": "declaracion_concejo_municipal",
         "convenios": "convenio",
+        "otros": "otro",
     }
 
     model_config = SettingsConfigDict(
