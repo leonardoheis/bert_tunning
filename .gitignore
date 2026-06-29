@@ -207,7 +207,7 @@ desktop.ini
 models/xet
 models/hub/
 models/bert_tunning_model/
-models/bert_tunning_model_xlmroberta_v1/
+models/bert_tunning_model_*/
 
 # Cache / data
 data/

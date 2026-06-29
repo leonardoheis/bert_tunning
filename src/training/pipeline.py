@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -106,7 +107,7 @@ def run(
     wb.init(hyperparams)
 
     args = TrainingArguments(
-        output_dir=request.output_dir,
+        output_dir=str(Path(request.output_dir) / "checkpoints"),
         num_train_epochs=request.epochs,
         per_device_train_batch_size=model_cfg.batch_size,
         per_device_eval_batch_size=model_cfg.batch_size,
@@ -145,6 +146,7 @@ def run(
         model_cfg.batch_size * model_cfg.grad_accum,
     )
 
+    Path(request.output_dir).mkdir(parents=True, exist_ok=True)
     trainer.train()
     log.info("Training complete")
 
@@ -152,9 +154,9 @@ def run(
     wb.log_results(report_dict, y_true, y_pred, list(le.classes_))
     wb.finish()
 
-    save_path = f"{request.output_dir}/final"
-    trainer.save_model(save_path)
-    tokenizer.save_pretrained(save_path)
+    save_path = Path(request.output_dir) / "final"
+    trainer.save_model(str(save_path))
+    tokenizer.save_pretrained(str(save_path))
     log.info("Model saved to %s", save_path)
 
     return trainer, le
