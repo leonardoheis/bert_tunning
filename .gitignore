@@ -204,8 +204,10 @@ desktop.ini
 
 # Models — large binary weights, tracked via Git LFS or stored externally
 # Keep the models/ folder structure but ignore downloaded/trained weights
+models/xet
 models/hub/
 models/bert_tunning_model/
+models/bert_tunning_model_xlmroberta_v1/
 
 # Cache / data
 data/

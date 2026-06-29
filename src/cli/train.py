@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 class TrainOptions(BaseModel):
     docs_root: str = Settings.DOCS_ROOT
     model_key: str = Settings.MODEL_KEY
+    output_dir: str = Settings.OUTPUT_DIR
     max_docs_per_class: int | None = None
     rebuild_cache: bool = False
     no_ocr: bool = False
@@ -41,7 +42,9 @@ def _run_train(opts: TrainOptions) -> None:
         log.error("No documents found. Check --docs-root: %s", opts.docs_root)
         return
 
-    train_run(df, model_cfg, TrainingRequest(use_wandb=not opts.no_wandb))
+    train_run(
+        df, model_cfg, TrainingRequest(output_dir=opts.output_dir, use_wandb=not opts.no_wandb)
+    )
 
 
 @click.command("train")
@@ -57,6 +60,12 @@ def _run_train(opts: TrainOptions) -> None:
     default=Settings.MODEL_KEY,
     show_default=True,
     help="Model registry key (e.g. xlm-roberta, beto)",
+)
+@click.option(
+    "--output-dir",
+    default=Settings.OUTPUT_DIR,
+    show_default=True,
+    help="Directory to save the fine-tuned model",
 )
 @click.option(
     "--max-docs-per-class", type=int, default=None, help="Cap docs per class for quick test runs"
