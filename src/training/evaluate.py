@@ -3,6 +3,7 @@ import logging
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+from pydantic import BaseModel, ConfigDict
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 from transformers import Trainer
@@ -14,12 +15,19 @@ from src.training.tokenize import BertTunningDataset
 log = logging.getLogger(__name__)
 
 
+class EvaluationResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+    report_dict: ReportDict
+    y_pred: npt.NDArray[np.int_]
+    y_true: list[int]
+
+
 def run_evaluation(
     trainer: Trainer,
     test_ds: BertTunningDataset,
     le: LabelEncoder,
     hyperparams: Hyperparams,
-) -> tuple[ReportDict, npt.NDArray[np.int_], list[int]]:
+) -> EvaluationResult:
     preds_out = trainer.predict(test_ds)
     y_pred: npt.NDArray[np.int_] = np.argmax(preds_out.predictions, axis=-1)
     label_ids: npt.NDArray[np.int_] = np.asarray(preds_out.label_ids)
@@ -44,4 +52,4 @@ def run_evaluation(
         hyperparams=hyperparams,
     )
 
-    return report_dict, y_pred, y_true
+    return EvaluationResult(report_dict=report_dict, y_pred=y_pred, y_true=y_true)
