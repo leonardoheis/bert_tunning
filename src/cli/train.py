@@ -17,6 +17,7 @@ class TrainOptions(BaseModel):
     docs_root: str = Settings.DOCS_ROOT
     model_key: str = Settings.MODEL_KEY
     output_dir: str = Settings.OUTPUT_DIR
+    cache_path: str = Settings.CACHE_PATH
     epochs: int = Settings.EPOCHS
     max_docs_per_class: int | None = None
     rebuild_cache: bool = False
@@ -33,7 +34,7 @@ def _run_train(opts: TrainOptions) -> None:
 
     df = ingest(
         opts.docs_root,
-        cache_path=Settings.CACHE_PATH,
+        cache_path=opts.cache_path,
         use_ocr=not opts.no_ocr,
         rebuild=opts.rebuild_cache,
         max_docs_per_class=opts.max_docs_per_class,
@@ -71,6 +72,12 @@ def _run_train(opts: TrainOptions) -> None:
     default=Settings.OUTPUT_DIR,
     show_default=True,
     help="Directory to save the fine-tuned model",
+)
+@click.option(
+    "--cache-path",
+    default=Settings.CACHE_PATH,
+    show_default=True,
+    help="Path to the parquet cache file",
 )
 @click.option(
     "--epochs",
