@@ -1,24 +1,14 @@
-from pydantic import BaseModel, ConfigDict
+from src.training.models import beto, minilm, xlm_roberta
+from src.training.models.config import ModelConfig
 
-
-class ModelConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    name: str
-    hf_id: str
-    max_tokens: int
-    lr: float
-    batch_size: int
-    grad_accum: int
-    force_fp32: bool
+__all__ = ["MODEL_REGISTRY", "ModelConfig", "get_model_config"]
 
 
 def _build_registry() -> dict[str, ModelConfig]:
-    from src.training.models import beto, xlm_roberta  # noqa: PLC0415
-
     return {
         "xlm-roberta": xlm_roberta.config,
         "beto": beto.config,
+        "minilm": minilm.config,
     }
 
 

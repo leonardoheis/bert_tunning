@@ -1,4 +1,4 @@
-from src.training.models import ModelConfig
+from .config import ModelConfig
 
 config = ModelConfig(
     name="beto",
