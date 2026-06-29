@@ -22,7 +22,9 @@ def generate_html_report(
 ) -> Path:
     _REPORTS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-    out_path = _REPORTS_DIR / f"run_{timestamp}.html"
+    model_short = hyperparams.model.split("/")[-1]
+    version = len(list(_REPORTS_DIR.glob(f"run_{model_short}_v*.html"))) + 1
+    out_path = _REPORTS_DIR / f"run_{model_short}_v{version}_{timestamp}.html"
 
     fig = make_subplots(
         rows=2,
@@ -110,6 +112,7 @@ def generate_html_report(
     fig.update_layout(
         title_text=(
             f"Bert Tunning — Experiment Report  |  "
+            f"{model_short} v{version}  |  "
             f"macro F1: {macro_f1:.3f}  "
             f"accuracy: {accuracy:.3f}  |  {timestamp}"
         ),

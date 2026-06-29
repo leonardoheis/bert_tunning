@@ -55,6 +55,7 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
     df_out = predict_folder(
         opts.model_path, opts.folder_path, threshold=opts.threshold, use_ocr=not opts.no_ocr
     )
+    df_out.insert(1, "model", opts.model_path)
     df_out.to_csv(opts.output, index=False)
     log.info("Results saved to %s", opts.output)
 
