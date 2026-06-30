@@ -18,7 +18,7 @@ class _Settings(BaseSettings):
 
     # ── Paths ─────────────────────────────────────────────────────────────────
     DOCS_ROOT: str = r"C:\Users\YourUser\Downloads\downloadsdocs\downloads"
-    OUTPUT_DIR: str = "./models/bert_tunning_model"
+    OUTPUT_DIR: str = "./models/bert_tunning_model_beto_v2"
     CACHE_PATH: str = "./data/bert_tunning_cache.parquet"
 
     # ── Model ─────────────────────────────────────────────────────────────────
