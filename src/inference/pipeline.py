@@ -6,6 +6,7 @@ import pandas as pd
 from src.inference.classify import BertTunningClassifier
 from src.ingestion.extract import extract_pdf
 from src.schema import PredictResult
+from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ def predict_pdf(
     model_path: str,
     pdf_path: str,
     *,
-    threshold: float = 0.70,
+    threshold: float = Settings.predict_threshold(),
     use_ocr: bool = True,
 ) -> PredictResult:
     clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
@@ -25,7 +26,7 @@ def predict_pdf(
         log.warning("Could not extract text from %s", Path(pdf_path).name)
         return PredictResult(
             label=None,
-            confidence=0.0,
+            confidence=Settings.predict_confidence(),
             certain=False,
             error="empty/unreadable document",
             filename=Path(pdf_path).name,
@@ -41,7 +42,7 @@ def predict_folder(
     model_path: str,
     folder_path: str,
     *,
-    threshold: float = 0.70,
+    threshold: float = Settings.predict_threshold(),
     use_ocr: bool = True,
 ) -> pd.DataFrame:
     clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
@@ -53,7 +54,13 @@ def predict_folder(
         text = extract_pdf(str(pdf), use_ocr_fallback=use_ocr)
         if text is None:
             results.append(
-                PredictResult(filename=pdf.name, label=None, confidence=0.0, certain=False)
+                PredictResult(
+                    filename=pdf.name,
+                    label=None,
+                    confidence=Settings.predict_confidence(),
+                    certain=False,
+                    error="empty/unreadable document",
+                )
             )
             continue
         r = clf.predict_text(text)

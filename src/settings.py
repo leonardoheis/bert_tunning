@@ -59,6 +59,8 @@ class _Settings(BaseSettings):
     }
 
     MAX_DOCS_PER_CLASS: int = 10
+    PREDICT_THRESHOLD: float = 0.70
+    PREDICT_CONFIDENCE: float = 0.0
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -86,6 +88,14 @@ class _Settings(BaseSettings):
     @property
     def max_docs_per_class(self) -> int:
         return self.MAX_DOCS_PER_CLASS
+
+    @property
+    def predict_confidence(self) -> float:
+        return self.PREDICT_CONFIDENCE
+
+    @property
+    def predict_threshold(self) -> float:
+        return self.PREDICT_THRESHOLD
 
 
 Settings = _Settings()
