@@ -63,9 +63,16 @@ def generate_html_report(
         col=1,
     )
 
+    class_pairs = [
+        (c, v)
+        for c in report_dict
+        if c not in ("accuracy", "macro avg", "weighted avg")
+        and isinstance(v := report_dict[c], dict)
+    ]
     # Per-class F1 bar — skip summary rows and scalar entries
-    classes = [k for k in report_dict if k not in ("accuracy", "macro avg", "weighted avg")]
-    class_dicts = [v for c in classes if isinstance(v := report_dict[c], dict)]
+    classes = [k for k, v in class_pairs]
+    class_dicts = [v for c, v in class_pairs]
+
     f1_scores = [float(m["f1-score"]) for m in class_dicts]
     fig.add_trace(
         go.Bar(x=classes, y=f1_scores, marker_color="steelblue", name="F1"),

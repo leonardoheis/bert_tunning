@@ -1,10 +1,13 @@
 """Shared Pydantic model definitions used across the Bert Tunning pipeline."""
 
 from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
 
 class PredictResult(BaseModel):
     """Return value from BertTunningClassifier.predict_text and predict_pdf."""
+
+    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
 
     label: str | None = None
     confidence: float = 0.0
@@ -19,7 +22,7 @@ ReportDict = dict[str, "dict[str, float] | float"]
 
 
 class Hyperparams(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
 
     model: str
     epochs: int

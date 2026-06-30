@@ -33,7 +33,7 @@ def predict_pdf(
         )
 
     result = clf.predict_text(text)
-    result.filename = Path(pdf_path).name
+    result = result.model_copy(update={"filename": Path(pdf_path).name})
     log.info("%s → %s (%.2f%%)", Path(pdf_path).name, result.label, result.confidence * 100)
     return result
 
@@ -64,7 +64,7 @@ def predict_folder(
             )
             continue
         r = clf.predict_text(text)
-        r.filename = pdf.name
+        r = r.model_copy(update={"filename": pdf.name})
         results.append(r)
 
     log.info("Folder classification complete")

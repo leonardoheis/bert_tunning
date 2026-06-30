@@ -1,7 +1,7 @@
 import asyncio
 import tempfile
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
@@ -14,7 +14,7 @@ router = APIRouter(tags=["Prediction"])
 
 
 def _get_clf(request: Request) -> BertTunningClassifier:
-    return request.app.state.clf  # type: ignore[no-any-return]
+    return cast("BertTunningClassifier", request.app.state.clf)
 
 
 @router.post("/predict")
@@ -45,7 +45,7 @@ async def predict(
         )
 
     result = await asyncio.to_thread(clf.predict_text, text)
-    result.filename = file.filename
+    result = result.model_copy(update={"filename": file.filename})
     data = result.model_dump()
     return PredictResponse(
         filename=data["filename"],
