@@ -7,7 +7,7 @@ from .app import create_app
 
 def run_api() -> None:
     uvicorn.run(
-        "app.api:create_app",
+        "src.api:create_app",
         factory=True,
         host=Settings.HOST,
         port=Settings.API_PORT,
