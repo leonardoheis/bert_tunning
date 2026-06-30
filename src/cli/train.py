@@ -35,7 +35,8 @@ class TrainOptions(BaseModel):
 
 
 def _run_train(opts: TrainOptions) -> None:
-    setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    log.info("Logging to %s", log_file)
 
     model_cfg = get_model_config(opts.model_key)
     log.info("Using model: %s (%s)", model_cfg.name, model_cfg.hf_id)

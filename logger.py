@@ -1,22 +1,21 @@
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 _LOG_DIR = Path(__file__).parent / "logs"
-_LOG_FILE = _LOG_DIR / "bert_tunning.log"
 
 _FMT = "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
-def setup_logging(level: int = logging.INFO) -> None:
+def setup_logging(level: int = logging.INFO) -> Path:
     _LOG_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    log_file = _LOG_DIR / f"bert_tunning_{timestamp}.log"
 
     root = logging.getLogger()
     root.setLevel(level)
-
-    # Remove any handlers added by third-party imports (transformers, torch, etc.)
-    # before we had a chance to configure logging — basicConfig would silently no-op otherwise.
     root.handlers.clear()
 
     fmt = logging.Formatter(_FMT, datefmt=_DATEFMT)
@@ -24,7 +23,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(fmt)
 
-    file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(fmt)
 
     root.addHandler(console)
@@ -43,3 +42,5 @@ def setup_logging(level: int = logging.INFO) -> None:
         "huggingface_hub.utils._http",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    return log_file

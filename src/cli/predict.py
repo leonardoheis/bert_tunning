@@ -36,7 +36,8 @@ def predict_cmd(
     debug: bool,
 ) -> None:
     """Classify a single PDF document."""
-    setup_logging(level=logging.DEBUG if debug else logging.INFO)
+    log_file = setup_logging(level=logging.DEBUG if debug else logging.INFO)
+    log.info("Logging to %s", log_file)
     result = predict_pdf(model_path, pdf_path, threshold=threshold, use_ocr=not no_ocr)
 
     click.echo(f"\n{'─' * 50}")
@@ -51,7 +52,9 @@ def predict_cmd(
 
 
 def _run_predict_folder(opts: PredictFolderOptions) -> None:
-    setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    log.info("Logging to %s", log_file)
+
     df_out = predict_folder(
         opts.model_path, opts.folder_path, threshold=opts.threshold, use_ocr=not opts.no_ocr
     )

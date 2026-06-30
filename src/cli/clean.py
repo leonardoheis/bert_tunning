@@ -9,15 +9,15 @@ from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
-_LOG_FILE = Path("logs/bert_tunning.log")
+_LOG_DIR = Path(__file__).parent.parent.parent / "logs"
 _CACHE = Path(Settings.CACHE_PATH)
 _MODEL_DIR = Path(Settings.OUTPUT_DIR)
 
 
-def _release_log_file() -> None:
+def _release_log_handlers() -> None:
     root = logging.getLogger()
     for handler in root.handlers[:]:
-        if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == _LOG_FILE:
+        if isinstance(handler, logging.FileHandler):
             handler.close()
             root.removeHandler(handler)
 
@@ -26,21 +26,20 @@ def _release_log_file() -> None:
 def clean_cmd() -> None:
     """Wipe logs, dataset cache, and model checkpoints."""
     setup_logging()
-    targets = [
-        (_LOG_FILE, "log file"),
-        (_CACHE, "dataset cache"),
-        (_MODEL_DIR, "model checkpoints"),
-    ]
-    for path, label in targets:
+    log_files = sorted(_LOG_DIR.glob("bert_tunning_*.log"))
+    if log_files:
+        _release_log_handlers()
+        for f in log_files:
+            f.unlink()
+        log.info("Clean: deleted %d log file(s) from %s", len(log_files), _LOG_DIR)
+
+    for path, label in [(_CACHE, "dataset cache"), (_MODEL_DIR, "model checkpoints")]:
         if not path.exists():
             log.info("Clean: %s not found, skipping", label)
             continue
-        if path == _LOG_FILE:
-            _release_log_file()
         if path.is_dir():
             shutil.rmtree(path)
         else:
             path.unlink()
         log.info("Clean: deleted %s (%s)", label, path)
-    setup_logging()
     log.info("Clean complete")

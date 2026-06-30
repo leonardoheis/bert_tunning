@@ -15,7 +15,7 @@ def predict_pdf(
     model_path: str,
     pdf_path: str,
     *,
-    threshold: float = Settings.predict_threshold(),
+    threshold: float = Settings.PREDICT_THRESHOLD,
     use_ocr: bool = True,
 ) -> PredictResult:
     clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
@@ -26,7 +26,7 @@ def predict_pdf(
         log.warning("Could not extract text from %s", Path(pdf_path).name)
         return PredictResult(
             label=None,
-            confidence=Settings.predict_confidence(),
+            confidence=Settings.PREDICT_CONFIDENCE,
             certain=False,
             error="empty/unreadable document",
             filename=Path(pdf_path).name,
@@ -42,7 +42,7 @@ def predict_folder(
     model_path: str,
     folder_path: str,
     *,
-    threshold: float = Settings.predict_threshold(),
+    threshold: float = Settings.PREDICT_THRESHOLD,
     use_ocr: bool = True,
 ) -> pd.DataFrame:
     clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
@@ -57,7 +57,7 @@ def predict_folder(
                 PredictResult(
                     filename=pdf.name,
                     label=None,
-                    confidence=Settings.predict_confidence(),
+                    confidence=Settings.PREDICT_CONFIDENCE,
                     certain=False,
                     error="empty/unreadable document",
                 )
