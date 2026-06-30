@@ -8,8 +8,8 @@ from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 from transformers import Trainer
 
-from reporting import generate_html_report
 from src.schema import Hyperparams, ReportDict
+from src.training.reporting import generate_html_report
 from src.training.tokenize import BertTunningDataset
 
 log = logging.getLogger(__name__)

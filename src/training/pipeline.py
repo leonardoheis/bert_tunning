@@ -22,7 +22,7 @@ from src.training.options import TrainingRequest
 from src.training.split import make_split
 from src.training.tokenize import BertTunningDataset, prepare_text
 from src.training.trainer import WeightedTrainer, compute_metrics
-from wandb_logger import WandbLogger
+from src.training.wandb_logger import WandbLogger
 
 log = logging.getLogger(__name__)
 

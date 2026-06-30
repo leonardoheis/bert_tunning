@@ -11,7 +11,7 @@ from src.schema import Hyperparams, ReportDict
 
 log = logging.getLogger(__name__)
 
-_REPORTS_DIR = Path(__file__).parent / "reports"
+_REPORTS_DIR = Path(__file__).parent.parent.parent / "reports"
 
 
 def generate_html_report(

@@ -4,8 +4,8 @@ import click
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from logger import setup_logging
 from src.inference.pipeline import predict_folder, predict_pdf
+from src.logger import setup_logging
 from src.settings import Settings
 
 log = logging.getLogger(__name__)

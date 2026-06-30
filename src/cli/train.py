@@ -4,8 +4,8 @@ import click
 from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic.alias_generators import to_camel
 
-from logger import setup_logging
 from src.ingestion.pipeline import run as ingest
+from src.logger import setup_logging
 from src.settings import Settings
 from src.training.models import get_model_config
 from src.training.options import TrainingRequest

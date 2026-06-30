@@ -4,7 +4,7 @@ from pathlib import Path
 
 import click
 
-from logger import setup_logging
+from src.logger import setup_logging
 from src.settings import Settings
 
 log = logging.getLogger(__name__)

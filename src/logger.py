@@ -3,7 +3,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-_LOG_DIR = Path(__file__).parent / "logs"
+_LOG_DIR = Path(__file__).parent.parent / "logs"
 
 _FMT = "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
@@ -29,7 +29,6 @@ def setup_logging(level: int = logging.INFO) -> Path:
     root.addHandler(console)
     root.addHandler(file_handler)
 
-    # Suppress noisy third-party loggers
     for noisy in (
         "transformers",
         "accelerate",
