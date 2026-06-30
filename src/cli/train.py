@@ -1,7 +1,7 @@
 import logging
 
 import click
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from logger import setup_logging
 from src.ingestion.pipeline import run as ingest
@@ -24,6 +24,14 @@ class TrainOptions(BaseModel):
     no_ocr: bool = False
     no_wandb: bool = False
     debug: bool = False
+
+    @field_validator("max_docs_per_class")
+    @classmethod
+    def validate_max_docs_per_class(cls, v: int | None) -> int | None:
+        if v is not None and v < Settings.MAX_DOCS_PER_CLASS:
+            msg = f"max_docs_per_class must be greater than {Settings.MAX_DOCS_PER_CLASS}, got {v}"
+            raise ValueError(msg)
+        return v
 
 
 def _run_train(opts: TrainOptions) -> None:
