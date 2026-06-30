@@ -58,6 +58,8 @@ class _Settings(BaseSettings):
         "otros": "otro",
     }
 
+    MAX_DOCS_PER_CLASS: int = 10
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -80,6 +82,10 @@ class _Settings(BaseSettings):
     @property
     def default_model_path(self) -> str:
         return str(Path(self.OUTPUT_DIR) / "final")
+
+    @property
+    def max_docs_per_class(self) -> int:
+        return self.MAX_DOCS_PER_CLASS
 
 
 Settings = _Settings()
