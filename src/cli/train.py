@@ -1,7 +1,8 @@
 import logging
 
 import click
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic.alias_generators import to_camel
 
 from logger import setup_logging
 from src.ingestion.pipeline import run as ingest
@@ -14,6 +15,8 @@ log = logging.getLogger(__name__)
 
 
 class TrainOptions(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
+
     docs_root: str = Settings.DOCS_ROOT
     model_key: str = Settings.MODEL_KEY
     output_dir: str = Settings.OUTPUT_DIR

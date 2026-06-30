@@ -1,7 +1,8 @@
 import logging
 
 import click
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
 from logger import setup_logging
 from src.inference.pipeline import predict_folder, predict_pdf
@@ -11,6 +12,8 @@ log = logging.getLogger(__name__)
 
 
 class PredictFolderOptions(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
+
     folder_path: str
     model_path: str = Settings.default_model_path
     threshold: float = Settings.THRESHOLD
