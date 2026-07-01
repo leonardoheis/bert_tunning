@@ -47,7 +47,7 @@ def run(
 
     raw_weights = compute_class_weight(
         class_weight="balanced",
-        classes=np.unique(train_df["label_id"]),
+        classes=np.arange(num_labels),
         y=train_df["label_id"].to_numpy(),
     )
     class_weights = torch.tensor(raw_weights, dtype=torch.float)
