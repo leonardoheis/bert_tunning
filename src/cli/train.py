@@ -32,7 +32,7 @@ class TrainOptions(BaseModel):
     @classmethod
     def validate_max_docs_per_class(cls, v: int | None) -> int | None:
         if v is not None and v < Settings.MAX_DOCS_PER_CLASS:
-            msg = f"max_docs_per_class must be greater than {Settings.MAX_DOCS_PER_CLASS}, got {v}"
+            msg = f"max_docs_per_class must be at least {Settings.MAX_DOCS_PER_CLASS}, got {v}"
             raise ValueError(msg)
         return v
 
