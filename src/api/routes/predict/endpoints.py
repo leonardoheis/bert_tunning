@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from src.inference.classify import BertTunningClassifier
 from src.ingestion.extract import extract_pdf
+from src.settings import Settings
 
 from .schemas import PredictResponse
 
@@ -35,11 +36,11 @@ async def predict(
     finally:
         await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
-    if text is None:
+    if not text:
         return PredictResponse(
             filename=file.filename,
             label=None,
-            confidence=0.0,
+            confidence=Settings.PREDICT_CONFIDENCE,
             certain=False,
             error="empty/unreadable document",
         )
