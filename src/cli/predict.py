@@ -1,6 +1,7 @@
 import logging
 
 import click
+import pandas as pd
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
@@ -58,11 +59,12 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
     log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
     log.info("Logging to %s", log_file)
 
-    df_out = predict_folder(
+    results = predict_folder(
         opts.model_path, opts.folder_path, threshold=opts.threshold, use_ocr=not opts.no_ocr
     )
-    df_out.insert(1, "model", opts.model_path)
-    df_out.to_csv(opts.output, index=False)
+    df = pd.DataFrame([r.model_dump() for r in results])
+    df.insert(1, "model", opts.model_path)
+    df.to_csv(opts.output, index=False)
     log.info("Results saved to %s", opts.output)
 
 
