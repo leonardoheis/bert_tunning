@@ -1,10 +1,7 @@
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.exceptions import BertTunningError
-
-log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -14,7 +11,6 @@ class PDFExtractionError(BertTunningError):
 
     def __post_init__(self) -> None:
         super().__init__(str(self))
-        log.warning(str(self))
 
     def __str__(self) -> str:
         name = Path(self.pdf_path).name
@@ -28,7 +24,6 @@ class OCRError(BertTunningError):
 
     def __post_init__(self) -> None:
         super().__init__(str(self))
-        log.exception(str(self))
 
     def __str__(self) -> str:
         name = Path(self.pdf_path).name
