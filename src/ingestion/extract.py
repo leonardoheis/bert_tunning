@@ -1,4 +1,3 @@
-import contextlib
 import logging
 from pathlib import Path
 
@@ -16,15 +15,24 @@ _CHAIN: list[ExtractorBase] = [MarkItDownExtractor(), OCRExtractor()]
 
 def extract_pdf(pdf_path: str, *, use_ocr_fallback: bool = True) -> str | None:
     chain = _CHAIN if use_ocr_fallback else _CHAIN[:1]
-    text = ""
+    name = Path(pdf_path).name
+    text, failed = "", 0
+
     for extractor in chain:
         if len(text) >= Settings.MIN_TEXT_FOR_OCR:
             break
-        with contextlib.suppress(BertTunningError):
+        try:
             text = extractor.extract(pdf_path)
+        except BertTunningError as e:
+            log.warning("%s failed on %s: %s", type(extractor).__name__, name, e)
+            failed += 1
+
+    if failed == len(chain):
+        msg = f"All extractors failed on {name}"
+        raise BertTunningError(msg)
 
     if len(text) < Settings.MIN_USABLE_TEXT:
-        log.warning("Skipping %s — could not extract usable text", Path(pdf_path).name)
+        log.warning("Skipping %s — could not extract usable text", name)
         return None
 
     return text
