@@ -7,7 +7,7 @@ import numpy.typing as npt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from src.schema import Hyperparams, ReportDict
+from src.schema import EvaluationResult, Hyperparams
 
 log = logging.getLogger(__name__)
 
@@ -17,9 +17,10 @@ _REPORTS_DIR = Path(__file__).parent.parent.parent / "reports"
 def generate_html_report(
     label_names: list[str],
     cm: npt.NDArray[np.int_],
-    report_dict: ReportDict,
+    result: EvaluationResult,
     hyperparams: Hyperparams,
 ) -> Path:
+    report_dict = result.report_dict
     _REPORTS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
     model_short = hyperparams.model.split("/")[-1]
@@ -112,10 +113,8 @@ def generate_html_report(
         col=2,
     )
 
-    macro_raw = report_dict.get("macro avg", {})
-    macro_f1 = float(macro_raw["f1-score"]) if isinstance(macro_raw, dict) else 0.0
-    accuracy_raw = report_dict.get("accuracy", 0.0)
-    accuracy = float(accuracy_raw) if isinstance(accuracy_raw, float) else 0.0
+    macro_f1 = result.macro_f1
+    accuracy = result.accuracy
     fig.update_layout(
         title_text=(
             f"Bert Tunning — Experiment Report  |  "

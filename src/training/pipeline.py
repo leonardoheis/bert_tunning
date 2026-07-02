@@ -151,7 +151,7 @@ def run(
     log.info("Training complete")
 
     result = run_evaluation(trainer, test_ds, le, hyperparams)
-    wb.log_results(result.report_dict, result.y_true, result.y_pred, list(le.classes_))
+    wb.log_results(result, list(le.classes_))
     wb.finish()
 
     save_path = Path(request.output_dir) / "final"
