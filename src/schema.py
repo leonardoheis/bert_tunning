@@ -1,5 +1,7 @@
 """Shared Pydantic model definitions used across the Bert Tunning pipeline."""
 
+import numpy as np
+import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
@@ -19,6 +21,26 @@ class PredictResult(BaseModel):
 
 # classification_report(output_dict=True) returns per-class dicts and scalar floats.
 ReportDict = dict[str, "dict[str, float] | float"]
+
+
+class EvaluationResult(BaseModel):
+    """Return value from run_evaluation — carries the raw report plus derived scalars."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    report_dict: ReportDict
+    y_pred: npt.NDArray[np.int_]
+    y_true: list[int]
+
+    @property
+    def macro_f1(self) -> float:
+        macro_raw = self.report_dict.get("macro avg", {})
+        return float(macro_raw["f1-score"]) if isinstance(macro_raw, dict) else 0.0
+
+    @property
+    def accuracy(self) -> float:
+        accuracy_raw = self.report_dict.get("accuracy", 0.0)
+        return float(accuracy_raw) if isinstance(accuracy_raw, float) else 0.0
 
 
 class Hyperparams(BaseModel):
