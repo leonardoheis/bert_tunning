@@ -15,7 +15,12 @@ log = logging.getLogger(__name__)
 
 
 class TrainOptions(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        frozen=True,
+        populate_by_name=True,
+    )
 
     docs_root: str = Settings.DOCS_ROOT
     model_key: str = Settings.MODEL_KEY

@@ -13,7 +13,12 @@ log = logging.getLogger(__name__)
 
 
 class PredictFolderOptions(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        frozen=True,
+        populate_by_name=True,
+    )
 
     folder_path: str
     model_path: str = Settings.default_model_path
