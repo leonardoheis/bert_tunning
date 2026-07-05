@@ -1,42 +1,79 @@
-# Classiflow
+# Bert Tunning
 
-Fine-tunes a transformer model on municipal PDF documents to classify them by document type (decreto, ordenanza, resolución, etc.).
+Fine-tunes transformer models on Spanish municipal PDF documents to classify them by document type (decreto, ordenanza, resolución, etc.).
 
-The default model is [xlm-roberta-base](https://huggingface.co/xlm-roberta-base), a stable multilingual model with strong Spanish support. Alternative Spanish models can be selected in `config.py`.
+The default model is [xlm-roberta-base](https://huggingface.co/xlm-roberta-base) — stable multilingual model with strong Spanish support. Additional models (BETO, MiniLM) are available via the model registry in `src/training/models/`.
+
+## Training results
+
+All runs used effective batch size 64, bf16 precision, early stopping on macro-F1, and a stratified 70/15/15 train/val/test split.
+
+| Run | Model | HuggingFace | Train docs | Classes | Macro F1 | Accuracy |
+|---|---|---|---|---|---|---|
+| xlm-roberta v1 | XLM-RoBERTa base | [xlm-roberta-base](https://huggingface.co/xlm-roberta-base) | 515 | 8 | 0.782 | 0.811 |
+| xlm-roberta v2 | XLM-RoBERTa base | [xlm-roberta-base](https://huggingface.co/xlm-roberta-base) | 1,311 | 8 | 0.862 | 0.872 |
+| beto v1 | BETO (Spanish BERT) | [bert-base-spanish-wwm-cased](https://huggingface.co/dccuchile/bert-base-spanish-wwm-cased) | 1,311 | 8 | **0.976** | **0.972** |
+| beto v2 | BETO (Spanish BERT) | [bert-base-spanish-wwm-cased](https://huggingface.co/dccuchile/bert-base-spanish-wwm-cased) | 1,344 | 9 | 0.961 | 0.962 |
+| minilm v1 | Multilingual MiniLM | [Multilingual-MiniLM-L12-H384](https://huggingface.co/microsoft/Multilingual-MiniLM-L12-H384) | 1,311 | 8 | 0.867 | 0.883 |
+
+**BETO v1** is the best model — Spanish-native pretraining outperforms multilingual models on this corpus.
+
+**XLM-RoBERTa v1 → v2** shows that more training data (+796 docs) improves macro F1 by +8 points regardless of architecture.
+
+**BETO v1 → v2**: adding the `otro` class (46 documents, highly variable content) reduced macro F1 by 1.5 points — expected given the class imbalance and broad definition.
+
+### Classes used
+
+**8-class runs** (v1 / xlm-roberta v2 / minilm v1):
+`boletines`, `declaracion_concejo_municipal`, `decreto`, `decreto_ordenanza`, `decretos_concejo_municipal`, `ordenanza`, `resolucion`, `resolucion_concejo_municipal`
+
+**9-class run** (beto v2): same as above + `otro`
+
+### Dataset summary
+
+| Cache file | Docs | Max per class | Classes |
+|---|---|---|---|
+| `bert_tunning_cache_100.parquet` | 737 | 100 | 8 |
+| `bert_tunning_cache_300.parquet` | 1,874 | 300 | 8 |
+| `bert_tunning_cache_con_otro_300.parquet` | 1,920 | 300 | 9 |
 
 ## How it works
 
 ```
 PDF files
-   └── extraction.py   →  MarkItDown extracts text; EasyOCR fallback for scanned pages
-         └── dataset.py    →  builds a labeled DataFrame, caches full text to Parquet (data/)
-               └── training.py   →  fine-tunes the model, saves best checkpoint by macro-F1
-                     └── classifier.py →  loads saved model, runs inference on new PDFs
+   └── src/ingestion/    →  extract text (MarkItDown + EasyOCR fallback), scan folders, cache to Parquet
+         └── src/training/   →  fine-tune model, save best checkpoint by macro-F1, log to W&B
+               └── src/inference/  →  load saved model, classify new PDFs
+                     └── src/api/        →  expose POST /predict via FastAPI
 ```
-
-Base model weights download once to `models/hub/`. Fine-tuned weights are saved to `models/classiflow_model/final/`. All runs are logged to `logs/classiflow.log` and the console.
 
 ## Project structure
 
 ```
-.
-├── main.py                  # CLI entry point
-├── config.py                # all constants and hyperparameters
-├── extraction.py            # PDF → text (MarkItDown + EasyOCR fallback)
-├── dataset.py               # dataset builder, Parquet cache, PyTorch Dataset
-├── training.py              # training loop, evaluation, model saving
-├── classifier.py            # inference wrapper for trained model
-├── logger.py                # logging setup (console + file)
-├── data/                    # Parquet cache files (git-ignored)
-├── models/                  # base model cache + fine-tuned checkpoints (git-ignored)
-├── logs/                    # run logs (git-ignored)
-└── pyproject.toml
+src/
+├── __init__.py        package entry — exports BertTunningError, Settings, __version__
+├── __main__.py        python -m src entry — spawns run_api() via multiprocessing.Process
+├── settings.py        all configuration (Pydantic BaseSettings, overridable via .env)
+├── schema.py          shared Pydantic schemas (PredictResult, Hyperparams, ReportDict)
+├── exceptions.py      BertTunningError base
+├── logger.py          setup_logging() — per-run timestamped log file
+├── ingestion/         extract.py · scan.py · cache.py · pipeline.py · extractors/
+├── training/
+│   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
+│   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py
+│                      reporting.py · wandb_logger.py
+├── inference/         classify.py (BertTunningClassifier) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
+├── api/               app.py · schema.py · __init__.py · routes/predict/ · routes/health/
+└── cli/               train.py · predict.py · clean.py
+
+Dockerfile             multi-stage: uv builder + python:3.10-slim-bookworm runtime
+main.py                Click CLI entry point
 ```
 
 ## Requirements
 
 - Python ≥ 3.10
-- CUDA-capable GPU (tested on RTX 8 GB VRAM)
+- CUDA-capable GPU (tested on NVIDIA RTX A4000 Laptop, 8 GB VRAM, CUDA 11.8)
 - [uv](https://docs.astral.sh/uv/)
 
 ## Installation
@@ -45,32 +82,83 @@ Base model weights download once to `models/hub/`. Fine-tuned weights are saved 
 uv sync
 ```
 
-> `torch` and `torchvision` are pulled from the PyTorch CUDA 11.8 index automatically via `[tool.uv.sources]` in `pyproject.toml`.
+> `torch` is pulled from the PyTorch CUDA 11.8 index automatically via `[tool.uv.sources]` in `pyproject.toml`.
 
 ## Configuration
 
-Edit `config.py` before running:
+All settings live in `src/settings.py` and can be overridden via a `.env` file at the project root:
+
+```ini
+# .env (optional — values shown are the defaults)
+DOCS_ROOT=C:\path\to\downloads
+MODEL_KEY=xlm-roberta
+OUTPUT_DIR=./models/bert_tunning_model
+EPOCHS=15
+EARLY_STOP_PATIENCE=5
+CHUNK_STRATEGY=first
+SEED=42
+WANDB_ENTITY=your-wandb-entity
+WANDB_PROJECT=bert_tunning
+API_PORT=8000
+HOST=127.0.0.1
+THRESHOLD=0.70
+```
 
 | Variable | Default | Description |
 |---|---|---|
 | `DOCS_ROOT` | *(set this)* | Root folder containing labeled subfolders of PDFs |
-| `MODEL_NAME` | `xlm-roberta-base` | Base HuggingFace model (see options below) |
-| `OUTPUT_DIR` | `./models/classiflow_model` | Where the fine-tuned model is saved |
-| `BATCH_SIZE` | `8` | Per-device batch size |
-| `GRAD_ACCUM` | `8` | Gradient accumulation steps (effective batch = 64) |
+| `MODEL_KEY` | `xlm-roberta` | Default model registry key |
+| `OUTPUT_DIR` | `./models/bert_tunning_model` | Where the fine-tuned model is saved (`/final` is the inference path) |
 | `EPOCHS` | `15` | Max training epochs |
 | `EARLY_STOP_PATIENCE` | `5` | Epochs without macro-F1 improvement before stopping |
-| `LR` | `2e-5` | Learning rate |
 | `CHUNK_STRATEGY` | `first` | `first` = first 512 tokens; `middle` = first 256 + last 256 |
 
-### Model options
+Model hyperparameters (lr, batch size, etc.) live in the model registry — see `src/training/models/xlm_roberta.py`.
+
+### Available models
+
+| Key | Model | Notes |
+|---|---|---|
+| `xlm-roberta` | `xlm-roberta-base` | Default — stable, strong Spanish support |
+| `beto` | `dccuchile/bert-base-spanish-wwm-cased` | Spanish-only BERT |
+| `minilm` | `microsoft/Multilingual-MiniLM-L12-H384` | Lightweight — faster inference, lower accuracy |
+
+### Adding a new model
+
+**1. Create `src/training/models/my_model.py`:**
 
 ```python
-# config.py
-MODEL_NAME = "xlm-roberta-base"                       # recommended: stable, strong Spanish
-# MODEL_NAME = "PlanTL-GOB-ES/roberta-base-bne"       # Spanish-only RoBERTa
-# MODEL_NAME = "dccuchile/bert-base-spanish-wwm-cased" # BETO: original Spanish BERT
-# MODEL_NAME = "microsoft/deberta-v3-base"             # high accuracy, numerically unstable
+from src.training.models.config import ModelConfig
+
+config = ModelConfig(
+    name="my-model-name",
+    hf_id="org/model-id",
+    max_tokens=512,
+    lr=2e-5,
+    batch_size=8,
+    grad_accum=8,
+    force_fp32=False,  # set True if the model produces NaN in fp16/bf16
+)
+```
+
+**2. Register it in `src/training/models/__init__.py`** inside `_build_registry()`:
+
+```python
+def _build_registry() -> dict[str, ModelConfig]:
+    from src.training.models import beto, minilm, my_model, xlm_roberta  # noqa: PLC0415
+
+    return {
+        "xlm-roberta": xlm_roberta.config,
+        "beto": beto.config,
+        "minilm": minilm.config,
+        "my-model": my_model.config,
+    }
+```
+
+**3. Train with it:**
+
+```powershell
+uv run python main.py train --docs-root "C:\path\to\downloads" --model my-model
 ```
 
 ## Expected folder structure
@@ -84,70 +172,46 @@ downloads/
 ├── resoluciones/
 ├── resoluciones_concejo_municipal/
 ├── declaraciones_concejo_municipal/
-└── convenios/                        ← excluded by default (see EXCLUDE_LABELS in config.py)
+└── convenios/                        ← excluded by default
 ```
-
-Each subfolder name maps to a label via `FOLDER_TO_LABEL` in `config.py`.
 
 ## Usage
 
 ### Train
 
 ```powershell
-uv run python main.py --mode train --docs_root "C:\path\to\downloads"
+# Default model (xlm-roberta)
+uv run python main.py train --docs-root "C:\path\to\downloads"
+
+# Use BETO instead of XLM-RoBERTa
+uv run python main.py train --docs-root "C:\path\to\downloads" --model beto
+
+# Quick test run — cap at 100 docs per class (minimum 10)
+uv run python main.py train --docs-root "C:\path\to\downloads" --max-docs-per-class 100
+
+# Custom epoch count
+uv run python main.py train --docs-root "C:\path\to\downloads" --epochs 20
+
+# Force re-extraction (ignore cached parquet)
+uv run python main.py train --docs-root "C:\path\to\downloads" --rebuild-cache
+
+# Disable W&B logging
+uv run python main.py train --docs-root "C:\path\to\downloads" --no-wandb
 ```
 
-On the first run, text is extracted from all PDFs and cached to `data/classiflow_cache.parquet` (one-time cost — can take several hours for large corpora). Subsequent runs load from cache. The best checkpoint by macro-F1 is saved automatically and early stopping halts training if no improvement is seen for `EARLY_STOP_PATIENCE` epochs.
+### Classify
 
 ```powershell
-# Force re-extraction (e.g. after adding new documents)
-uv run python main.py --mode train --rebuild_cache
+# Single PDF
+uv run python main.py predict path/to/documento.pdf
 
-# Skip OCR fallback for faster extraction (digital PDFs only)
-uv run python main.py --mode train --no_ocr
+# Folder of PDFs → saves results to bert_tunning_predictions.csv
+uv run python main.py predict-folder path/to/folder --output results.csv
 ```
 
-### Quick test run (sample mode)
-
-Cap how many PDFs are read per class to verify the pipeline end-to-end without waiting for full extraction. A separate cache file is created for each cap value so the full dataset cache is never overwritten.
-
-```powershell
-uv run python main.py --mode train --docs_root "C:\path\to\downloads" --max_docs_per_class 100
-```
-
-### Clean state
-
-Wipes logs, dataset cache, and model checkpoints so the next run starts completely fresh.
-
-```powershell
-# Reset everything, then train
-uv run python main.py --mode train --docs_root "C:\path\to\downloads" --clean
-
-# Quick clean + sample run to verify the pipeline
-uv run python main.py --mode train --docs_root "C:\path\to\downloads" --clean --max_docs_per_class 100
-
-# Just wipe state without running anything
-uv run python main.py --mode clean
-```
-
-What gets deleted:
-
-| Target | Path |
-|---|---|
-| Log file | `logs/classiflow.log` |
-| Dataset cache | `data/classiflow_cache*.parquet` |
-| Model checkpoints | `models/classiflow_model/` |
-
-> The base model weights in `models/hub/` are **not** deleted — re-downloading hundreds of MB on every clean would be wasteful.
-
-### Classify a single PDF
-
-```powershell
-uv run python main.py --mode predict --pdf "C:\path\to\documento.pdf"
-```
+Documents that yield no usable text (blank, corrupted, or below `MIN_USABLE_TEXT` characters) are reported as `label: null, error: "empty/unreadable document"` instead of a spurious classification — this applies to both commands and the API.
 
 Output:
-
 ```
 ──────────────────────────────────────────────────
   File      : documento.pdf
@@ -158,43 +222,78 @@ Output:
   All scores:
     decreto                                0.9732  ████████████████████████████████████████
     ordenanza                              0.0121  ▌
-    ...
 ```
 
-### Classify a folder of PDFs
+### Serve inference API
+
+**Local (CLI):**
 
 ```powershell
-uv run python main.py --mode predict_folder --folder "C:\path\to\folder"
+uv run python main.py serve --model-path ./models/bert_tunning_model/final
 ```
 
-Results are saved to `classiflow_predictions.csv`.
-
-### All flags
+**Local (module):**
 
 ```powershell
-uv run python main.py --help
+python -m src
 ```
 
-| Flag | Default | Description |
-|---|---|---|
-| `--mode` | `train` | `train`, `predict`, `predict_folder`, or `clean` |
-| `--docs_root` | *(config)* | Root folder with labeled PDF subfolders (train mode) |
-| `--model_path` | `OUTPUT_DIR/final` | Path to saved model (predict modes) |
-| `--pdf` | — | Single PDF to classify |
-| `--folder` | — | Folder of PDFs to classify |
-| `--max_docs_per_class` | — | Cap docs per class for quick test runs |
-| `--rebuild_cache` | off | Force re-extraction even if cache exists |
-| `--no_ocr` | off | Skip OCR fallback (faster, digital PDFs only) |
-| `--threshold` | `0.70` | Min confidence to mark a prediction as certain |
-| `--clean` | off | Wipe logs, cache and model before running |
-| `--no_wandb` | off | Disable Weights & Biases logging |
-| `--debug` | off | Enable DEBUG level logging |
+**Docker:**
+
+```powershell
+docker build -t bert-tunning .
+docker run -p 8000:8000 -v ./models/bert_tunning_model:/app/models/bert_tunning_model bert-tunning
+```
+
+Available endpoints:
+- `POST /predict` — upload a PDF, returns JSON with label, confidence, and all scores
+- `GET /health` — returns `{"status": "healthy", ...}`
+
+API docs at `http://localhost:8000/docs` (Swagger UI).
+
+**Example response:**
+
+```json
+{
+  "filename": "decreto_123.pdf",
+  "label": "decreto",
+  "confidence": 0.9431,
+  "certain": true,
+  "allScores": {
+    "decreto": 0.9431,
+    "ordenanza": 0.0312,
+    "resolucion": 0.0257
+  },
+  "error": null
+}
+```
+
+### Clean state
+
+```powershell
+uv run python main.py clean
+```
+
+Deletes logs, dataset cache, and model checkpoints. Base model weights in `models/hub/` are preserved.
+
+## Development
+
+```powershell
+uv run poe check      # lint + typecheck + test (run before every commit)
+uv run poe fmt        # auto-format with ruff
+uv run poe lint       # lint + format check only
+uv run poe typecheck  # mypy strict
+uv run poe test       # pytest
+uv run poe coverage   # pytest with HTML coverage report
+```
 
 ## Logging
 
-Every run appends to `logs/classiflow.log`. The same output is shown in the console:
+Each run writes to a dedicated timestamped log file:
 
 ```
-2026-06-25 14:32:01 [INFO    ] training — Training started — 15 epochs, effective batch 64
-2026-06-25 14:32:01 [WARNING ] extraction — Skipping doc.pdf — could not extract usable text
+logs/bert_tunning_20260627_143201.log
+logs/bert_tunning_20260627_150432.log
 ```
+
+`poe clean` deletes all log files. The log path is printed as the first line of every CLI command.

@@ -1,8 +1,8 @@
-# Classiflow Scaffold Migration Implementation Plan
+# Bert Tunning Scaffold Migration Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Restructure the flat-file Classiflow project into a `src/` pipeline layout with a Click CLI, FastAPI inference endpoint, and a model registry supporting multiple transformer models.
+**Goal:** Restructure the flat-file Bert Tunning project into a `src/` pipeline layout with a Click CLI, FastAPI inference endpoint, and a model registry supporting multiple transformer models.
 
 **Architecture:** Each domain (ingestion, training, inference) becomes an isolated pipeline module under `src/` with its own steps and a thin `pipeline.py` orchestrator. Both the Click CLI and FastAPI routes call the same pipeline functions — no logic lives in the interface layer. A model registry in `src/training/models/` makes adding new models a one-file change.
 
@@ -42,14 +42,14 @@ src/
 │   │   ├── xlm_roberta.py  ← XLM-R config entry
 │   │   └── beto.py         ← BETO config entry
 │   ├── split.py            ← stratified train/val/test split
-│   ├── tokenize.py         ← ClassiflowDataset, prepare_text
+│   ├── tokenize.py         ← Bert TunningDataset, prepare_text
 │   ├── trainer.py          ← WeightedTrainer, compute_metrics
 │   ├── evaluate.py         ← classification_report, confusion_matrix, HTML report
 │   └── pipeline.py         ← orchestrates split→tokenize→train→evaluate
 │
 ├── inference/
 │   ├── __init__.py
-│   ├── classify.py         ← ClassiflowClassifier._infer(), predict_text()
+│   ├── classify.py         ← Bert TunningClassifier._infer(), predict_text()
 │   └── pipeline.py         ← predict_pdf(), predict_folder()
 │
 ├── api/
@@ -437,13 +437,13 @@ from src.ingestion.cache import _resolve_path
 
 
 def test_resolve_path_no_cap():
-    result = _resolve_path("./data/classiflow_cache.parquet", None)
-    assert result == Path("./data/classiflow_cache.parquet")
+    result = _resolve_path("./data/bert_tunning_cache.parquet", None)
+    assert result == Path("./data/bert_tunning_cache.parquet")
 
 
 def test_resolve_path_with_cap():
-    result = _resolve_path("./data/classiflow_cache.parquet", 100)
-    assert result == Path("./data/classiflow_cache_100.parquet")
+    result = _resolve_path("./data/bert_tunning_cache.parquet", 100)
+    assert result == Path("./data/bert_tunning_cache_100.parquet")
 
 
 def test_resolve_path_preserves_extension():
@@ -638,7 +638,7 @@ git commit -m "feat: add model registry with XLM-R and BETO configs"
 - Consumes: `ModelConfig` from Task 3, `WandbLogger` from `wandb_logger.py`, `generate_html_report` from `reporting.py`
 - Produces:
   - `split.make_split(df, *, seed) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]`
-  - `tokenize.ClassiflowDataset(texts, labels, tokenizer, max_length)`
+  - `tokenize.Bert TunningDataset(texts, labels, tokenizer, max_length)`
   - `tokenize.prepare_text(text, tokenizer, strategy) -> str`
   - `trainer.WeightedTrainer` (Trainer subclass)
   - `trainer.compute_metrics(eval_pred: tuple) -> dict`
@@ -699,7 +699,7 @@ def prepare_text(text: str, tokenizer: AutoTokenizer, strategy: str = "first") -
     return text
 
 
-class ClassiflowDataset(TorchDataset):
+class Bert TunningDataset(TorchDataset):
     def __init__(
         self,
         texts: list[str],
@@ -792,14 +792,14 @@ from sklearn.preprocessing import LabelEncoder
 from transformers import Trainer
 
 from reporting import generate_html_report
-from src.training.tokenize import ClassiflowDataset
+from src.training.tokenize import Bert TunningDataset
 
 log = logging.getLogger(__name__)
 
 
 def run_evaluation(
     trainer: Trainer,
-    test_ds: ClassiflowDataset,
+    test_ds: Bert TunningDataset,
     le: LabelEncoder,
     hyperparams: dict,
 ) -> tuple[dict, np.ndarray, list[int]]:
@@ -851,7 +851,7 @@ from transformers import (
 import pandas as pd
 from src.training.models import ModelConfig
 from src.training.split import make_split
-from src.training.tokenize import ClassiflowDataset, prepare_text
+from src.training.tokenize import Bert TunningDataset, prepare_text
 from src.training.trainer import WeightedTrainer, compute_metrics
 from src.training.evaluate import run_evaluation
 from wandb_logger import WandbLogger
@@ -896,9 +896,9 @@ def run(  # noqa: PLR0913
     def _texts(split_df: pd.DataFrame, strategy: str) -> list[str]:
         return [prepare_text(t, tokenizer, strategy) for t in split_df["text"]]
 
-    train_ds = ClassiflowDataset(_texts(train_df, chunk_strategy), train_df["label_id"].tolist(), tokenizer, model_cfg.max_tokens)
-    val_ds   = ClassiflowDataset(_texts(val_df,   "first"),         val_df["label_id"].tolist(),   tokenizer, model_cfg.max_tokens)
-    test_ds  = ClassiflowDataset(_texts(test_df,  "first"),         test_df["label_id"].tolist(),  tokenizer, model_cfg.max_tokens)
+    train_ds = Bert TunningDataset(_texts(train_df, chunk_strategy), train_df["label_id"].tolist(), tokenizer, model_cfg.max_tokens)
+    val_ds   = Bert TunningDataset(_texts(val_df,   "first"),         val_df["label_id"].tolist(),   tokenizer, model_cfg.max_tokens)
+    test_ds  = Bert TunningDataset(_texts(test_df,  "first"),         test_df["label_id"].tolist(),  tokenizer, model_cfg.max_tokens)
 
     model = AutoModelForSequenceClassification.from_pretrained(
         model_cfg.hf_id,
@@ -1058,8 +1058,8 @@ git commit -m "feat: migrate training pipeline to src/training with model regist
 **Interfaces:**
 - Consumes: `src/ingestion/extract.py:extract_pdf`, `src/ingestion/extract.py:clean_text`
 - Produces:
-  - `classify.ClassiflowClassifier(model_path: str, *, confidence_threshold: float = 0.70)`
-  - `classify.ClassiflowClassifier.predict_text(text: str) -> dict`
+  - `classify.Bert TunningClassifier(model_path: str, *, confidence_threshold: float = 0.70)`
+  - `classify.Bert TunningClassifier.predict_text(text: str) -> dict`
   - `pipeline.predict_pdf(model_path: str, pdf_path: str, *, threshold: float, use_ocr: bool) -> dict`
   - `pipeline.predict_folder(model_path: str, folder_path: str, *, threshold: float, use_ocr: bool) -> pd.DataFrame`
 
@@ -1077,7 +1077,7 @@ from src.ingestion.extract import clean_text
 log = logging.getLogger(__name__)
 
 
-class ClassiflowClassifier:
+class Bert TunningClassifier:
     def __init__(self, model_path: str, *, confidence_threshold: float = 0.70) -> None:
         log.info("Loading classifier from %s", model_path)
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -1123,7 +1123,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.inference.classify import ClassiflowClassifier
+from src.inference.classify import Bert TunningClassifier
 from src.ingestion.extract import extract_pdf
 
 log = logging.getLogger(__name__)
@@ -1136,7 +1136,7 @@ def predict_pdf(
     threshold: float = 0.70,
     use_ocr: bool = True,
 ) -> dict:
-    clf = ClassiflowClassifier(model_path, confidence_threshold=threshold)
+    clf = Bert TunningClassifier(model_path, confidence_threshold=threshold)
     log.info("Classifying: %s", Path(pdf_path).name)
     text = extract_pdf(pdf_path, use_ocr_fallback=use_ocr)
 
@@ -1163,7 +1163,7 @@ def predict_folder(
     threshold: float = 0.70,
     use_ocr: bool = True,
 ) -> pd.DataFrame:
-    clf = ClassiflowClassifier(model_path, confidence_threshold=threshold)
+    clf = Bert TunningClassifier(model_path, confidence_threshold=threshold)
     pdfs = sorted(Path(folder_path).glob("*.pdf"))
     log.info("Classifying %d PDFs in %s", len(pdfs), folder_path)
 
@@ -1191,10 +1191,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import torch
 
-from src.inference.classify import ClassiflowClassifier
+from src.inference.classify import Bert TunningClassifier
 
 
-def _make_mock_classifier() -> ClassiflowClassifier:
+def _make_mock_classifier() -> Bert TunningClassifier:
     with patch("src.inference.classify.AutoTokenizer.from_pretrained") as mock_tok, \
          patch("src.inference.classify.AutoModelForSequenceClassification.from_pretrained") as mock_model, \
          patch("torch.cuda.is_available", return_value=False):
@@ -1206,7 +1206,7 @@ def _make_mock_classifier() -> ClassiflowClassifier:
         model.return_value.logits = logits
         mock_model.return_value = model
 
-        clf = ClassiflowClassifier("fake/path", confidence_threshold=0.70)
+        clf = Bert TunningClassifier("fake/path", confidence_threshold=0.70)
         clf.tokenizer.return_value = {
             "input_ids": torch.zeros(1, 512, dtype=torch.long),
             "attention_mask": torch.ones(1, 512, dtype=torch.long),
@@ -1241,7 +1241,7 @@ Expected: 2 passed.
 ```powershell
 uv run poe check
 ```
-Expected: lint passes for `src/inference/`, mypy validates `ClassiflowClassifier` types, 2 inference tests pass. Existing warnings in legacy flat files are acceptable until Task 9.
+Expected: lint passes for `src/inference/`, mypy validates `Bert TunningClassifier` types, 2 inference tests pass. Existing warnings in legacy flat files are acceptable until Task 9.
 
 - [ ] **Step 5: Commit**
 
@@ -1278,7 +1278,7 @@ from logger import setup_logging
 
 log = logging.getLogger(__name__)
 
-_LOG_FILE = Path("logs/classiflow.log")
+_LOG_FILE = Path("logs/bert_tunning.log")
 _CACHE = Path(CACHE_PATH)
 _MODEL_DIR = Path(OUTPUT_DIR)
 
@@ -1420,7 +1420,7 @@ def predict_cmd(pdf_path: str, model_path: str, threshold: float, no_ocr: bool, 
 @click.option("--model-path", default=_DEFAULT_MODEL, show_default=True)
 @click.option("--threshold", default=0.70, show_default=True)
 @click.option("--no-ocr", is_flag=True, default=False)
-@click.option("--output", default="classiflow_predictions.csv", show_default=True)
+@click.option("--output", default="bert_tunning_predictions.csv", show_default=True)
 @click.option("--debug", is_flag=True, default=False)
 def predict_folder_cmd(
     folder_path: str, model_path: str, threshold: float, no_ocr: bool, output: str, debug: bool
@@ -1566,7 +1566,7 @@ from src.api.routes.predict import router as predict_router
 
 def create_app(model_path: str, threshold: float = 0.70) -> FastAPI:
     app = FastAPI(
-        title="Classiflow API",
+        title="Bert Tunning API",
         description="Classifies Spanish municipal PDF documents",
         version="0.1.0",
     )
@@ -1667,7 +1667,7 @@ from src.cli.train import train_cmd
 
 @click.group()
 def cli() -> None:
-    """Classiflow — Spanish municipal document classifier."""
+    """Bert Tunning — Spanish municipal document classifier."""
 
 
 cli.add_command(train_cmd,          name="train")
@@ -1771,7 +1771,7 @@ uv run python main.py train --docs-root "C:\path\to\downloads"
 uv run python main.py train --model beto --max-docs-per-class 100
 uv run python main.py predict path/to/doc.pdf
 uv run python main.py predict-folder path/to/folder
-uv run python main.py serve --model-path ./models/classiflow_model/final
+uv run python main.py serve --model-path ./models/bert_tunning_model/final
 uv run python main.py clean
 ```
 
