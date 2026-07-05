@@ -1043,7 +1043,305 @@ git commit -m "feat: surface OOD score and in-distribution flag in CLI and API o
 
 ---
 
-## Task 6: Documentation
+## Task 7: Capture and expose extraction metadata (which extractor ran, extracted text)
+
+**Motivation:** when a document is misclassified (e.g. the payment-document case), there is currently no way to see what text was actually extracted or which extractor (MarkItDown vs. OCR) produced it. Storing this alongside the prediction — in the CSV from `predict-folder`, and in the API/CLI single-document output — lets you inspect *what the model actually saw* for any given document, which is essential for debugging both extraction quality and classification errors.
+
+**Ordering note:** this task modifies `src/api/routes/predict/endpoints.py`, `src/api/routes/predict/schemas.py`, and `src/cli/predict.py` — the same files Task 5 modified. Run this task **after Task 5 is merged** to avoid a conflicting parallel edit to the same functions.
+
+**Files:**
+- Modify: `src/schema.py` (add `ExtractionMetadata`, extend `PredictResult`)
+- Modify: `src/ingestion/extract.py` (add `extract_pdf_with_metadata`, keep `extract_pdf` as a thin wrapper — no change to its signature or behavior, so `src/ingestion/scan.py` and any other existing caller is unaffected)
+- Modify: `src/inference/pipeline.py` (`predict_pdf`/`predict_folder` use the new function and attach the metadata)
+- Modify: `src/cli/predict.py` (print extractor + a text preview)
+- Modify: `src/api/routes/predict/schemas.py`, `src/api/routes/predict/endpoints.py` (surface the fields on `PredictResponse`)
+- Test: `tests/ingestion/test_extract.py` (new), extend `tests/inference/test_pipeline.py`
+
+**Interfaces:**
+- Produces: `ExtractionMetadata` (Pydantic model in `src/schema.py`) with fields `text: str | None`, `extractor_used: str | None`, `char_count: int`
+- Produces: `extract_pdf_with_metadata(pdf_path: str, *, use_ocr_fallback: bool = True) -> ExtractionMetadata` in `src/ingestion/extract.py`
+- Produces: `PredictResult.extracted_text: str = ""`, `PredictResult.extractor_used: str = ""`
+- Consumes: nothing from earlier OOD tasks — fully independent feature, only co-located in the same files as Task 5's edits
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/ingestion/test_extract.py`:
+
+```python
+from unittest.mock import patch
+
+from src.ingestion.extract import extract_pdf, extract_pdf_with_metadata
+
+
+def test_extract_pdf_with_metadata_reports_markitdown_success() -> None:
+    with patch(
+        "src.ingestion.extract._CHAIN",
+        [_StubExtractor("MarkItDownExtractor", "decreto numero uno " * 10)],
+    ):
+        result = extract_pdf_with_metadata("fake.pdf")
+    assert result.text is not None
+    assert result.extractor_used == "MarkItDownExtractor"
+    assert result.char_count == len(result.text)
+
+
+def test_extract_pdf_with_metadata_reports_none_when_text_too_short() -> None:
+    with patch("src.ingestion.extract._CHAIN", [_StubExtractor("MarkItDownExtractor", "hi")]):
+        result = extract_pdf_with_metadata("fake.pdf")
+    assert result.text is None
+    assert result.extractor_used is None
+
+
+def test_extract_pdf_still_returns_plain_string_or_none() -> None:
+    with patch(
+        "src.ingestion.extract._CHAIN",
+        [_StubExtractor("MarkItDownExtractor", "decreto numero uno " * 10)],
+    ):
+        text = extract_pdf("fake.pdf")
+    assert isinstance(text, str)
+
+
+class _StubExtractor:
+    def __init__(self, name: str, text: str) -> None:
+        self.__class__.__name__ = name
+        self._text = text
+
+    def extract(self, pdf_path: str) -> str:  # noqa: ARG002
+        return self._text
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/ingestion/test_extract.py -v`
+Expected: FAIL — `ImportError: cannot import name 'extract_pdf_with_metadata'`
+
+- [ ] **Step 3: Add `ExtractionMetadata` to `src/schema.py`**
+
+Add this class after the `ReportDict` type alias and before `class EvaluationResult(BaseModel):`:
+
+```python
+class ExtractionMetadata(BaseModel):
+    """Return value from extract_pdf_with_metadata — extracted text plus provenance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str | None
+    extractor_used: str | None
+    char_count: int
+```
+
+Add two fields to `PredictResult` (after `error: str = ""`, or after the `ood_score`/`in_distribution` fields if Task 2/4 already landed):
+
+```python
+    extracted_text: str = ""
+    extractor_used: str = ""
+```
+
+- [ ] **Step 4: Modify `src/ingestion/extract.py`**
+
+Replace the full file contents with:
+
+```python
+import logging
+from pathlib import Path
+
+from src.exceptions import BertTunningError
+from src.ingestion._text import clean_text
+from src.ingestion.extractors import ExtractorBase, MarkItDownExtractor, OCRExtractor
+from src.schema import ExtractionMetadata
+from src.settings import Settings
+
+__all__ = ["clean_text", "extract_pdf", "extract_pdf_with_metadata"]
+
+log = logging.getLogger(__name__)
+
+_CHAIN: list[ExtractorBase] = [MarkItDownExtractor(), OCRExtractor()]
+
+
+def extract_pdf_with_metadata(
+    pdf_path: str, *, use_ocr_fallback: bool = True
+) -> ExtractionMetadata:
+    chain = _CHAIN if use_ocr_fallback else _CHAIN[:1]
+    name = Path(pdf_path).name
+    text, failed = "", 0
+    extractor_used: str | None = None
+
+    for extractor in chain:
+        if len(text) >= Settings.MIN_TEXT_FOR_OCR:
+            break
+        try:
+            text = extractor.extract(pdf_path)
+            extractor_used = type(extractor).__name__
+        except BertTunningError as e:
+            log.warning("%s failed on %s: %s", type(extractor).__name__, name, e)
+            failed += 1
+
+    if failed == len(chain):
+        msg = f"All extractors failed on {name}"
+        raise BertTunningError(msg)
+
+    if len(text) < Settings.MIN_USABLE_TEXT:
+        log.warning("Skipping %s — could not extract usable text", name)
+        return ExtractionMetadata(text=None, extractor_used=None, char_count=len(text))
+
+    return ExtractionMetadata(text=text, extractor_used=extractor_used, char_count=len(text))
+
+
+def extract_pdf(pdf_path: str, *, use_ocr_fallback: bool = True) -> str | None:
+    return extract_pdf_with_metadata(pdf_path, use_ocr_fallback=use_ocr_fallback).text
+```
+
+This keeps `extract_pdf`'s signature, return type, and behavior completely unchanged — `src/ingestion/scan.py` (used by the training ingestion pipeline) needs no modification and is unaffected. The chain-iteration logic exists in exactly one place (`extract_pdf_with_metadata`), avoiding the duplication that a second, separate implementation would introduce.
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `uv run pytest tests/ingestion/test_extract.py -v`
+Expected: PASS
+
+- [ ] **Step 6: Modify `src/inference/pipeline.py`**
+
+Replace the full file contents with:
+
+```python
+import logging
+from pathlib import Path
+
+from src.inference.classify import BertTunningClassifier
+from src.ingestion.extract import extract_pdf_with_metadata
+from src.schema import PredictResult
+from src.settings import Settings
+
+log = logging.getLogger(__name__)
+
+
+def _extraction_failed(filename: str) -> PredictResult:
+    return PredictResult(
+        filename=filename,
+        label=None,
+        confidence=Settings.PREDICT_CONFIDENCE,
+        certain=False,
+        error="empty/unreadable document",
+    )
+
+
+def predict_pdf(
+    model_path: str,
+    pdf_path: str,
+    *,
+    threshold: float = Settings.PREDICT_THRESHOLD,
+    use_ocr: bool = True,
+) -> PredictResult:
+    clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
+    name = Path(pdf_path).name
+    log.info("Classifying: %s", name)
+    extraction = extract_pdf_with_metadata(pdf_path, use_ocr_fallback=use_ocr)
+
+    if not extraction.text:
+        log.warning("Could not extract text from %s", name)
+        return _extraction_failed(name)
+
+    result = clf.predict_text(extraction.text)
+    result = result.model_copy(
+        update={
+            "filename": name,
+            "extracted_text": extraction.text,
+            "extractor_used": extraction.extractor_used or "",
+        }
+    )
+    log.info("%s → %s (%.2f%%)", name, result.label, result.confidence * 100)
+    return result
+
+
+def predict_folder(
+    model_path: str,
+    folder_path: str,
+    *,
+    threshold: float = Settings.PREDICT_THRESHOLD,
+    use_ocr: bool = True,
+) -> list[PredictResult]:
+    clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
+    pdfs = sorted(Path(folder_path).glob("*.pdf"))
+    log.info("Classifying %d PDFs in %s", len(pdfs), folder_path)
+
+    results: list[PredictResult] = []
+    for pdf in pdfs:
+        extraction = extract_pdf_with_metadata(str(pdf), use_ocr_fallback=use_ocr)
+        if not extraction.text:
+            results.append(_extraction_failed(pdf.name))
+            continue
+        r = clf.predict_text(extraction.text)
+        r = r.model_copy(
+            update={
+                "filename": pdf.name,
+                "extracted_text": extraction.text,
+                "extractor_used": extraction.extractor_used or "",
+            }
+        )
+        results.append(r)
+
+    log.info("Folder classification complete")
+    return results
+```
+
+This means `predict-folder`'s CSV output (built via `pd.DataFrame([r.model_dump() for r in results])` in `cli/predict.py`) automatically gains `extractedText`/`extractorUsed` columns — no change needed to the CSV-writing code itself.
+
+- [ ] **Step 7: Extend `tests/inference/test_pipeline.py`**
+
+Add:
+
+```python
+def test_predict_text_result_can_carry_extraction_metadata() -> None:
+    clf = _make_mock_classifier()
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    updated = result.model_copy(
+        update={"extracted_text": "raw text", "extractor_used": "MarkItDownExtractor"}
+    )
+    assert updated.extracted_text == "raw text"
+    assert updated.extractor_used == "MarkItDownExtractor"
+```
+
+- [ ] **Step 8: Run tests to verify they pass**
+
+Run: `uv run pytest tests/inference/test_pipeline.py tests/ingestion/test_extract.py -v`
+Expected: PASS
+
+- [ ] **Step 9: Modify `src/cli/predict.py`**
+
+In `predict_cmd`, add after the existing `Certain` line (and after the OOD lines if Task 5 already landed):
+
+```python
+    click.echo(f"  Extractor : {result.extractor_used or 'n/a'}")
+    click.echo(f"  Extracted text (first 200 chars): {result.extracted_text[:200]!r}")
+```
+
+- [ ] **Step 10: Modify `src/api/routes/predict/schemas.py`**
+
+Add two fields to `PredictResponse` (after the OOD fields if Task 5 already landed):
+
+```python
+    extracted_text: str = ""
+    extractor_used: str = ""
+```
+
+- [ ] **Step 11: Modify `src/api/routes/predict/endpoints.py`**
+
+Add `extracted_text=data["extracted_text"]` and `extractor_used=data["extractor_used"]` to the final `PredictResponse(...)` construction, alongside whatever fields Task 5 already added there.
+
+- [ ] **Step 12: Run full check**
+
+Run: `uv run poe check`
+Expected: PASS
+
+- [ ] **Step 13: Commit**
+
+```bash
+git add src/schema.py src/ingestion/extract.py src/inference/pipeline.py src/cli/predict.py src/api/routes/predict/schemas.py src/api/routes/predict/endpoints.py tests/ingestion/test_extract.py tests/inference/test_pipeline.py
+git commit -m "feat: capture and expose extraction metadata (extractor used, extracted text)"
+```
+
+---
+
+## Task 8: Documentation
 
 **Files:**
 - Modify: `CLAUDE.md`
@@ -1051,7 +1349,7 @@ git commit -m "feat: surface OOD score and in-distribution flag in CLI and API o
 
 **Interfaces:**
 - Consumes: nothing (documentation only)
-- Produces: nothing new — describes what Tasks 1-5 built
+- Produces: nothing new — describes what Tasks 1-5 and 7 built
 
 - [ ] **Step 1: Update `CLAUDE.md`**
 
@@ -1110,11 +1408,34 @@ mechanism that catches documents (e.g. payment receipts) that were never in
 any training class, including `otro`.
 ```
 
+Add a new subsection right after it, documenting the extraction-metadata feature from Task 7:
+
+```markdown
+### Extraction metadata (what the model actually saw)
+
+Every prediction also records which extractor produced the text and the text
+itself:
+
+```json
+{
+  "label": "boletines",
+  "extractorUsed": "OCRExtractor",
+  "extractedText": "..."
+}
+```
+
+`predict-folder`'s CSV output includes `extractedText`/`extractorUsed`
+columns automatically. Use this to check *what was actually extracted* from
+a misclassified document — e.g. confirming whether a wrong classification is
+an extraction-quality problem (garbled OCR output) versus a genuine
+out-of-category document with clean, correctly-extracted text.
+```
+
 - [ ] **Step 3: Commit**
 
 ```bash
 git add CLAUDE.md README.md
-git commit -m "docs: document Mahalanobis/cosine OOD detection"
+git commit -m "docs: document Mahalanobis/cosine OOD detection and extraction metadata"
 ```
 
 ---
@@ -1124,11 +1445,14 @@ git commit -m "docs: document Mahalanobis/cosine OOD detection"
 **Spec coverage:**
 - Mahalanobis distance instead of pure cosine → Task 1 (`mahalanobis_min_distance`)
 - "Or maybe a mixture" → Task 1 (`ood_score` combines both via weighted z-score)
-- Approve per PR each of those changes → 7 independently mergeable tasks (1, 2, 3, 3b, 4, 5, 6), each ending in a commit; each maps 1:1 to a worktree + PR in this project's existing git workflow
+- Approve per PR each of those changes → 8 independently mergeable tasks (1, 2, 3, 3b, 4, 5, 7, 8), each ending in a commit; each maps 1:1 to a worktree + PR in this project's existing git workflow
 - Never knowing the true universe of out-of-category documents → the design doesn't try to enumerate negative classes; it flags "far from everything known," which generalizes to unseen document types by construction, unlike expanding the `otro` class
 - No retraining of existing 5 models → confirmed, Tasks 1/2 add no training-time behavior; Task 3 only affects *future* training runs; Tasks 4/5 gracefully no-op (`None` fields) for model directories without `ood_stats.npz`
 - What about the 4 other already-trained models (not just BETO v1) → Task 3b backfills `ood_stats.npz` for all 5 existing checkpoints (xlm-roberta v1/v2, beto v1/v2, minilm v1) by reconstructing each run's exact train split via the confirmed-constant `SEED`, with no retraining
+- Store the OCR/MarkItDown extraction metadata alongside classification results, to see what was extracted from a predicted document → Task 7 (`extract_pdf_with_metadata`, `PredictResult.extracted_text`/`extractor_used`, surfaced in CSV, API, and CLI output)
 
 **Placeholder scan:** no TBD/TODO, no "add error handling" placeholders — all code blocks are complete and runnable as written. Task 3b's manual verification step has `<..._output_dir>` placeholders, but those are explicitly called out as values the user must substitute from their own run records (not tracked in git since `models/` is git-ignored) — not a plan placeholder.
 
-**Type consistency:** `ClassEmbeddingStats`, `compute_class_stats`, `mahalanobis_min_distance`, `cosine_min_distance`, `ood_score`, `save_stats`, `load_stats`, `extract_embeddings` are defined once in Task 1 and referenced with identical names/signatures in Tasks 3, 3b, and 4. `PredictResult.ood_score`/`in_distribution` defined in Task 2, consumed identically in Task 4 (classify.py) and Task 5 (CLI/API). Task 3b's `_run_compute_ood_stats` reconstructs the exact same `le.fit_transform` / `make_split` / `prepare_text` sequence that `training/pipeline.py`'s `run()` uses, so the two code paths produce consistent `label_id` ordering and text preprocessing.
+**Type consistency:** `ClassEmbeddingStats`, `compute_class_stats`, `mahalanobis_min_distance`, `cosine_min_distance`, `ood_score`, `save_stats`, `load_stats`, `extract_embeddings` are defined once in Task 1 and referenced with identical names/signatures in Tasks 3, 3b, and 4. `PredictResult.ood_score`/`in_distribution` defined in Task 2, consumed identically in Task 4 (classify.py) and Task 5 (CLI/API). Task 3b's `_run_compute_ood_stats` reconstructs the exact same `le.fit_transform` / `make_split` / `prepare_text` sequence that `training/pipeline.py`'s `run()` uses, so the two code paths produce consistent `label_id` ordering and text preprocessing. `ExtractionMetadata`/`extract_pdf_with_metadata` defined once in Task 7 and consumed identically by `predict_pdf`/`predict_folder`; `extract_pdf`'s existing signature and behavior are untouched, so `src/ingestion/scan.py` (unrelated to this plan) needs no changes.
+
+**Task ordering / merge-conflict note:** Task 7 deliberately modifies the same functions (`endpoints.py`'s `predict()`, `predict.py`'s `predict_cmd()`, `PredictResponse`) that Task 5 modifies. Task 7 is written to run **after** Task 5 is merged, so its diff is additive on top of Task 5's OOD fields rather than a parallel conflicting edit. Tasks 1 and 2 have no code overlap (different classes within `schema.py`, no shared imports) and can run in parallel. Tasks 3 and 3b both depend on Tasks 1+2 being merged (they import `src.inference.ood`) but don't overlap each other's files (`training/pipeline.py` vs. new `cli/ood_stats.py` + `main.py`), so they can also run in parallel once 1+2 land. Task 4 depends on 1+2. Task 5 depends on 4. Task 7 depends on 5. Task 8 depends on everything.
