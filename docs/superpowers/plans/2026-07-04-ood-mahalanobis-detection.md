@@ -1,10 +1,10 @@
-# Out-of-Distribution Detection (Mahalanobis + Cosine Mixture) Implementation Plan
+# Out-of-Distribution Detection (Mahalanobis + Cosine, Dual-Signal OR) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Detect documents that belong to none of the trained classes (e.g. a payment document run through a model trained only on decreto/ordenanza/resolución/etc.) instead of letting the softmax classifier confidently force them into the nearest known class.
 
-**Architecture:** After training, extract the `[CLS]` embedding for every training document, PCA-reduce it, and compute per-class centroids plus a shared (tied) covariance matrix. At inference time, project a new document's embedding into the same PCA space and score it by (a) Mahalanobis distance to the nearest class centroid and (b) cosine distance to the nearest class centroid. Combine both into one z-scored mixture score. If the score exceeds a threshold, the document is flagged `in_distribution=False` regardless of what the softmax classifier says. This runs alongside the existing classifier — no retraining of the classification head, no change to the 5 already-trained models' weights.
+**Architecture:** After training, extract the `[CLS]` embedding for every training document, PCA-reduce it, and compute per-class centroids plus a shared (tied) covariance matrix. At inference time, project a new document's embedding into the same PCA space and compute two **separate** z-scores: (a) Mahalanobis distance to the nearest class centroid, z-scored against the training set's own distances, and (b) cosine distance to the nearest class centroid, z-scored the same way. **Both values are kept separate** (`mahalanobis_z`, `cosine_z` on `PredictResult`) rather than averaged into one number — an early design combined them into a single weighted mixture score, but that risks a strong signal on one axis being diluted by a weak signal on the other. The final decision is an **OR**: the document is flagged `in_distribution=False` if *either* z-score exceeds its own threshold (`OOD_MAHALANOBIS_THRESHOLD`, `OOD_COSINE_THRESHOLD`), regardless of what the softmax classifier says. This runs alongside the existing classifier — no retraining of the classification head, no change to the 5 already-trained models' weights. Because both signals are exposed separately, a human reviewing predictions later can see *which* metric fired and why, instead of a single opaque score.
 
 **Tech Stack:** NumPy, scikit-learn (`PCA`, already a dependency), PyTorch/Transformers (reused from the existing `BertTunningClassifier`), Pydantic v2 for the stats schema.
 
@@ -15,7 +15,8 @@
 - `uv run poe check` (lint + typecheck + test) must pass before every commit
 - No change to the training loop, model architecture, or any of the 5 already-trained model checkpoints — this is purely additive
 - New artifact (`ood_stats.npz`) is optional at load time — `BertTunningClassifier` must work unchanged for any model directory that doesn't have one (backward compatibility with existing checkpoints)
-- The OOD threshold cannot be statistically validated without labeled out-of-category documents (this is a known limitation for a thesis PoC with no negative-class corpus) — Task 6 documents this explicitly rather than pretending the default threshold is validated
+- The two OOD thresholds cannot be statistically validated without labeled out-of-category documents (this is a known limitation for a thesis PoC with no negative-class corpus) — Task 8 documents this explicitly rather than pretending the defaults are validated
+- `mahalanobis_z` and `cosine_z` are kept as **separate** fields, never averaged into one score — this is a deliberate revision after Task 1/2 initially shipped a single weighted mixture (`ood_score`); the OR-based dual-signal design better serves the "advisory flag for human review" use case than a single combined confidence-like number
 
 ---
 
@@ -23,10 +24,10 @@
 
 | File | Responsibility |
 |---|---|
-| `src/inference/ood.py` (new) | All OOD math: PCA reduction, Mahalanobis distance, cosine distance, mixture score, batched embedding extraction, save/load of stats to `.npz` |
-| `src/schema.py` (modify) | Add `ClassEmbeddingStats` (the artifact schema) and extend `PredictResult` with `ood_score`/`in_distribution` fields |
-| `src/settings.py` (modify) | Add `OOD_PCA_COMPONENTS`, `OOD_MAHALANOBIS_WEIGHT`, `OOD_THRESHOLD` |
-| `src/inference/classify.py` (modify) | `BertTunningClassifier` lazy-loads `ood_stats.npz` next to the model; `predict_text` computes and attaches the OOD fields in the same forward pass |
+| `src/inference/ood.py` (new) | All OOD math: PCA reduction, Mahalanobis distance, cosine distance, separate z-score functions, batched embedding extraction, save/load of stats to `.npz` |
+| `src/schema.py` (modify) | Add `ClassEmbeddingStats` (the artifact schema) and extend `PredictResult` with `mahalanobis_z`/`cosine_z`/`in_distribution` fields |
+| `src/settings.py` (modify) | Add `OOD_PCA_COMPONENTS`, `OOD_MAHALANOBIS_THRESHOLD`, `OOD_COSINE_THRESHOLD` |
+| `src/inference/classify.py` (modify) | `BertTunningClassifier` lazy-loads `ood_stats.npz` next to the model; `predict_text` computes both z-scores and attaches them (plus the OR-based `in_distribution` flag) in the same forward pass |
 | `src/training/pipeline.py` (modify) | After `trainer.train()`, extract training-set embeddings and persist `ood_stats.npz` next to the saved model |
 | `src/cli/ood_stats.py` (new) | Standalone `compute-ood-stats` command — backfills `ood_stats.npz` for the 5 already-trained models without retraining |
 | `main.py` (modify) | Register `compute-ood-stats` command |
