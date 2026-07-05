@@ -209,6 +209,11 @@ models/hub/
 models/bert_tunning_model/
 models/bert_tunning_model_*/
 
+# Exception: BETO v2 is tracked via Git LFS (see .gitattributes) — best-performing
+# model (macro F1 0.976), kept in the repo for reproducibility.
+!models/bert_tunning_model_beto_v2/
+!models/bert_tunning_model_beto_v2/**
+
 # Cache / data
 data/
 bert_tunning_predictions.csv
