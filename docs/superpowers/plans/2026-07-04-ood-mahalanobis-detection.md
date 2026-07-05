@@ -48,13 +48,16 @@
 - Test: `tests/inference/test_ood.py` (new)
 
 **Interfaces:**
-- Produces: `ClassEmbeddingStats` (Pydantic model in `src/schema.py`) with fields `class_names: list[str]`, `pca_mean: npt.NDArray[np.float64]`, `pca_components: npt.NDArray[np.float64]`, `centroids: npt.NDArray[np.float64]`, `covariance_inv: npt.NDArray[np.float64]`, `maha_calibration_mean: float`, `maha_calibration_std: float`, `cosine_calibration_mean: float`, `cosine_calibration_std: float`
-- Produces: `compute_class_stats(embeddings: npt.NDArray[np.float64], labels: list[int], class_names: list[str], *, n_components: int = 64, covariance_epsilon: float = 1e-6) -> ClassEmbeddingStats`
+- Produces: `ClassEmbeddingStats` (Pydantic model in `src/schema.py`) with fields `class_names: list[str]`, `pca_mean: Float64Array`, `pca_components: Float64Array`, `centroids: Float64Array`, `covariance_inv: Float64Array`, `maha_calibration_mean: float`, `maha_calibration_std: float`, `cosine_calibration_mean: float`, `cosine_calibration_std: float` — array fields use `Float64Array` (`Annotated[npt.NDArray[np.float64], BeforeValidator(...)]`, defined in `src/schema.py`), which coerces/validates dtype at construction instead of relying on `arbitrary_types_allowed=True`'s bare `isinstance` pass-through
+- Produces: `compute_class_stats(embeddings: npt.NDArray[np.float64], labels: list[int], class_names: list[str], *, n_components: int = 64, covariance_epsilon: float = 1e-6) -> ClassEmbeddingStats` — internally uses a private `_PcaReduction` Pydantic model (not exported) instead of an undocumented 3-tuple return from `_reduce_dimensionality`
 - Produces: `mahalanobis_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float`
 - Produces: `cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float`
-- Produces: `ood_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats, *, mahalanobis_weight: float = 0.7) -> float`
+- Produces: `mahalanobis_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float` — Mahalanobis distance to the nearest centroid, z-scored against the training set's own distances
+- Produces: `cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float` — cosine distance to the nearest centroid, z-scored the same way
 - Produces: `save_stats(stats: ClassEmbeddingStats, path: Path) -> None` and `load_stats(path: Path) -> ClassEmbeddingStats`
 - Produces: `extract_embeddings(model: torch.nn.Module, tokenizer: PreTrainedTokenizerBase, texts: list[str], *, max_length: int, device: str, batch_size: int = 16) -> npt.NDArray[np.float64]`
+
+**Revision note:** the original version of this task shipped a single `ood_score()` function that combined both z-scores into one weighted average (`mahalanobis_weight=0.7`). This was replaced with two separate exposed functions (`mahalanobis_z_score`, `cosine_z_score`) — see the top-level Architecture note for why (averaging can hide a strong signal on one axis).
 
 - [ ] **Step 1: Write the failing tests**
 
