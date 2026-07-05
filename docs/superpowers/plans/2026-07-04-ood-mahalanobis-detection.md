@@ -28,6 +28,8 @@
 | `src/settings.py` (modify) | Add `OOD_PCA_COMPONENTS`, `OOD_MAHALANOBIS_WEIGHT`, `OOD_THRESHOLD` |
 | `src/inference/classify.py` (modify) | `BertTunningClassifier` lazy-loads `ood_stats.npz` next to the model; `predict_text` computes and attaches the OOD fields in the same forward pass |
 | `src/training/pipeline.py` (modify) | After `trainer.train()`, extract training-set embeddings and persist `ood_stats.npz` next to the saved model |
+| `src/cli/ood_stats.py` (new) | Standalone `compute-ood-stats` command — backfills `ood_stats.npz` for the 5 already-trained models without retraining |
+| `main.py` (modify) | Register `compute-ood-stats` command |
 | `src/cli/predict.py` (modify) | Print the OOD fields in `predict_cmd` output |
 | `src/api/routes/predict/schemas.py`, `src/api/routes/predict/endpoints.py` (modify) | Surface `oodScore`/`inDistribution` on `PredictResponse` |
 | `tests/inference/test_ood.py` (new) | Unit tests for the math module — synthetic data, no model loading |
@@ -553,6 +555,195 @@ git commit -m "feat: generate and persist OOD stats after training"
 
 ---
 
+## Task 3b: Standalone `compute-ood-stats` command (backfill existing models)
+
+This task exists because 5 models are already trained and saved without `ood_stats.npz` — retraining them just to get this artifact would be wasteful and could change their results (different run, different resource state). This command reuses Task 1's functions verbatim against an already-trained checkpoint and its original training cache, with no training loop involved — only forward passes through a model that's already trained.
+
+**Precondition confirmed by the user:** all 5 existing training runs (xlm-roberta v1/v2, beto v1/v2, minilm v1) used the same `SEED` (`Settings.SEED`, default `42`), and `--seed` has never been an exposed CLI flag on `train`, so `make_split(df, seed=Settings.SEED)` reproduces the exact same train/val/test split each of those runs actually used, given the same cache file.
+
+**Files:**
+- Create: `src/cli/ood_stats.py`
+- Modify: `main.py`
+- Test: `tests/cli/test_ood_stats.py` (new)
+
+**Interfaces:**
+- Consumes: `extract_embeddings`, `compute_class_stats`, `save_stats` from `src/inference/ood.py` (Task 1); `get_model_config` from `src/training/models`; `make_split` from `src/training/split`; `prepare_text` from `src/training/tokenize`
+- Produces: a `compute-ood-stats` CLI command that writes `{model_path}/ood_stats.npz`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/cli/test_ood_stats.py`:
+
+```python
+from click.testing import CliRunner
+
+from src.cli.ood_stats import compute_ood_stats_cmd
+
+
+def test_compute_ood_stats_cmd_help() -> None:
+    result = CliRunner().invoke(compute_ood_stats_cmd, ["--help"])
+    assert result.exit_code == 0
+    assert "ood_stats" in result.output.lower() or "retraining" in result.output.lower()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/cli/test_ood_stats.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'src.cli.ood_stats'`
+
+- [ ] **Step 3: Write `src/cli/ood_stats.py`**
+
+```python
+import logging
+from pathlib import Path
+
+import click
+import pandas as pd
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
+from sklearn.preprocessing import LabelEncoder
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+from src.inference.ood import compute_class_stats, extract_embeddings, save_stats
+from src.logger import setup_logging
+from src.settings import Settings
+from src.training.models import get_model_config
+from src.training.split import make_split
+from src.training.tokenize import prepare_text
+
+log = logging.getLogger(__name__)
+
+
+class ComputeOodStatsOptions(BaseModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        frozen=True,
+        populate_by_name=True,
+    )
+
+    model_path: str
+    model_key: str
+    cache_path: str
+    chunk_strategy: str = Settings.CHUNK_STRATEGY
+    seed: int = Settings.SEED
+    debug: bool = False
+
+
+def _run_compute_ood_stats(opts: ComputeOodStatsOptions) -> None:
+    log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    log.info("Logging to %s", log_file)
+
+    model_cfg = get_model_config(opts.model_key)
+    df = pd.read_parquet(opts.cache_path)
+
+    le = LabelEncoder()
+    df["label_id"] = le.fit_transform(df["label"])
+    log.info("%d classes: %s", len(le.classes_), list(le.classes_))
+
+    train_df, _val_df, _test_df = make_split(df, seed=opts.seed)
+    log.info("Reconstructed train split: %d docs", len(train_df))
+
+    tokenizer = AutoTokenizer.from_pretrained(opts.model_path)
+    model = AutoModelForSequenceClassification.from_pretrained(opts.model_path)
+    model.eval()
+
+    texts = [prepare_text(t, tokenizer, opts.chunk_strategy) for t in train_df["text"]]
+    embeddings = extract_embeddings(
+        model, tokenizer, texts, max_length=model_cfg.max_tokens, device=str(model.device)
+    )
+    stats = compute_class_stats(
+        embeddings,
+        train_df["label_id"].tolist(),
+        list(le.classes_),
+        n_components=Settings.OOD_PCA_COMPONENTS,
+    )
+
+    out_path = Path(opts.model_path) / "ood_stats.npz"
+    save_stats(stats, out_path)
+    log.info("Saved OOD stats → %s", out_path)
+
+
+@click.command("compute-ood-stats")
+@click.option("--model-path", required=True, help="Path to an already-trained model directory")
+@click.option(
+    "--model",
+    "model_key",
+    required=True,
+    help="Model registry key used for that model (e.g. beto, xlm-roberta, minilm)",
+)
+@click.option(
+    "--cache-path", required=True, help="Path to the exact parquet cache used to train that model"
+)
+@click.option("--chunk-strategy", default=Settings.CHUNK_STRATEGY, show_default=True)
+@click.option(
+    "--seed",
+    default=Settings.SEED,
+    show_default=True,
+    help="Must match the seed used for the original training run, or the reconstructed train split will differ",
+)
+@click.option("--debug", is_flag=True, default=False)
+def compute_ood_stats_cmd(**kwargs: str | int | bool) -> None:
+    """Backfill ood_stats.npz for an already-trained model, without retraining it."""
+    _run_compute_ood_stats(ComputeOodStatsOptions.model_validate(kwargs))
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `uv run pytest tests/cli/test_ood_stats.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Register the command in `main.py`**
+
+Add the import:
+
+```python
+from src.cli.ood_stats import compute_ood_stats_cmd
+```
+
+Add the registration line after `cli.add_command(clean_cmd, name="clean")`:
+
+```python
+cli.add_command(compute_ood_stats_cmd, name="compute-ood-stats")
+```
+
+- [ ] **Step 6: Run full check**
+
+Run: `uv run poe check`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/cli/ood_stats.py main.py tests/cli/test_ood_stats.py
+git commit -m "feat: add compute-ood-stats command to backfill existing models"
+```
+
+- [ ] **Step 8: Manual verification against your 5 existing models**
+
+Run once per already-trained model, using the cache/model-key mapping below (confirmed from the training results table in `README.md`):
+
+```powershell
+# xlm-roberta v1
+uv run python main.py compute-ood-stats --model-path ./models/<xlm_roberta_v1_output_dir>/final --model xlm-roberta --cache-path ./data/bert_tunning_cache_100.parquet
+
+# xlm-roberta v2
+uv run python main.py compute-ood-stats --model-path ./models/<xlm_roberta_v2_output_dir>/final --model xlm-roberta --cache-path ./data/bert_tunning_cache_300.parquet
+
+# beto v1
+uv run python main.py compute-ood-stats --model-path ./models/bert_tunning_model_beto_v2/final --model beto --cache-path ./data/bert_tunning_cache_300.parquet
+
+# beto v2 (9-class run, includes otro)
+uv run python main.py compute-ood-stats --model-path ./models/<beto_v2_output_dir>/final --model beto --cache-path ./data/bert_tunning_cache_con_otro_300.parquet
+
+# minilm v1
+uv run python main.py compute-ood-stats --model-path ./models/<minilm_v1_output_dir>/final --model minilm --cache-path ./data/bert_tunning_cache_300.parquet
+```
+
+Replace `<..._output_dir>` with the actual `OUTPUT_DIR` used for each run (check `logs/` or your own records — these aren't tracked in this repo since `models/` is git-ignored). Expected after each run: `ood_stats.npz` appears in that model's `final/` directory.
+
+---
+
 ## Task 4: Load stats + score at inference time
 
 **Files:**
@@ -932,10 +1123,11 @@ git commit -m "docs: document Mahalanobis/cosine OOD detection"
 **Spec coverage:**
 - Mahalanobis distance instead of pure cosine → Task 1 (`mahalanobis_min_distance`)
 - "Or maybe a mixture" → Task 1 (`ood_score` combines both via weighted z-score)
-- Approve per PR each of those changes → 6 independently mergeable tasks, each endings in a commit; each maps 1:1 to a worktree + PR in this project's existing git workflow
+- Approve per PR each of those changes → 7 independently mergeable tasks (1, 2, 3, 3b, 4, 5, 6), each ending in a commit; each maps 1:1 to a worktree + PR in this project's existing git workflow
 - Never knowing the true universe of out-of-category documents → the design doesn't try to enumerate negative classes; it flags "far from everything known," which generalizes to unseen document types by construction, unlike expanding the `otro` class
 - No retraining of existing 5 models → confirmed, Tasks 1/2 add no training-time behavior; Task 3 only affects *future* training runs; Tasks 4/5 gracefully no-op (`None` fields) for model directories without `ood_stats.npz`
+- What about the 4 other already-trained models (not just BETO v1) → Task 3b backfills `ood_stats.npz` for all 5 existing checkpoints (xlm-roberta v1/v2, beto v1/v2, minilm v1) by reconstructing each run's exact train split via the confirmed-constant `SEED`, with no retraining
 
-**Placeholder scan:** no TBD/TODO, no "add error handling" placeholders — all code blocks are complete and runnable as written.
+**Placeholder scan:** no TBD/TODO, no "add error handling" placeholders — all code blocks are complete and runnable as written. Task 3b's manual verification step has `<..._output_dir>` placeholders, but those are explicitly called out as values the user must substitute from their own run records (not tracked in git since `models/` is git-ignored) — not a plan placeholder.
 
-**Type consistency:** `ClassEmbeddingStats`, `compute_class_stats`, `mahalanobis_min_distance`, `cosine_min_distance`, `ood_score`, `save_stats`, `load_stats`, `extract_embeddings` are defined once in Task 1 and referenced with identical names/signatures in Tasks 3 and 4. `PredictResult.ood_score`/`in_distribution` defined in Task 2, consumed identically in Task 4 (classify.py) and Task 5 (CLI/API).
+**Type consistency:** `ClassEmbeddingStats`, `compute_class_stats`, `mahalanobis_min_distance`, `cosine_min_distance`, `ood_score`, `save_stats`, `load_stats`, `extract_embeddings` are defined once in Task 1 and referenced with identical names/signatures in Tasks 3, 3b, and 4. `PredictResult.ood_score`/`in_distribution` defined in Task 2, consumed identically in Task 4 (classify.py) and Task 5 (CLI/API). Task 3b's `_run_compute_ood_stats` reconstructs the exact same `le.fit_transform` / `make_split` / `prepare_text` sequence that `training/pipeline.py`'s `run()` uses, so the two code paths produce consistent `label_id` ordering and text preprocessing.
