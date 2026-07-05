@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.exceptions import BertTunningError
 from src.ingestion.extract import extract_pdf
 from src.settings import Settings
 
@@ -38,7 +39,12 @@ def build_dataset(
 
         for i, pdf_path in enumerate(pdfs, start=1):
             log.info("[%d/%d] %s", i, len(pdfs), pdf_path.name)
-            text = extract_pdf(str(pdf_path), use_ocr_fallback=use_ocr)
+            try:
+                text = extract_pdf(str(pdf_path), use_ocr_fallback=use_ocr)
+            except BertTunningError as e:
+                log.warning("Skipping %s — %s", pdf_path.name, e)
+                skipped += 1
+                continue
             if text is None:
                 skipped += 1
                 continue

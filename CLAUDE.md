@@ -4,14 +4,16 @@
 
 Bert Tunning fine-tunes transformer models on Spanish municipal PDF documents to classify them by document type (decreto, ordenanza, resolución, etc.). Built for Argentine municipalities.
 
-## Current State (June 2026)
+## Current State (July 2026)
 
-Scaffold migration from flat-file layout to `src/` pipeline is complete. All 9 tasks implemented on `feature/scaffold-migration`. Final PR to `master` pending.
+Scaffold migration from flat-file layout to `src/` pipeline is complete, plus a round of post-migration code-review fixes (class weights, empty-text guards, extractor error handling, CLI `populate_by_name` fix). `feature/scaffold-migration` is being merged to `master` now.
+
+An out-of-distribution (Mahalanobis/cosine) detection feature is planned (`docs/superpowers/plans/2026-07-04-ood-mahalanobis-detection.md`) but **not yet merged** — two of its tasks exist as open PRs (#17, #18) that were deliberately left unmerged so this migration could close first. That work continues on a new branch after this merge.
 
 Branch strategy:
 - `master` — stable, production-ready
-- `feature/scaffold-migration` — integration branch, ready for PR to master
-- `task/N-*` — per-task branches (all merged into `feature/scaffold-migration`)
+- `feature/scaffold-migration` — integration branch, merged to master
+- `task/N-*` — per-task branches (merged into `feature/scaffold-migration`, or superseded — see note above for `task/17-ood-math-module`/`task/18-ood-settings-schema`)
 
 ## Tech Stack
 
@@ -98,13 +100,13 @@ src/
 │   ├── split.py        stratified train/val/test split
 │   ├── tokenize.py     BertTunningDataset, prepare_text
 │   ├── trainer.py      WeightedTrainer, compute_metrics
-│   ├── evaluate.py     run_evaluation() → EvaluationResult (Pydantic)
+│   ├── evaluate.py     run_evaluation() → EvaluationResult (defined in schema.py; macro_f1/accuracy are @property)
 │   ├── reporting.py    generate_html_report() → reports/
 │   ├── wandb_logger.py WandbLogger class
 │   └── pipeline.py     orchestrates split → tokenize → train → evaluate
 ├── inference/
 │   ├── classify.py     BertTunningClassifier, predict_text
-│   └── pipeline.py     predict_pdf, predict_folder
+│   └── pipeline.py     predict_pdf() → PredictResult; predict_folder() → list[PredictResult]
 ├── api/
 │   ├── app.py          create_app(model_path, threshold) → FastAPI
 │   ├── schema.py       BaseSchema (camelCase aliases)
@@ -159,6 +161,9 @@ All settings live in `_Settings(BaseSettings)` and are overridable via `.env`:
 | `API_PORT` | `8000` | Uvicorn port |
 | `HOST` | `127.0.0.1` | Uvicorn host |
 | `THRESHOLD` | `0.70` | Confidence threshold for `certain` flag |
+| `PREDICT_THRESHOLD` | `0.70` | Confidence threshold used by `predict`/`predict-folder` CLI commands |
+| `PREDICT_CONFIDENCE` | `0.0` | Confidence value reported for unreadable/empty documents |
+| `MAX_DOCS_PER_CLASS` | `10` | Minimum allowed value for `--max-docs-per-class` — also the ingestion default when unset |
 
 Model hyperparameters (`lr`, `batch_size`, `grad_accum`, `max_tokens`, `force_fp32`) live in `ModelConfig`, not in settings.
 
@@ -211,7 +216,16 @@ This is a script project, not an installable package. Without this, uv tries to 
 Enables `from src.ingestion.extract import ...` imports in tests without installing the package.
 
 **MAX_TOKENS hard limit**
-XLM-RoBERTa and BETO have a 512-token architectural maximum (positional embeddings). The median document in the corpus is ~654 tokens. `CHUNK_STRATEGY="middle"` (first 256 + last 256) captures more signal than `"first"` for longer documents (ordenanzas, resoluciones).
+XLM-RoBERTa and BETO have a 512-token architectural maximum (positional embeddings). The median document in the corpus is ~654 tokens. `CHUNK_STRATEGY="middle"` (first 256 + last 256) captures more signal than `"first"` for longer documents (ordenanzas, resoluciones). Note: `val`/`test` splits in `training/pipeline.py` currently hardcode `"first"` regardless of `CHUNK_STRATEGY` — only `train` respects the configured strategy. Harmless while `CHUNK_STRATEGY="first"` is the only strategy in active use.
+
+**`populate_by_name=True` required alongside `alias_generator=to_camel` on CLI-facing Pydantic models**
+`TrainOptions` and `PredictFolderOptions` set `alias_generator=to_camel` so they can also accept camelCase JSON. But Click always passes kwargs in snake_case (the Python parameter name), and Pydantic v2's `model_validate()` only accepts the alias form when an `alias_generator` is set — silently falling back to field defaults for any key it doesn't recognize as an alias, without raising, unless the field is required (in which case it raises `Field required` for the alias name, which is confusing since the caller passed the snake_case name). Any new Pydantic options class fed from Click must set `populate_by_name=True` or its CLI flags will be silently ignored.
+
+**`extract_pdf` raises `BertTunningError` when every extractor in the chain fails**
+Previously returned `None` silently. Now: individual extractor failures are logged at `WARNING` and the chain continues to the next extractor; only if *all* extractors raise does `extract_pdf` raise `BertTunningError`. **Known gap:** `src/ingestion/scan.py`'s `build_dataset()` does not catch this exception — a single totally-unreadable PDF during a `train` ingestion run will currently abort the whole scan instead of being skipped and logged like other extraction failures. Needs a try/except around the `extract_pdf` call in `scan.py`.
+
+**`compute_class_weight` uses `np.arange(num_labels)`, not `np.unique(train_df["label_id"])`**
+If a class is absent from the training split (small per-class counts + stratified split can produce this), computing weights only over classes present in `train_df` produces a weight tensor shorter than `num_labels`, which crashes `CrossEntropyLoss`. `np.arange(num_labels)` guarantees every class gets a weight (sklearn assigns `1.0` to any class absent from `y`).
 
 ## Git Workflow
 

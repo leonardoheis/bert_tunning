@@ -62,7 +62,7 @@ src/
 │   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
 │   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py
 │                      reporting.py · wandb_logger.py
-├── inference/         classify.py · pipeline.py
+├── inference/         classify.py (BertTunningClassifier) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
 ├── api/               app.py · schema.py · __init__.py · routes/predict/ · routes/health/
 └── cli/               train.py · predict.py · clean.py
 
@@ -186,8 +186,11 @@ uv run python main.py train --docs-root "C:\path\to\downloads"
 # Use BETO instead of XLM-RoBERTa
 uv run python main.py train --docs-root "C:\path\to\downloads" --model beto
 
-# Quick test run — cap at 100 docs per class
+# Quick test run — cap at 100 docs per class (minimum 10)
 uv run python main.py train --docs-root "C:\path\to\downloads" --max-docs-per-class 100
+
+# Custom epoch count
+uv run python main.py train --docs-root "C:\path\to\downloads" --epochs 20
 
 # Force re-extraction (ignore cached parquet)
 uv run python main.py train --docs-root "C:\path\to\downloads" --rebuild-cache
@@ -203,8 +206,10 @@ uv run python main.py train --docs-root "C:\path\to\downloads" --no-wandb
 uv run python main.py predict path/to/documento.pdf
 
 # Folder of PDFs → saves results to bert_tunning_predictions.csv
-uv run python main.py predict-folder path/to/folder
+uv run python main.py predict-folder path/to/folder --output results.csv
 ```
+
+Documents that yield no usable text (blank, corrupted, or below `MIN_USABLE_TEXT` characters) are reported as `label: null, error: "empty/unreadable document"` instead of a spurious classification — this applies to both commands and the API.
 
 Output:
 ```
