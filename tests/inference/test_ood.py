@@ -8,10 +8,11 @@ import torch
 from src.inference.ood import (
     compute_class_stats,
     cosine_min_distance,
+    cosine_z_score,
     extract_embeddings,
     load_stats,
     mahalanobis_min_distance,
-    ood_score,
+    mahalanobis_z_score,
     save_stats,
 )
 
@@ -58,12 +59,20 @@ def test_in_distribution_point_has_lower_cosine_distance_than_far_point() -> Non
     assert far_distance > known_distance
 
 
-def test_ood_score_is_higher_for_far_point() -> None:
+def test_mahalanobis_z_score_is_higher_for_far_point() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
-    assert ood_score(far_point, stats) > ood_score(known_point, stats)
+    assert mahalanobis_z_score(far_point, stats) > mahalanobis_z_score(known_point, stats)
+
+
+def test_cosine_z_score_is_higher_for_far_point() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    known_point = embeddings[0]
+    far_point = np.array([100.0 if i % 2 == 0 else -100.0 for i in range(16)])
+    assert cosine_z_score(far_point, stats) > cosine_z_score(known_point, stats)
 
 
 def test_save_and_load_stats_roundtrip(tmp_path: Path) -> None:

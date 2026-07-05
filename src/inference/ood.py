@@ -105,17 +105,16 @@ def cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddin
     return _cosine_min_distance_raw(point, stats.centroids)
 
 
-def ood_score(
-    embedding: npt.NDArray[np.float64],
-    stats: ClassEmbeddingStats,
-    *,
-    mahalanobis_weight: float = 0.7,
-) -> float:
+def mahalanobis_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
+    """Mahalanobis distance to the nearest centroid, z-scored against the training set."""
     maha_raw = mahalanobis_min_distance(embedding, stats)
+    return (maha_raw - stats.maha_calibration_mean) / stats.maha_calibration_std
+
+
+def cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
+    """Cosine distance to the nearest centroid, z-scored against the training set."""
     cosine_raw = cosine_min_distance(embedding, stats)
-    maha_z = (maha_raw - stats.maha_calibration_mean) / stats.maha_calibration_std
-    cosine_z = (cosine_raw - stats.cosine_calibration_mean) / stats.cosine_calibration_std
-    return mahalanobis_weight * maha_z + (1 - mahalanobis_weight) * cosine_z
+    return (cosine_raw - stats.cosine_calibration_mean) / stats.cosine_calibration_std
 
 
 def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
