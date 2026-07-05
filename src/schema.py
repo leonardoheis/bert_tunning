@@ -17,6 +17,8 @@ class PredictResult(BaseModel):
     all_scores: dict[str, float] = {}
     filename: str = ""
     error: str = ""
+    ood_score: float | None = None
+    in_distribution: bool | None = None
 
 
 # classification_report(output_dict=True) returns per-class dicts and scalar floats.

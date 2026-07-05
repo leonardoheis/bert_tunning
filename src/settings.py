@@ -61,6 +61,9 @@ class _Settings(BaseSettings):
     MAX_DOCS_PER_CLASS: int = 10
     PREDICT_THRESHOLD: float = 0.70
     PREDICT_CONFIDENCE: float = 0.0
+    OOD_PCA_COMPONENTS: int = 64
+    OOD_MAHALANOBIS_WEIGHT: float = 0.7
+    OOD_THRESHOLD: float = 2.5
 
     model_config = SettingsConfigDict(
         env_file=".env",
