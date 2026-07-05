@@ -32,6 +32,7 @@
 | `main.py` (modify) | Register `compute-ood-stats` command |
 | `src/cli/predict.py` (modify) | Print the OOD fields in `predict_cmd` output |
 | `src/api/routes/predict/schemas.py`, `src/api/routes/predict/endpoints.py` (modify) | Surface `oodScore`/`inDistribution` on `PredictResponse` |
+| `src/ingestion/extract.py` (modify) | Add `extract_pdf_with_metadata()` — returns which extractor succeeded and the extracted text, alongside the existing `extract_pdf()` (unchanged, now a thin wrapper) |
 | `tests/inference/test_ood.py` (new) | Unit tests for the math module — synthetic data, no model loading |
 | `tests/inference/test_pipeline.py` (modify) | Extend the existing mocked-classifier tests to cover stats-present / stats-absent cases |
 | `tests/api/test_predict.py`, `tests/cli/test_commands.py` (modify) | Cover the new response fields |
