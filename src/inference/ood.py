@@ -3,19 +3,28 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import torch
+from pydantic import BaseModel, ConfigDict
 from sklearn.decomposition import PCA
 from transformers import PreTrainedTokenizerBase
 
-from src.schema import ClassEmbeddingStats
+from src.schema import ClassEmbeddingStats, Float64Array
 
 
-def _reduce_dimensionality(
-    embeddings: npt.NDArray[np.float64], n_components: int
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+class _PcaReduction(BaseModel):
+    """Internal return type for _reduce_dimensionality — not part of the public schema."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    reduced: Float64Array
+    mean: Float64Array
+    components: Float64Array
+
+
+def _reduce_dimensionality(embeddings: npt.NDArray[np.float64], n_components: int) -> _PcaReduction:
     capped = min(n_components, embeddings.shape[0] - 1, embeddings.shape[1])
     pca = PCA(n_components=capped)
     reduced = pca.fit_transform(embeddings)
-    return reduced, pca.mean_.astype(np.float64), pca.components_.astype(np.float64)
+    return _PcaReduction(reduced=reduced, mean=pca.mean_, components=pca.components_)
 
 
 def _project(
@@ -51,7 +60,8 @@ def compute_class_stats(
     n_components: int = 64,
     covariance_epsilon: float = 1e-6,
 ) -> ClassEmbeddingStats:
-    reduced, pca_mean, pca_components = _reduce_dimensionality(embeddings, n_components)
+    pca_result = _reduce_dimensionality(embeddings, n_components)
+    reduced = pca_result.reduced
     labels_arr = np.asarray(labels)
 
     centroids = np.stack([reduced[labels_arr == k].mean(axis=0) for k in range(len(class_names))])
@@ -72,8 +82,8 @@ def compute_class_stats(
 
     return ClassEmbeddingStats(
         class_names=class_names,
-        pca_mean=pca_mean,
-        pca_components=pca_components,
+        pca_mean=pca_result.mean,
+        pca_components=pca_result.components,
         centroids=centroids,
         covariance_inv=covariance_inv,
         maha_calibration_mean=float(maha_scores.mean()),

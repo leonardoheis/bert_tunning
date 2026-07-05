@@ -1,9 +1,20 @@
 """Shared Pydantic model definitions used across the Bert Tunning pipeline."""
 
+from typing import Annotated
+
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 from pydantic.alias_generators import to_camel
+
+
+def _as_float64_array(value: object) -> npt.NDArray[np.float64]:
+    return np.asarray(value, dtype=np.float64)
+
+
+# Coerces/validates to a float64 ndarray at construction time — arbitrary_types_allowed=True
+# alone only checks isinstance(value, np.ndarray), silently accepting any dtype/shape.
+Float64Array = Annotated[npt.NDArray[np.float64], BeforeValidator(_as_float64_array)]
 
 
 class PredictResult(BaseModel):
@@ -49,10 +60,10 @@ class ClassEmbeddingStats(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     class_names: list[str]
-    pca_mean: npt.NDArray[np.float64]
-    pca_components: npt.NDArray[np.float64]
-    centroids: npt.NDArray[np.float64]
-    covariance_inv: npt.NDArray[np.float64]
+    pca_mean: Float64Array
+    pca_components: Float64Array
+    centroids: Float64Array
+    covariance_inv: Float64Array
     maha_calibration_mean: float
     maha_calibration_std: float
     cosine_calibration_mean: float
