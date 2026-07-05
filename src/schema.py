@@ -43,6 +43,22 @@ class EvaluationResult(BaseModel):
         return float(accuracy_raw) if isinstance(accuracy_raw, float) else 0.0
 
 
+class ClassEmbeddingStats(BaseModel):
+    """Per-class embedding centroids + shared covariance for Mahalanobis/cosine OOD scoring."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    class_names: list[str]
+    pca_mean: npt.NDArray[np.float64]
+    pca_components: npt.NDArray[np.float64]
+    centroids: npt.NDArray[np.float64]
+    covariance_inv: npt.NDArray[np.float64]
+    maha_calibration_mean: float
+    maha_calibration_std: float
+    cosine_calibration_mean: float
+    cosine_calibration_std: float
+
+
 class Hyperparams(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
 
