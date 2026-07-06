@@ -66,8 +66,6 @@ class ClassEmbeddingStats(BaseModel):
     pca_components: Float64Array
     centroids: Float64Array
     covariance_inv: Float64Array
-    maha_calibration_mean: float
-    maha_calibration_std: float
     cosine_calibration_mean: float
     cosine_calibration_std: float
 

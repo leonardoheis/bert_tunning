@@ -4,6 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 from pydantic import BaseModel, ConfigDict
+from scipy.stats import chi2
 from sklearn.decomposition import PCA
 from transformers import PreTrainedTokenizerBase
 
@@ -70,12 +71,6 @@ def compute_class_stats(
     covariance_reg = covariance + covariance_epsilon * np.eye(covariance.shape[0])
     covariance_inv = np.linalg.inv(covariance_reg)
 
-    maha_scores = np.array(
-        [
-            _mahalanobis_min_distance_raw(reduced[i], centroids, covariance_inv)
-            for i in range(reduced.shape[0])
-        ]
-    )
     cosine_scores = np.array(
         [_cosine_min_distance_raw(reduced[i], centroids) for i in range(reduced.shape[0])]
     )
@@ -86,8 +81,6 @@ def compute_class_stats(
         pca_components=pca_result.components,
         centroids=centroids,
         covariance_inv=covariance_inv,
-        maha_calibration_mean=float(maha_scores.mean()),
-        maha_calibration_std=float(maha_scores.std() + 1e-9),
         cosine_calibration_mean=float(cosine_scores.mean()),
         cosine_calibration_std=float(cosine_scores.std() + 1e-9),
     )
@@ -105,10 +98,15 @@ def cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddin
     return _cosine_min_distance_raw(point, stats.centroids)
 
 
-def mahalanobis_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
-    """Mahalanobis distance to the nearest centroid, z-scored against the training set."""
-    maha_raw = mahalanobis_min_distance(embedding, stats)
-    return (maha_raw - stats.maha_calibration_mean) / stats.maha_calibration_std
+def mahalanobis_p_value(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
+    """Probability a genuinely in-distribution point would be at least this far from its
+    nearest class centroid, under the standard assumption (the same one Mahalanobis distance
+    itself relies on) that class-conditional embeddings are multivariate Gaussian: the squared
+    Mahalanobis distance of such a point follows a chi-squared distribution with `df` equal to
+    the embedding dimensionality. A LOW p-value means the document is anomalous."""
+    squared_distance = mahalanobis_min_distance(embedding, stats)
+    degrees_of_freedom = stats.centroids.shape[1]
+    return float(1.0 - chi2.cdf(squared_distance, df=degrees_of_freedom))
 
 
 def cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
@@ -125,8 +123,6 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
         pca_components=stats.pca_components,
         centroids=stats.centroids,
         covariance_inv=stats.covariance_inv,
-        maha_calibration_mean=stats.maha_calibration_mean,
-        maha_calibration_std=stats.maha_calibration_std,
         cosine_calibration_mean=stats.cosine_calibration_mean,
         cosine_calibration_std=stats.cosine_calibration_std,
     )
@@ -140,8 +136,6 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         pca_components=data["pca_components"],
         centroids=data["centroids"],
         covariance_inv=data["covariance_inv"],
-        maha_calibration_mean=float(data["maha_calibration_mean"]),
-        maha_calibration_std=float(data["maha_calibration_std"]),
         cosine_calibration_mean=float(data["cosine_calibration_mean"]),
         cosine_calibration_std=float(data["cosine_calibration_std"]),
     )
