@@ -38,6 +38,7 @@
 | `src/inference/classify.py` (modify) | `BertTunningClassifier` lazy-loads `ood_stats.npz` next to the model; `predict_text` computes both z-scores and attaches them (plus the OR-based `in_distribution` flag) in the same forward pass |
 | `src/training/pipeline.py` (modify) | After `trainer.train()`, extract training-set embeddings and persist `ood_stats.npz` next to the saved model |
 | `src/cli/ood_stats.py` (new) | Standalone `compute-ood-stats` command — backfills `ood_stats.npz` for the 5 already-trained models without retraining |
+| `src/cli/ood_calibration.py` (new) | Standalone `evaluate-ood-calibration` command — measures the empirical false-positive rate of the OOD thresholds against the model's own test split, no retraining |
 | `main.py` (modify) | Register `compute-ood-stats` command |
 | `src/cli/predict.py` (modify) | Print the OOD fields in `predict_cmd` output |
 | `src/api/routes/predict/schemas.py`, `src/api/routes/predict/endpoints.py` (modify) | Surface `oodScore`/`inDistribution` on `PredictResponse` |
@@ -1123,6 +1124,221 @@ git commit -m "feat: surface Mahalanobis/cosine z-scores and in-distribution fla
 
 ---
 
+## Task 6: Empirical OOD threshold calibration report
+
+**Motivation:** `OOD_MAHALANOBIS_P_THRESHOLD=0.01` is a *theoretical* significance level — it's only a trustworthy false-positive rate if the training embeddings are actually well-approximated by a multivariate Gaussian (the assumption the chi-squared distribution depends on). `OOD_COSINE_THRESHOLD=2.5` has no theoretical grounding at all. Neither has been checked against real data. This task adds a standalone command that measures the *actual* false-positive rate of both thresholds using data already available: the model's own held-out test split, which is known in-distribution by construction (it's real training documents, just excluded from the train split). This does **not** require retraining — it reuses the same split-reconstruction trick as Task 3b (same cache file + `seed` → same `train_test_split` result), runs the already-trained model + already-computed `ood_stats.npz` over the test split, and reports the empirical false-positive rate plus a suggested empirically-calibrated threshold.
+
+**Files:**
+- Create: `src/cli/ood_calibration.py`
+- Modify: `main.py` (register the command)
+- Test: `tests/cli/test_ood_calibration.py` (new)
+
+**Interfaces:**
+- Consumes: `mahalanobis_p_value`, `cosine_z_score`, `extract_embeddings`, `load_stats` from `src/inference/ood.py` (Task 1); `make_split` from `src/training/split.py`; `prepare_text` from `src/training/tokenize.py`; `get_model_config` from `src/training/models`; `Settings.OOD_MAHALANOBIS_P_THRESHOLD`/`OOD_COSINE_THRESHOLD` (Task 2) — the same dependencies Task 3b already has, since this command is structurally similar (reconstruct the split, load the model, run OOD scoring — no training loop)
+- Produces: an `evaluate-ood-calibration` CLI command that logs the empirical false-positive rate at the current thresholds, plus a suggested empirical threshold for a target false-positive rate
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/cli/test_ood_calibration.py`:
+
+```python
+from click.testing import CliRunner
+
+from src.cli.ood_calibration import evaluate_ood_calibration_cmd
+
+
+def test_evaluate_ood_calibration_cmd_help() -> None:
+    result = CliRunner().invoke(evaluate_ood_calibration_cmd, ["--help"])
+    assert result.exit_code == 0
+    assert "calibrat" in result.output.lower() or "false-positive" in result.output.lower()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/cli/test_ood_calibration.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'src.cli.ood_calibration'`
+
+- [ ] **Step 3: Write `src/cli/ood_calibration.py`**
+
+```python
+import logging
+from pathlib import Path
+
+import click
+import numpy as np
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
+from sklearn.preprocessing import LabelEncoder
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import pandas as pd
+
+from src.inference.ood import cosine_z_score, extract_embeddings, load_stats, mahalanobis_p_value
+from src.logger import setup_logging
+from src.settings import Settings
+from src.training.models import get_model_config
+from src.training.split import make_split
+from src.training.tokenize import prepare_text
+
+log = logging.getLogger(__name__)
+
+
+class OodCalibrationOptions(BaseModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        frozen=True,
+        populate_by_name=True,
+    )
+
+    model_path: str
+    model_key: str
+    cache_path: str
+    chunk_strategy: str = Settings.CHUNK_STRATEGY
+    seed: int = Settings.SEED
+    target_fp_rate: float = 0.01
+    debug: bool = False
+
+
+def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
+    log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    log.info("Logging to %s", log_file)
+
+    model_cfg = get_model_config(opts.model_key)
+    df = pd.read_parquet(opts.cache_path)
+
+    le = LabelEncoder()
+    df["label_id"] = le.fit_transform(df["label"])
+
+    # Same split-reconstruction as Task 3b — the test split is known in-distribution
+    # by construction, since it's real training documents held out from the train split.
+    _train_df, _val_df, test_df = make_split(df, seed=opts.seed)
+    log.info("Reconstructed test split: %d docs (known in-distribution)", len(test_df))
+
+    stats_path = Path(opts.model_path) / "ood_stats.npz"
+    if not stats_path.exists():
+        msg = f"No ood_stats.npz found at {stats_path} — run compute-ood-stats first"
+        raise click.ClickException(msg)
+    stats = load_stats(stats_path)
+
+    tokenizer = AutoTokenizer.from_pretrained(opts.model_path)
+    model = AutoModelForSequenceClassification.from_pretrained(opts.model_path)
+    model.eval()
+
+    texts = [prepare_text(t, tokenizer, opts.chunk_strategy) for t in test_df["text"]]
+    embeddings = extract_embeddings(
+        model, tokenizer, texts, max_length=model_cfg.max_tokens, device=str(model.device)
+    )
+
+    p_values = np.array([mahalanobis_p_value(e, stats) for e in embeddings])
+    z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
+
+    fp_rate_maha = float(np.mean(p_values < Settings.OOD_MAHALANOBIS_P_THRESHOLD))
+    fp_rate_cosine = float(np.mean(z_scores > Settings.OOD_COSINE_THRESHOLD))
+
+    suggested_maha_threshold = float(np.percentile(p_values, opts.target_fp_rate * 100))
+    suggested_cosine_threshold = float(np.percentile(z_scores, (1 - opts.target_fp_rate) * 100))
+
+    log.info("=" * 60)
+    log.info("OOD threshold calibration — %s", opts.model_path)
+    log.info("=" * 60)
+    log.info(
+        "Mahalanobis — current threshold=%.4f, empirical false-positive rate=%.2f%%",
+        Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        fp_rate_maha * 100,
+    )
+    log.info(
+        "Mahalanobis — suggested threshold for %.1f%% target FP rate: %.6f",
+        opts.target_fp_rate * 100,
+        suggested_maha_threshold,
+    )
+    log.info(
+        "Cosine — current threshold=%.4f, empirical false-positive rate=%.2f%%",
+        Settings.OOD_COSINE_THRESHOLD,
+        fp_rate_cosine * 100,
+    )
+    log.info(
+        "Cosine — suggested threshold for %.1f%% target FP rate: %.4f",
+        opts.target_fp_rate * 100,
+        suggested_cosine_threshold,
+    )
+
+
+@click.command("evaluate-ood-calibration")
+@click.option("--model-path", required=True, help="Path to an already-trained model directory")
+@click.option(
+    "--model",
+    "model_key",
+    required=True,
+    help="Model registry key used for that model (e.g. beto, xlm-roberta, minilm)",
+)
+@click.option(
+    "--cache-path", required=True, help="Path to the exact parquet cache used to train that model"
+)
+@click.option("--chunk-strategy", default=Settings.CHUNK_STRATEGY, show_default=True)
+@click.option(
+    "--seed",
+    default=Settings.SEED,
+    show_default=True,
+    help="Must match the seed used for the original training run",
+)
+@click.option(
+    "--target-fp-rate",
+    default=0.01,
+    show_default=True,
+    help="Target false-positive rate used to compute the suggested threshold",
+)
+@click.option("--debug", is_flag=True, default=False)
+def evaluate_ood_calibration_cmd(**kwargs: str | float | bool) -> None:
+    """Measure the empirical false-positive rate of OOD thresholds against the test split,
+    and suggest better-calibrated thresholds if the current ones don't match your target."""
+    _run_ood_calibration(OodCalibrationOptions.model_validate(kwargs))
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `uv run pytest tests/cli/test_ood_calibration.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Register the command in `main.py`**
+
+Add the import:
+
+```python
+from src.cli.ood_calibration import evaluate_ood_calibration_cmd
+```
+
+Add the registration line alongside `compute-ood-stats`:
+
+```python
+cli.add_command(evaluate_ood_calibration_cmd, name="evaluate-ood-calibration")
+```
+
+- [ ] **Step 6: Run full check**
+
+Run: `uv run poe check`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/cli/ood_calibration.py main.py tests/cli/test_ood_calibration.py
+git commit -m "feat: add evaluate-ood-calibration command to measure empirical false-positive rate"
+```
+
+- [ ] **Step 8: Manual verification against an already-trained model**
+
+Requires `ood_stats.npz` already present (via Task 3b's `compute-ood-stats` for existing models, or automatically for future ones via Task 3):
+
+```powershell
+uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model_beto_v2/final --model beto --cache-path ./data/bert_tunning_cache_300.parquet
+```
+
+Expected output: the empirical false-positive rate at the current thresholds for both signals, plus a suggested threshold for a 1% target. If the empirical rate is far from 1% (e.g., 8% or 0.01%), that's direct evidence the chi-squared/Gaussian assumption doesn't hold well for this model's embeddings, and `Settings.OOD_MAHALANOBIS_P_THRESHOLD` should be updated to the suggested empirical value instead of the theoretical default.
+
+**No retraining required** — this task only reads an already-trained model, an already-computed `ood_stats.npz`, and the original training cache file. Same reasoning as Task 3b.
+
+---
+
 ## Task 7: Capture and expose extraction metadata (which extractor ran, extracted text)
 
 **Motivation:** when a document is misclassified (e.g. the payment-document case), there is currently no way to see what text was actually extracted or which extractor (MarkItDown vs. OCR) produced it. Storing this alongside the prediction — in the CSV from `predict-folder`, and in the API/CLI single-document output — lets you inspect *what the model actually saw* for any given document, which is essential for debugging both extraction quality and classification errors.
@@ -1429,7 +1645,7 @@ git commit -m "feat: capture and expose extraction metadata (extractor used, ext
 
 **Interfaces:**
 - Consumes: nothing (documentation only)
-- Produces: nothing new — describes what Tasks 1-5 and 7 built
+- Produces: nothing new — describes what Tasks 1-7 built
 
 - [ ] **Step 1: Update `CLAUDE.md`**
 
@@ -1549,17 +1765,18 @@ git commit -m "docs: document Mahalanobis/cosine OOD detection and extraction me
 **Spec coverage:**
 - Mahalanobis distance instead of pure cosine → Task 1 (`mahalanobis_min_distance`)
 - "Or maybe a mixture" → Task 1 originally shipped `ood_score()` (weighted mixture); superseded by the dual-signal OR design (`mahalanobis_p_value`, `cosine_z_score`, OR-based `in_distribution`) after the user identified that averaging can hide a strong signal on one axis — see Architecture note and each task's Revision note
-- Approve per PR each of those changes → 8 independently mergeable tasks (1, 2, 3, 3b, 4, 5, 7, 8), each ending in a commit (by the human — see note below); each maps 1:1 to a worktree + PR in this project's existing git workflow
+- Approve per PR each of those changes → 9 independently mergeable tasks (1, 2, 3, 3b, 4, 5, 6, 7, 8), each ending in a commit (by the human — see note below); each maps 1:1 to a worktree + PR in this project's existing git workflow
 - Never knowing the true universe of out-of-category documents → the design doesn't try to enumerate negative classes; it flags "far from everything known," which generalizes to unseen document types by construction, unlike expanding the `otro` class
 - No retraining of existing 5 models → confirmed, Tasks 1/2 add no training-time behavior; Task 3 only affects *future* training runs; Tasks 4/5 gracefully no-op (`None` fields) for model directories without `ood_stats.npz`
 - What about the 4 other already-trained models (not just BETO v1) → Task 3b backfills `ood_stats.npz` for all 5 existing checkpoints (xlm-roberta v1/v2, beto v1/v2, minilm v1) by reconstructing each run's exact train split via the confirmed-constant `SEED`, with no retraining
 - Store the OCR/MarkItDown extraction metadata alongside classification results, to see what was extracted from a predicted document → Task 7 (`extract_pdf_with_metadata`, `PredictResult.extracted_text`/`extractor_used`, surfaced in CSV, API, and CLI output)
 - "Is there another way to represent the same standardization?" (chi-squared p-value option) → Task 1's Mahalanobis side further revised from an empirical z-score to `mahalanobis_p_value()`, the theoretically-grounded choice for this specific metric (squared Mahalanobis distance of Gaussian data follows a chi-squared distribution); `PredictResult.mahalanobis_z` renamed to `mahalanobis_p_value`, `OOD_MAHALANOBIS_THRESHOLD` renamed to `OOD_MAHALANOBIS_P_THRESHOLD` with default flipped from `2.5` (z-score) to `0.01` (p-value, low = anomalous)
+- "How do I know if a predicted document's OOD flag is a false positive?" (following up on external research comparing pointwise novelty detection vs. batch distribution-drift detection — MMD/C2ST/Hotelling's T² solve a different problem, monitoring whether the whole incoming population has shifted, not whether one prediction is a false positive) → Task 6, which empirically measures the false-positive rate of both thresholds against the model's own held-out test split (known in-distribution by construction) and suggests better-calibrated thresholds — no retraining required, reuses Task 3b's split-reconstruction approach
 
 **Placeholder scan:** no TBD/TODO, no "add error handling" placeholders — all code blocks are complete and runnable as written. Task 3b's manual verification step has `<..._output_dir>` placeholders, but those are explicitly called out as values the user must substitute from their own run records (not tracked in git since `models/` is git-ignored) — not a plan placeholder.
 
-**Type consistency:** `ClassEmbeddingStats`, `compute_class_stats`, `mahalanobis_min_distance`, `cosine_min_distance`, `mahalanobis_p_value`, `cosine_z_score`, `save_stats`, `load_stats`, `extract_embeddings` are defined once in Task 1 and referenced with identical names/signatures in Tasks 3, 3b, and 4. `PredictResult.mahalanobis_p_value`/`cosine_z`/`in_distribution` defined in Task 2, consumed identically in Task 4 (classify.py) and Task 5 (CLI/API). Task 3b's `_run_compute_ood_stats` reconstructs the exact same `le.fit_transform` / `make_split` / `prepare_text` sequence that `training/pipeline.py`'s `run()` uses, so the two code paths produce consistent `label_id` ordering and text preprocessing. `ExtractionMetadata`/`extract_pdf_with_metadata` defined once in Task 7 and consumed identically by `predict_pdf`/`predict_folder`; `extract_pdf`'s existing signature and behavior are untouched, so `src/ingestion/scan.py` (unrelated to this plan) needs no changes.
+**Type consistency:** `ClassEmbeddingStats`, `compute_class_stats`, `mahalanobis_min_distance`, `cosine_min_distance`, `mahalanobis_p_value`, `cosine_z_score`, `save_stats`, `load_stats`, `extract_embeddings` are defined once in Task 1 and referenced with identical names/signatures in Tasks 3, 3b, 4, and 6. `PredictResult.mahalanobis_p_value`/`cosine_z`/`in_distribution` defined in Task 2, consumed identically in Task 4 (classify.py) and Task 5 (CLI/API). Task 3b's `_run_compute_ood_stats` and Task 6's `_run_ood_calibration` both reconstruct the exact same `le.fit_transform` / `make_split` / `prepare_text` sequence that `training/pipeline.py`'s `run()` uses, so all three code paths produce consistent `label_id` ordering and text preprocessing. `ExtractionMetadata`/`extract_pdf_with_metadata` defined once in Task 7 and consumed identically by `predict_pdf`/`predict_folder`; `extract_pdf`'s existing signature and behavior are untouched, so `src/ingestion/scan.py` (unrelated to this plan) needs no changes.
 
-**Task ordering / merge-conflict note:** Task 7 deliberately modifies the same functions (`endpoints.py`'s `predict()`, `predict.py`'s `predict_cmd()`, `PredictResponse`) that Task 5 modifies. Task 7 is written to run **after** Task 5 is merged, so its diff is additive on top of Task 5's OOD fields rather than a parallel conflicting edit. Tasks 1 and 2 have no code overlap (different classes within `schema.py`, no shared imports) and can run in parallel. Tasks 3 and 3b both depend on Tasks 1+2 being merged (they import `src.inference.ood`) but don't overlap each other's files (`training/pipeline.py` vs. new `cli/ood_stats.py` + `main.py`), so they can also run in parallel once 1+2 land. Task 4 depends on 1+2. Task 5 depends on 4. Task 7 depends on 5. Task 8 depends on everything.
+**Task ordering / merge-conflict note:** Task 7 deliberately modifies the same functions (`endpoints.py`'s `predict()`, `predict.py`'s `predict_cmd()`, `PredictResponse`) that Task 5 modifies. Task 7 is written to run **after** Task 5 is merged, so its diff is additive on top of Task 5's OOD fields rather than a parallel conflicting edit. Tasks 1 and 2 have no code overlap (different classes within `schema.py`, no shared imports) and can run in parallel. Tasks 3, 3b, and 6 all depend on Tasks 1+2 being merged (they import `src.inference.ood`) but don't overlap each other's files (`training/pipeline.py` vs. new `cli/ood_stats.py` + `main.py` vs. new `cli/ood_calibration.py` + `main.py` — the latter two both touch `main.py` but at non-overlapping registration lines, low conflict risk), so they can also run in parallel once 1+2 land, alongside Task 4 (also only depends on 1+2, touches only `inference/classify.py`). Task 5 depends on Task 4. Task 6 has no dependents. Task 7 depends on Task 5. Task 8 depends on everything.
 
 **Ownership of commit/push:** every task's final "Commit" step (`git add` + `git commit`, and by extension `git push`/`gh pr create`) is the **human's duty by default, not the agentic worker's**. An agentic worker implementing this plan should apply the file changes, run `uv run poe check`, and report that the task is ready — then stop. It must not run `git commit`, `git push`, or open/update a PR on its own initiative. The human may explicitly delegate any of these actions for a given task or session ("commit this," "push it," "open the PR") — only then should the worker perform that specific action, and only that one.
