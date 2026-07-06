@@ -62,7 +62,7 @@ class _Settings(BaseSettings):
     PREDICT_THRESHOLD: float = 0.70
     PREDICT_CONFIDENCE: float = 0.0
     OOD_PCA_COMPONENTS: int = 64
-    OOD_MAHALANOBIS_THRESHOLD: float = 2.5
+    OOD_MAHALANOBIS_P_THRESHOLD: float = 0.01
     OOD_COSINE_THRESHOLD: float = 2.5
 
     model_config = SettingsConfigDict(
