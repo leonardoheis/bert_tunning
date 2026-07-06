@@ -1,7 +1,6 @@
 import logging
 
 import wandb
-
 from src.schema import EvaluationResult, Hyperparams
 from src.settings import Settings
 
