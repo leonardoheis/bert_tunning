@@ -233,8 +233,9 @@ If a class is absent from the training split (small per-class counts + stratifie
 # Start a task branch from the integration branch
 git worktree add -b task/N-name ../bert_tunning-taskN feature/scaffold-migration
 cd ../bert_tunning-taskN
-# implement, test, commit...
+# implement, test...
 uv run poe check
+# commit, push, and gh pr create are the human's action by default — see note below
 git push -u origin task/N-name
 gh pr create --base feature/scaffold-migration --title "Task N: ..."
 
@@ -242,6 +243,10 @@ gh pr create --base feature/scaffold-migration --title "Task N: ..."
 cd "c:/Users/leona/source/repos/bert_tunning"
 git worktree remove ../bert_tunning-taskN
 ```
+
+**Commit/push ownership:** applying file changes and running `uv run poe check` is fine for Claude to do on its own within a task. Committing (`git commit`), pushing (`git push`), and opening/editing a PR (`gh pr create`/`gh pr edit`) are the human's actions by default — Claude should report the change is ready and stop, only performing those git operations when explicitly asked to for that specific instance.
+
+**Review every generated PR:** whenever a PR is created (by Claude when explicitly asked, or by the human), dispatch an agent to evaluate it using the repo's code-review skill and post comments on the PR only if there's something worth flagging — don't post a comment just to say "looks fine."
 
 ## Git-Ignored Directories
 
