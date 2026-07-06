@@ -106,7 +106,7 @@ def mahalanobis_p_value(embedding: npt.NDArray[np.float64], stats: ClassEmbeddin
     the embedding dimensionality. A LOW p-value means the document is anomalous."""
     squared_distance = mahalanobis_min_distance(embedding, stats)
     degrees_of_freedom = stats.centroids.shape[1]
-    return float(1.0 - chi2.cdf(squared_distance, df=degrees_of_freedom))
+    return float(chi2.sf(squared_distance, df=degrees_of_freedom))
 
 
 def cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
