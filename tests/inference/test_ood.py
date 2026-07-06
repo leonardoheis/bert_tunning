@@ -8,10 +8,11 @@ import torch
 from src.inference.ood import (
     compute_class_stats,
     cosine_min_distance,
+    cosine_z_score,
     extract_embeddings,
     load_stats,
     mahalanobis_min_distance,
-    ood_score,
+    mahalanobis_p_value,
     save_stats,
 )
 
@@ -58,12 +59,32 @@ def test_in_distribution_point_has_lower_cosine_distance_than_far_point() -> Non
     assert far_distance > known_distance
 
 
-def test_ood_score_is_higher_for_far_point() -> None:
+def test_mahalanobis_p_value_is_lower_for_far_point() -> None:
+    # A low p-value means "unlikely to be in-distribution" — the far point should
+    # score LOWER (more anomalous), not higher, unlike a distance/z-score metric.
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
-    assert ood_score(far_point, stats) > ood_score(known_point, stats)
+    assert mahalanobis_p_value(far_point, stats) < mahalanobis_p_value(known_point, stats)
+
+
+def test_mahalanobis_p_value_is_bounded_between_zero_and_one() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    known_point = embeddings[0]
+    far_point = np.full(16, 100.0)
+    for point in (known_point, far_point):
+        p_value = mahalanobis_p_value(point, stats)
+        assert 0.0 <= p_value <= 1.0
+
+
+def test_cosine_z_score_is_higher_for_far_point() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    known_point = embeddings[0]
+    far_point = np.array([100.0 if i % 2 == 0 else -100.0 for i in range(16)])
+    assert cosine_z_score(far_point, stats) > cosine_z_score(known_point, stats)
 
 
 def test_save_and_load_stats_roundtrip(tmp_path: Path) -> None:
@@ -75,7 +96,7 @@ def test_save_and_load_stats_roundtrip(tmp_path: Path) -> None:
     assert loaded.class_names == stats.class_names
     np.testing.assert_allclose(loaded.centroids, stats.centroids)
     np.testing.assert_allclose(loaded.covariance_inv, stats.covariance_inv)
-    assert loaded.maha_calibration_mean == stats.maha_calibration_mean
+    assert loaded.cosine_calibration_mean == stats.cosine_calibration_mean
 
 
 def test_extract_embeddings_returns_correct_shape() -> None:
