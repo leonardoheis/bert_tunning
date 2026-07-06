@@ -1,11 +1,14 @@
 import logging
+from pathlib import Path
 
 import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+from src.inference.ood import cosine_z_score, load_stats, mahalanobis_p_value
 from src.ingestion.extract import clean_text
-from src.schema import PredictResult
+from src.schema import ClassEmbeddingStats, PredictResult
+from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +26,17 @@ class BertTunningClassifier:
             self.tokenizer.model_max_length,
             self.model.config.max_position_embeddings,
         )
+        self._ood_stats = self._load_ood_stats(model_path)
         log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
+
+    @staticmethod
+    def _load_ood_stats(model_path: str) -> ClassEmbeddingStats | None:
+        stats_path = Path(model_path) / "ood_stats.npz"
+        if not stats_path.exists():
+            log.info("No ood_stats.npz found at %s — OOD scoring disabled", stats_path)
+            return None
+        log.info("Loaded OOD stats from %s", stats_path)
+        return load_stats(stats_path)
 
     def predict_text(self, text: str) -> PredictResult:
         inputs = self.tokenizer(
@@ -35,17 +48,35 @@ class BertTunningClassifier:
         ).to(self.device)
 
         with torch.no_grad():
-            probs = torch.softmax(self.model(**inputs).logits, dim=-1)[0].cpu().numpy()
+            outputs = self.model(**inputs, output_hidden_states=True)
+            probs = torch.softmax(outputs.logits, dim=-1)[0].cpu().numpy()
+            cls_embedding = outputs.hidden_states[-1][:, 0, :][0].cpu().numpy().astype(np.float64)
 
         pred_idx = int(np.argmax(probs))
         confidence = float(probs[pred_idx])
         label = self.model.config.id2label[pred_idx]
 
-        return PredictResult(
+        result = PredictResult(
             label=label,
             confidence=round(confidence, 4),
             certain=confidence >= self.threshold,
             all_scores={
                 self.model.config.id2label[i]: round(float(p), 4) for i, p in enumerate(probs)
             },
+        )
+
+        if self._ood_stats is None:
+            return result
+
+        maha_p = mahalanobis_p_value(cls_embedding, self._ood_stats)
+        cosine_z = cosine_z_score(cls_embedding, self._ood_stats)
+        maha_anomalous = maha_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
+        cosine_anomalous = cosine_z > Settings.OOD_COSINE_THRESHOLD
+        out_of_distribution = maha_anomalous or cosine_anomalous
+        return result.model_copy(
+            update={
+                "mahalanobis_p_value": round(maha_p, 6),
+                "cosine_z": round(cosine_z, 4),
+                "in_distribution": not out_of_distribution,
+            }
         )
