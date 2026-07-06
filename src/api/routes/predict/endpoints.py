@@ -55,4 +55,7 @@ async def predict(
         certain=data["certain"],
         all_scores=data["all_scores"],
         error=data["error"] or None,
+        mahalanobis_p_value=data["mahalanobis_p_value"],
+        cosine_z=data["cosine_z"],
+        in_distribution=data["in_distribution"],
     )
