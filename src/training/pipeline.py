@@ -15,7 +15,9 @@ from transformers import (
     TrainingArguments,
 )
 
+from src.inference.ood import compute_class_stats, extract_embeddings, save_stats
 from src.schema import Hyperparams
+from src.settings import Settings
 from src.training.evaluate import run_evaluation
 from src.training.models import ModelConfig
 from src.training.options import TrainingRequest
@@ -150,6 +152,21 @@ def run(
     trainer.train()
     log.info("Training complete")
 
+    train_embeddings = extract_embeddings(
+        model,
+        tokenizer,
+        _texts(train_df, request.chunk_strategy),
+        max_length=model_cfg.max_tokens,
+        device=str(model.device),
+    )
+    ood_stats = compute_class_stats(
+        train_embeddings,
+        train_df["label_id"].tolist(),
+        list(le.classes_),
+        n_components=Settings.OOD_PCA_COMPONENTS,
+    )
+    log.info("Computed OOD stats from %d training embeddings", train_embeddings.shape[0])
+
     result = run_evaluation(trainer, test_ds, le, hyperparams)
     wb.log_results(result, list(le.classes_))
     wb.finish()
@@ -157,6 +174,7 @@ def run(
     save_path = Path(request.output_dir) / "final"
     trainer.save_model(str(save_path))
     tokenizer.save_pretrained(str(save_path))
+    save_stats(ood_stats, save_path / "ood_stats.npz")
     log.info("Model saved to %s", save_path)
 
     return trainer, le
