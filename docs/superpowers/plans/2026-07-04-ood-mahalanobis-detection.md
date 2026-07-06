@@ -65,7 +65,7 @@
 - Produces: `save_stats(stats: ClassEmbeddingStats, path: Path) -> None` and `load_stats(path: Path) -> ClassEmbeddingStats`
 - Produces: `extract_embeddings(model: torch.nn.Module, tokenizer: PreTrainedTokenizerBase, texts: list[str], *, max_length: int, device: str, batch_size: int = 16) -> npt.NDArray[np.float64]`
 
-**Revision note:** this task went through two revisions. (1) The original version shipped a single `ood_score()` function combining both signals into one weighted average — replaced with two separate functions per the dual-signal OR design (see top-level Architecture note). (2) The Mahalanobis side then went from an empirical z-score (`mahalanobis_p_value`, using `maha_calibration_mean`/`std` computed from the training set) to a theoretically-grounded chi-squared p-value (`mahalanobis_p_value`) — since the squared Mahalanobis distance of a genuinely in-distribution (multivariate Gaussian) point follows a chi-squared distribution with `df` = dimensionality, no empirical calibration is needed for this signal at all. The `maha_calibration_mean`/`maha_calibration_std` fields were removed from `ClassEmbeddingStats` as dead weight. Cosine keeps its z-score, since no equivalent theoretical distribution exists for that metric.
+**Revision note:** this task went through two revisions. (1) The original version shipped a single `ood_score()` function combining both signals into one weighted average — replaced with two separate functions per the dual-signal OR design (see top-level Architecture note). (2) The Mahalanobis side then went from an empirical z-score (`mahalanobis_z_score()`, using `maha_calibration_mean`/`std` computed from the training set) to a theoretically-grounded chi-squared p-value (`mahalanobis_p_value()`) — since the squared Mahalanobis distance of a genuinely in-distribution (multivariate Gaussian) point follows a chi-squared distribution with `df` = dimensionality, no empirical calibration is needed for this signal at all. The `maha_calibration_mean`/`maha_calibration_std` fields were removed from `ClassEmbeddingStats` as dead weight. Cosine keeps its z-score, since no equivalent theoretical distribution exists for that metric.
 
 **New dependency:** `scipy>=1.13.0` added to `pyproject.toml` — previously only available transitively via `scikit-learn`, but `ood.py` now imports `scipy.stats.chi2` directly.
 
@@ -825,7 +825,7 @@ Replace `<..._output_dir>` with the actual `OUTPUT_DIR` used for each run (check
 
 **Interfaces:**
 - Consumes: `ClassEmbeddingStats`, `load_stats`, `mahalanobis_p_value`, `cosine_z_score` from Task 1; `Settings.OOD_MAHALANOBIS_P_THRESHOLD`, `Settings.OOD_COSINE_THRESHOLD` from Task 2
-- Produces: `BertTunningClassifier.predict_text` populates `mahalanobis_p_value`/`cosine_z`/`in_distribution` on the returned `PredictResult` when stats are available; all three stay `None` when no `ood_stats.npz` exists next to `model_path` (backward compatible with the 5 already-trained models, none of which have this artifact yet). `in_distribution` is `False` if **either** z-score exceeds its own threshold (OR, not averaged).
+- Produces: `BertTunningClassifier.predict_text` populates `mahalanobis_p_value`/`cosine_z`/`in_distribution` on the returned `PredictResult` when stats are available; all three stay `None` when no `ood_stats.npz` exists next to `model_path` (backward compatible with the 5 already-trained models, none of which have this artifact yet). `in_distribution` is `False` if `mahalanobis_p_value < OOD_MAHALANOBIS_P_THRESHOLD` **or** `cosine_z > OOD_COSINE_THRESHOLD` (OR, not averaged — note the opposite comparison direction per signal).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -842,8 +842,6 @@ def _make_stats() -> ClassEmbeddingStats:
         pca_components=np.eye(8),
         centroids=np.array([[0.0] * 8, [5.0] * 8]),
         covariance_inv=np.eye(8),
-        maha_calibration_mean=0.0,
-        maha_calibration_std=1.0,
         cosine_calibration_mean=0.0,
         cosine_calibration_std=1.0,
     )
@@ -999,7 +997,7 @@ git commit -m "feat: score OOD at inference time via separate Mahalanobis/cosine
 
 **Interfaces:**
 - Consumes: `PredictResult.mahalanobis_p_value`/`cosine_z`/`in_distribution` (Task 2/4)
-- Produces: `predict_cmd` prints `Mahalanobis Z` / `Cosine Z` / `In-Dist.` lines; `PredictResponse.mahalanobis_p_value: float | None`, `PredictResponse.cosine_z: float | None`, `PredictResponse.in_distribution: bool | None`
+- Produces: `predict_cmd` prints `Mahalanobis p` / `Cosine Z` / `In-Dist.` lines; `PredictResponse.mahalanobis_p_value: float | None`, `PredictResponse.cosine_z: float | None`, `PredictResponse.in_distribution: bool | None`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1100,7 +1098,7 @@ to:
     click.echo(f"  Confidence: {result.confidence:.2%}")
     click.echo(f"  Certain   : {result.certain}")
     if result.mahalanobis_p_value is not None:
-        click.echo(f"  Mahalanobis Z: {result.mahalanobis_p_value:.4f}")
+        click.echo(f"  Mahalanobis p: {result.mahalanobis_p_value:.4f}")
         click.echo(f"  Cosine Z     : {result.cosine_z:.4f}")
         click.echo(f"  In-Dist.     : {result.in_distribution}")
     click.echo("\n  All scores:")
@@ -1438,36 +1436,46 @@ git commit -m "feat: capture and expose extraction metadata (extractor used, ext
 Add a new subsection under "Key Technical Decisions" (after the "OCR thread safety via double-checked locking" entry):
 
 ```markdown
-**Mahalanobis + cosine OOD detection, dual-signal OR, alongside the softmax classifier**
+**Mahalanobis chi-squared p-value + cosine z-score OOD detection, dual-signal OR, alongside the softmax classifier**
 Softmax classifiers always output a label — there is no "I don't know."
 `ood_stats.npz` (generated at training time from the training set's `[CLS]`
 embeddings, PCA-reduced) stores per-class centroids and a shared covariance
 matrix. At inference, `BertTunningClassifier.predict_text` computes **two
-separate** z-scores — Mahalanobis distance and cosine distance to the nearest
-centroid, each z-scored against the training set's own distances — and
-attaches `mahalanobis_p_value`/`cosine_z`/`in_distribution` to `PredictResult`. The
-two scores are deliberately **not averaged**: `in_distribution=False` is
-raised if *either* z-score exceeds its own threshold. An earlier version of
-this design combined both into one weighted mixture score, but that risks a
-strong signal on one axis being diluted by a weak signal on the other; the
-OR rule and separately-exposed values also let a human reviewing predictions
-later see which metric fired. This is independent of `certain`
+separate, independently-scored** signals: (1) the squared Mahalanobis distance
+to the nearest class centroid, evaluated as a p-value under a chi-squared
+distribution with `df` = the PCA-reduced dimensionality — the theoretically
+correct distribution for this metric, assuming class-conditional embeddings
+are multivariate Gaussian (the same assumption Mahalanobis distance itself
+relies on) — needing no empirical calibration; and (2) cosine distance to the
+nearest centroid, z-scored against the training set's own distances (no
+equivalent theoretical distribution exists for cosine, so this stays
+empirical). Both are attached to `PredictResult` as
+`mahalanobis_p_value`/`cosine_z`/`in_distribution`. The two scores are
+deliberately **not combined**: `in_distribution=False` is raised if
+`mahalanobis_p_value < OOD_MAHALANOBIS_P_THRESHOLD` (a LOW p-value is
+anomalous) **or** `cosine_z > OOD_COSINE_THRESHOLD` (a HIGH z-score is
+anomalous) — note the comparison directions are opposite. An earlier version
+of this design combined both signals into one weighted mixture score, but
+that risks a strong signal on one axis being diluted by a weak signal on the
+other; the OR rule and separately-exposed values also let a human reviewing
+predictions later see which metric fired. This is independent of `certain`
 (softmax-confidence-based) — a document can be `certain=True` (the softmax
 is confident) and `in_distribution=False` (the document doesn't resemble
 anything the model was trained on) at the same time, which is exactly the
 payment-document failure mode this was built to catch.
-`OOD_MAHALANOBIS_P_THRESHOLD`/`OOD_COSINE_THRESHOLD` (both default `2.5`,
-z-score-like cutoffs) have **not** been statistically validated against a
-labeled out-of-category corpus — there is no such corpus for this project.
-Treat them as a starting point requiring manual calibration against real
-novel documents as they're encountered.
+`OOD_MAHALANOBIS_P_THRESHOLD` (default `0.01`, a standard significance level)
+has a defensible theoretical grounding since it's a genuine p-value.
+`OOD_COSINE_THRESHOLD` (default `2.5`, a z-score cutoff) has **not** been
+statistically validated against a labeled out-of-category corpus — there is
+no such corpus for this project. Treat both as starting points requiring
+manual calibration against real novel documents as they're encountered.
 ```
 
 Add to the Settings table:
 
 ```markdown
 | `OOD_PCA_COMPONENTS` | `64` | Dimensionality the `[CLS]` embedding is reduced to before Mahalanobis/cosine scoring |
-| `OOD_MAHALANOBIS_P_THRESHOLD` | `2.5` | Mahalanobis z-score above which a document is flagged `in_distribution=False` — uncalibrated, see note above |
+| `OOD_MAHALANOBIS_P_THRESHOLD` | `0.01` | Mahalanobis chi-squared p-value below which a document is flagged `in_distribution=False` (low p-value = anomalous) |
 | `OOD_COSINE_THRESHOLD` | `2.5` | Cosine z-score above which a document is flagged `in_distribution=False` — uncalibrated, see note above |
 ```
 
@@ -1485,15 +1493,17 @@ during `train`), predictions include three extra fields:
 {
   "label": "boletines",
   "confidence": 0.9429,
-  "mahalanobisZ": 6.2,
+  "mahalanobisPValue": 0.0003,
   "cosineZ": 1.1,
   "inDistribution": false
 }
 ```
 
-`mahalanobisZ`/`cosineZ` are reported separately rather than combined into one
-score — either exceeding its own threshold (`OOD_MAHALANOBIS_P_THRESHOLD`,
-`OOD_COSINE_THRESHOLD`) is enough to set `inDistribution: false`. This means
+`mahalanobisPValue`/`cosineZ` are reported separately rather than combined
+into one score — note they point in **opposite directions**: a LOW
+`mahalanobisPValue` (below `OOD_MAHALANOBIS_P_THRESHOLD`, default `0.01`) is
+anomalous, while a HIGH `cosineZ` (above `OOD_COSINE_THRESHOLD`) is anomalous.
+Either one alone is enough to set `inDistribution: false`. This means
 `inDistribution: false` doesn't hide *which* signal fired: a human reviewing
 predictions can see whether Mahalanobis, cosine, or both flagged the document.
 Treat `inDistribution: false` as "do not trust `label` for this document"
@@ -1544,6 +1554,7 @@ git commit -m "docs: document Mahalanobis/cosine OOD detection and extraction me
 - No retraining of existing 5 models → confirmed, Tasks 1/2 add no training-time behavior; Task 3 only affects *future* training runs; Tasks 4/5 gracefully no-op (`None` fields) for model directories without `ood_stats.npz`
 - What about the 4 other already-trained models (not just BETO v1) → Task 3b backfills `ood_stats.npz` for all 5 existing checkpoints (xlm-roberta v1/v2, beto v1/v2, minilm v1) by reconstructing each run's exact train split via the confirmed-constant `SEED`, with no retraining
 - Store the OCR/MarkItDown extraction metadata alongside classification results, to see what was extracted from a predicted document → Task 7 (`extract_pdf_with_metadata`, `PredictResult.extracted_text`/`extractor_used`, surfaced in CSV, API, and CLI output)
+- "Is there another way to represent the same standardization?" (chi-squared p-value option) → Task 1's Mahalanobis side further revised from an empirical z-score to `mahalanobis_p_value()`, the theoretically-grounded choice for this specific metric (squared Mahalanobis distance of Gaussian data follows a chi-squared distribution); `PredictResult.mahalanobis_z` renamed to `mahalanobis_p_value`, `OOD_MAHALANOBIS_THRESHOLD` renamed to `OOD_MAHALANOBIS_P_THRESHOLD` with default flipped from `2.5` (z-score) to `0.01` (p-value, low = anomalous)
 
 **Placeholder scan:** no TBD/TODO, no "add error handling" placeholders — all code blocks are complete and runnable as written. Task 3b's manual verification step has `<..._output_dir>` placeholders, but those are explicitly called out as values the user must substitute from their own run records (not tracked in git since `models/` is git-ignored) — not a plan placeholder.
 
