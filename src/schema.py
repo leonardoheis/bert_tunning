@@ -28,7 +28,7 @@ class PredictResult(BaseModel):
     all_scores: dict[str, float] = {}
     filename: str = ""
     error: str = ""
-    mahalanobis_z: float | None = None
+    mahalanobis_p_value: float | None = None
     cosine_z: float | None = None
     in_distribution: bool | None = None
 
