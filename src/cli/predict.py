@@ -54,6 +54,10 @@ def predict_cmd(
     click.echo(f"  Label     : {result.label}")
     click.echo(f"  Confidence: {result.confidence:.2%}")
     click.echo(f"  Certain   : {result.certain}")
+    if result.mahalanobis_p_value is not None:
+        click.echo(f"  Mahalanobis p: {result.mahalanobis_p_value:.6f}")
+        click.echo(f"  Cosine Z     : {result.cosine_z:.4f}")
+        click.echo(f"  In-Dist.     : {result.in_distribution}")
     click.echo("\n  All scores:")
     for lbl, sc in sorted(result.all_scores.items(), key=lambda x: -x[1]):
         bar = "█" * int(sc * 40)

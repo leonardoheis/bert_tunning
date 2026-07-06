@@ -10,3 +10,6 @@ class PredictResponse(BaseSchema):
     certain: bool
     all_scores: dict[str, float] = Field(default_factory=dict)
     error: str | None = None
+    mahalanobis_p_value: float | None = None
+    cosine_z: float | None = None
+    in_distribution: bool | None = None
