@@ -3,6 +3,7 @@ from pathlib import Path
 
 import click
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import torch
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +19,32 @@ from src.training.split import make_split
 from src.training.tokenize import prepare_text
 
 log = logging.getLogger(__name__)
+
+
+class CalibrationReport(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    fp_rate_maha: float
+    fp_rate_cosine: float
+    suggested_maha_threshold: float
+    suggested_cosine_threshold: float
+
+
+def build_calibration_report(
+    p_values: npt.NDArray[np.float64], z_scores: npt.NDArray[np.float64], target_fp_rate: float
+) -> CalibrationReport:
+    """Pure calibration math, isolated from model/IO for direct unit testing.
+
+    Mahalanobis: LOW p-value = anomalous, so the threshold for a target false-positive
+    rate is the `target_fp_rate`-th percentile of in-distribution p-values. Cosine: HIGH
+    z-score = anomalous, so its threshold is the `(1 - target_fp_rate)`-th percentile.
+    """
+    return CalibrationReport(
+        fp_rate_maha=float(np.mean(p_values < Settings.OOD_MAHALANOBIS_P_THRESHOLD)),
+        fp_rate_cosine=float(np.mean(z_scores > Settings.OOD_COSINE_THRESHOLD)),
+        suggested_maha_threshold=float(np.percentile(p_values, target_fp_rate * 100)),
+        suggested_cosine_threshold=float(np.percentile(z_scores, (1 - target_fp_rate) * 100)),
+    )
 
 
 class OodCalibrationOptions(BaseModel):
@@ -81,12 +108,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
 
     p_values = np.array([mahalanobis_p_value(e, stats) for e in embeddings])
     z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
-
-    fp_rate_maha = float(np.mean(p_values < Settings.OOD_MAHALANOBIS_P_THRESHOLD))
-    fp_rate_cosine = float(np.mean(z_scores > Settings.OOD_COSINE_THRESHOLD))
-
-    suggested_maha_threshold = float(np.percentile(p_values, opts.target_fp_rate * 100))
-    suggested_cosine_threshold = float(np.percentile(z_scores, (1 - opts.target_fp_rate) * 100))
+    report = build_calibration_report(p_values, z_scores, opts.target_fp_rate)
 
     log.info("=" * 60)
     log.info("OOD threshold calibration — %s", opts.model_path)
@@ -94,22 +116,22 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     log.info(
         "Mahalanobis — current threshold=%.4f, empirical false-positive rate=%.2f%%",
         Settings.OOD_MAHALANOBIS_P_THRESHOLD,
-        fp_rate_maha * 100,
+        report.fp_rate_maha * 100,
     )
     log.info(
         "Mahalanobis — suggested threshold for %.1f%% target FP rate: %.6f",
         opts.target_fp_rate * 100,
-        suggested_maha_threshold,
+        report.suggested_maha_threshold,
     )
     log.info(
         "Cosine — current threshold=%.4f, empirical false-positive rate=%.2f%%",
         Settings.OOD_COSINE_THRESHOLD,
-        fp_rate_cosine * 100,
+        report.fp_rate_cosine * 100,
     )
     log.info(
         "Cosine — suggested threshold for %.1f%% target FP rate: %.4f",
         opts.target_fp_rate * 100,
-        suggested_cosine_threshold,
+        report.suggested_cosine_threshold,
     )
 
 
@@ -141,6 +163,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
 )
 @click.option(
     "--target-fp-rate",
+    type=click.FloatRange(0.0, 1.0, min_open=True, max_open=True),
     default=0.01,
     show_default=True,
     help="Target false-positive rate used to compute the suggested threshold",
