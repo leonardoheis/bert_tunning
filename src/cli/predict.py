@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 import click
 import pandas as pd
@@ -24,7 +25,7 @@ class PredictFolderOptions(BaseModel):
     model_path: str = Settings.default_model_path
     threshold: float = Settings.THRESHOLD
     no_ocr: bool = False
-    output: str = "bert_tunning_predictions.csv"
+    output: str | None = None
     debug: bool = False
 
 
@@ -73,10 +74,11 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
     results = predict_folder(
         opts.model_path, opts.folder_path, threshold=opts.threshold, use_ocr=not opts.no_ocr
     )
+    output = opts.output or str(Path(opts.folder_path) / "bert_tunning_predictions.csv")
     df = pd.DataFrame([r.model_dump() for r in results])
     df.insert(1, "model", opts.model_path)
-    df.to_csv(opts.output, index=False)
-    log.info("Results saved to %s", opts.output)
+    df.to_csv(output, index=False)
+    log.info("Results saved to %s", output)
 
 
 @click.command("predict-folder")
@@ -86,8 +88,12 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
     "--threshold", default=Settings.THRESHOLD, show_default=True, help="Confidence threshold"
 )
 @click.option("--no-ocr", is_flag=True, default=False)
-@click.option("--output", default="bert_tunning_predictions.csv", show_default=True)
+@click.option(
+    "--output",
+    default=None,
+    help="CSV output path. Defaults to bert_tunning_predictions.csv inside folder_path.",
+)
 @click.option("--debug", is_flag=True, default=False)
-def predict_folder_cmd(**kwargs: str | float | bool) -> None:
+def predict_folder_cmd(**kwargs: str | float | bool | None) -> None:
     """Classify all PDFs in a folder and save results to CSV."""
     _run_predict_folder(PredictFolderOptions.model_validate(kwargs))
