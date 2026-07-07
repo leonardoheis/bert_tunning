@@ -6,14 +6,14 @@ Bert Tunning fine-tunes transformer models on Spanish municipal PDF documents to
 
 ## Current State (July 2026)
 
-Scaffold migration from flat-file layout to `src/` pipeline is complete, plus a round of post-migration code-review fixes (class weights, empty-text guards, extractor error handling, CLI `populate_by_name` fix). `feature/scaffold-migration` is being merged to `master` now.
+Scaffold migration from flat-file layout to `src/` pipeline is complete and merged to `master`.
 
-An out-of-distribution (Mahalanobis/cosine) detection feature is planned (`docs/superpowers/plans/2026-07-04-ood-mahalanobis-detection.md`) but **not yet merged** — two of its tasks exist as open PRs (#17, #18) that were deliberately left unmerged so this migration could close first. That work continues on a new branch after this merge.
+The out-of-distribution (Mahalanobis/cosine) detection feature (`docs/superpowers/plans/2026-07-04-ood-mahalanobis-detection.md`) is complete — all 9 tasks (1, 2, 3, 3b, 4, 5, 6, 7, 8) are merged into `feature/ood-detection`, which is ready to merge to `master`. See "Out-of-distribution (OOD) detection" and "Extraction metadata" under Key Technical Decisions below for what shipped.
 
 Branch strategy:
 - `master` — stable, production-ready
-- `feature/scaffold-migration` — integration branch, merged to master
-- `task/N-*` — per-task branches (merged into `feature/scaffold-migration`, or superseded — see note above for `task/17-ood-math-module`/`task/18-ood-settings-schema`)
+- `feature/ood-detection` — integration branch, merged from `feature/scaffold-migration`, ready to merge to master
+- `task/N-*` — per-task branches (merged into whichever integration branch was active when the task started)
 
 ## Tech Stack
 
@@ -52,9 +52,12 @@ uv run poe coverage      # pytest with HTML coverage report
 ```powershell
 uv run python main.py train --docs-root "C:\path\to\downloads"
 uv run python main.py train --model beto --max-docs-per-class 100
+uv run python main.py train --docs-root "C:\path\to\downloads" --epochs 20
 uv run python main.py predict path/to/doc.pdf
 uv run python main.py predict-folder path/to/folder
 uv run python main.py serve --model-path ./models/bert_tunning_model/final
+uv run python main.py compute-ood-stats --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
+uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
 uv run python main.py clean
 ```
 
@@ -77,11 +80,11 @@ src/
 ├── __init__.py         package entry — exports BertTunningError, Settings, __version__
 ├── __main__.py         python -m src entry — spawns run_api() via multiprocessing.Process
 ├── settings.py         all configuration (Pydantic BaseSettings, overridable via .env)
-├── schema.py           shared Pydantic schemas (PredictResult, Hyperparams, ReportDict)
+├── schema.py           shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, Hyperparams, ReportDict)
 ├── exceptions.py       BertTunningError base
 ├── logger.py           setup_logging() → per-run timestamped log file
 ├── ingestion/
-│   ├── extract.py      extract_pdf() — MarkItDown + EasyOCR fallback chain
+│   ├── extract.py      extract_pdf_with_metadata() → ExtractionMetadata (text, extractor_used, char_count); extract_pdf() is a thin wrapper — MarkItDown + EasyOCR fallback chain
 │   ├── scan.py         folder walk, label mapping
 │   ├── cache.py        parquet load/save
 │   ├── pipeline.py     orchestrator: scan → extract → cache → DataFrame
@@ -105,18 +108,21 @@ src/
 │   ├── wandb_logger.py WandbLogger class
 │   └── pipeline.py     orchestrates split → tokenize → train → evaluate
 ├── inference/
-│   ├── classify.py     BertTunningClassifier, predict_text
-│   └── pipeline.py     predict_pdf() → PredictResult; predict_folder() → list[PredictResult]
+│   ├── classify.py     BertTunningClassifier, predict_text — computes mahalanobis_p_value/cosine_z/in_distribution when ood_stats.npz is present
+│   ├── ood.py           Mahalanobis/cosine OOD math — compute_class_stats, mahalanobis_p_value, cosine_z_score, extract_embeddings, save_stats/load_stats
+│   └── pipeline.py     predict_pdf() → PredictResult; predict_folder() → list[PredictResult] — both attach extracted_text/extractor_used
 ├── api/
 │   ├── app.py          create_app(model_path, threshold) → FastAPI
-│   ├── schema.py       BaseSchema (camelCase aliases)
+│   ├── schema.py       BaseSchema (camelCase aliases, `populate_by_name=True`)
 │   ├── __init__.py     run_api() — reads Settings.default_model_path
 │   └── routes/
 │       ├── health/     GET / and GET /health
-│       └── predict/    POST /predict — multipart PDF upload
+│       └── predict/    POST /predict — multipart PDF upload; response includes OOD + extraction-metadata fields
 └── cli/
-    ├── train.py        @click.command "train" — TrainOptions (Pydantic)
-    ├── predict.py      @click.command "predict" + "predict-folder"
+    ├── train.py        @click.command "train" — TrainOptions (Pydantic), supports --epochs
+    ├── predict.py      @click.command "predict" + "predict-folder" — prints/exports OOD + extraction fields
+    ├── ood_stats.py     @click.command "compute-ood-stats" — backfills ood_stats.npz for an already-trained model, no retraining
+    ├── ood_calibration.py @click.command "evaluate-ood-calibration" — measures empirical FP rate of OOD thresholds against the model's own test split
     └── clean.py        @click.command "clean"
 
 Dockerfile              multi-stage build: uv builder + python:3.10-slim-bookworm runtime
@@ -164,6 +170,9 @@ All settings live in `_Settings(BaseSettings)` and are overridable via `.env`:
 | `PREDICT_THRESHOLD` | `0.70` | Confidence threshold used by `predict`/`predict-folder` CLI commands |
 | `PREDICT_CONFIDENCE` | `0.0` | Confidence value reported for unreadable/empty documents |
 | `MAX_DOCS_PER_CLASS` | `10` | Minimum allowed value for `--max-docs-per-class` — also the ingestion default when unset |
+| `OOD_PCA_COMPONENTS` | `64` | Dimensionality the `[CLS]` embedding is reduced to before Mahalanobis/cosine scoring |
+| `OOD_MAHALANOBIS_P_THRESHOLD` | `0.01` | Mahalanobis chi-squared p-value below which a document is flagged `in_distribution=False` (low p-value = anomalous) |
+| `OOD_COSINE_THRESHOLD` | `2.5` | Cosine z-score above which a document is flagged `in_distribution=False` — uncalibrated, see the OOD detection note below |
 
 Model hyperparameters (`lr`, `batch_size`, `grad_accum`, `max_tokens`, `force_fp32`) live in `ModelConfig`, not in settings.
 
@@ -209,6 +218,15 @@ All config and schema objects use `BaseModel` with `frozen=True`. API response s
 **OCR thread safety via double-checked locking**
 `OCRExtractor._reader` is lazily initialized on first use. Training (batch processing) and API (concurrent requests) both call it. A `threading.Lock()` with double-checked locking ensures EasyOCR is initialized exactly once across threads without holding the lock on every call.
 
+**Mahalanobis chi-squared p-value + cosine z-score OOD detection, dual-signal OR, alongside the softmax classifier**
+Softmax classifiers always output a label — there is no "I don't know." `ood_stats.npz` (generated at training time from the training set's `[CLS]` embeddings, PCA-reduced) stores per-class centroids and a shared covariance matrix. At inference, `BertTunningClassifier.predict_text` computes **two separate, independently-scored** signals: (1) the squared Mahalanobis distance to the nearest class centroid, evaluated as a p-value under a chi-squared distribution with `df` = the PCA-reduced dimensionality — the theoretically correct distribution for this metric, assuming class-conditional embeddings are multivariate Gaussian (the same assumption Mahalanobis distance itself relies on) — needing no empirical calibration; and (2) cosine distance to the nearest centroid, z-scored against the training set's own distances (no equivalent theoretical distribution exists for cosine, so this stays empirical). Both are attached to `PredictResult` as `mahalanobis_p_value`/`cosine_z`/`in_distribution`. The two scores are deliberately **not combined**: `in_distribution=False` is raised if `mahalanobis_p_value < OOD_MAHALANOBIS_P_THRESHOLD` (a LOW p-value is anomalous) **or** `cosine_z > OOD_COSINE_THRESHOLD` (a HIGH z-score is anomalous) — note the comparison directions are opposite. Combining both signals into one weighted mixture score risks a strong signal on one axis being diluted by a weak signal on the other; the OR rule and separately-exposed values also let a human reviewing predictions later see which metric fired. This is independent of `certain` (softmax-confidence-based) — a document can be `certain=True` (the softmax is confident) and `in_distribution=False` (the document doesn't resemble anything the model was trained on) at the same time, which is the payment-document failure mode this was built to catch. `OOD_MAHALANOBIS_P_THRESHOLD` (default `0.01`) has a defensible theoretical grounding since it's a genuine p-value. `OOD_COSINE_THRESHOLD` (default `2.5`) has **not** been statistically validated against a labeled out-of-category corpus. `evaluate-ood-calibration` measures the empirical false-positive rate of both thresholds against the model's own held-out test split (known in-distribution by construction, no retraining) and suggests better-calibrated values — run it before trusting either default in production.
+
+**Extraction metadata (`extract_pdf_with_metadata`) — which extractor produced the text, alongside the text itself**
+When a document is misclassified, there was previously no way to see what text was actually extracted or which extractor (MarkItDown vs. OCR) produced it. `extract_pdf_with_metadata()` returns an `ExtractionMetadata` (`text`, `extractor_used`, `char_count`); `extract_pdf()` is now a thin wrapper around it (`.text`), so its signature and behavior are unchanged and `src/ingestion/scan.py` needed no modification. `predict_pdf`/`predict_folder` attach `extracted_text`/`extractor_used` onto `PredictResult`, so the `predict-folder` CSV, the CLI `predict` output, and the `/predict` API response all surface what the model actually saw — essential for telling apart an extraction-quality problem (garbled OCR) from a genuine out-of-category document with clean text.
+
+**`populate_by_name=True` is required on every Pydantic model built via direct snake_case keyword construction, not just CLI-facing ones**
+The gotcha documented below for CLI options classes turned out to be broader: `PredictResponse` (`alias_generator=to_camel`, no `populate_by_name`) is constructed in `src/api/routes/predict/endpoints.py` with snake_case kwargs (`mahalanobis_p_value=...`, `extracted_text=...`) — Pydantic v2 silently drops any kwarg that isn't the field's alias instead of raising, so the `/predict` API response returned `null`/default values for the OOD and extraction-metadata fields regardless of what was actually computed, undetected until a real end-to-end API test was added. The same pattern was found in `PredictResult` itself: `classify.py` constructs `PredictResult(all_scores={...})` directly, silently dropping `all_scores` to `{}` on every real prediction (the OOD fields on that same class were unaffected because they're set via `model_copy`, which bypasses the alias check entirely). Both `PredictResult` and `BaseSchema` now set `populate_by_name=True`. **Rule of thumb:** any Pydantic model with `alias_generator=to_camel` that is ever constructed with keyword arguments matching its Python field names (directly, or via `model_validate`/a dict) — as opposed to exclusively via `model_copy(update=...)` — must set `populate_by_name=True`, or fields whose alias differs from the field name (any multi-word snake_case name) will silently keep their default value with no error.
+
 **`[tool.uv] package = false`**
 This is a script project, not an installable package. Without this, uv tries to build it with hatchling and fails.
 
@@ -230,14 +248,14 @@ If a class is absent from the training split (small per-class counts + stratifie
 ## Git Workflow
 
 ```bash
-# Start a task branch from the integration branch
-git worktree add -b task/N-name ../bert_tunning-taskN feature/scaffold-migration
+# Start a task branch from whichever integration branch is currently active
+git worktree add -b task/N-name ../bert_tunning-taskN feature/ood-detection
 cd ../bert_tunning-taskN
 # implement, test...
 uv run poe check
 # commit, push, and gh pr create are the human's action by default — see note below
 git push -u origin task/N-name
-gh pr create --base feature/scaffold-migration --title "Task N: ..."
+gh pr create --base feature/ood-detection --title "Task N: ..."
 
 # Clean up worktree after PR is open
 cd "c:/Users/leona/source/repos/bert_tunning"
@@ -265,3 +283,4 @@ samples/    sample PDFs for quick tests
 |---|---|---|
 | `# noqa: FBT001, FBT002` | `src/training/trainer.py:25` | Boolean arg in WeightedTrainer — matches HuggingFace Trainer signature |
 | `# noqa: PLC0415` | `src/training/models/__init__.py:_build_registry` | Deferred import avoids circular import with model submodules |
+| `# noqa: PLR0913` | `src/inference/ood.py:extract_embeddings` | Too-many-arguments — model, tokenizer, texts, max_length, device, batch_size are all needed at the call site |

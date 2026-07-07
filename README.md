@@ -54,17 +54,17 @@ src/
 ├── __init__.py        package entry — exports BertTunningError, Settings, __version__
 ├── __main__.py        python -m src entry — spawns run_api() via multiprocessing.Process
 ├── settings.py        all configuration (Pydantic BaseSettings, overridable via .env)
-├── schema.py          shared Pydantic schemas (PredictResult, Hyperparams, ReportDict)
+├── schema.py          shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, Hyperparams, ReportDict)
 ├── exceptions.py      BertTunningError base
 ├── logger.py          setup_logging() — per-run timestamped log file
-├── ingestion/         extract.py · scan.py · cache.py · pipeline.py · extractors/
+├── ingestion/         extract.py (extract_pdf_with_metadata) · scan.py · cache.py · pipeline.py · extractors/
 ├── training/
 │   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
 │   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py
 │                      reporting.py · wandb_logger.py
-├── inference/         classify.py (BertTunningClassifier) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
+├── inference/         classify.py (BertTunningClassifier) · ood.py (Mahalanobis/cosine scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
 ├── api/               app.py · schema.py · __init__.py · routes/predict/ · routes/health/
-└── cli/               train.py · predict.py · clean.py
+└── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · clean.py
 
 Dockerfile             multi-stage: uv builder + python:3.10-slim-bookworm runtime
 main.py                Click CLI entry point
@@ -218,11 +218,74 @@ Output:
   Label     : decreto
   Confidence: 97.32%
   Certain   : True
+  Extractor : MarkItDownExtractor
+  Extracted text (first 200 chars): 'DECRETO N° 123/2026...'
 
   All scores:
     decreto                                0.9732  ████████████████████████████████████████
     ordenanza                              0.0121  ▌
 ```
+
+### Out-of-distribution detection
+
+If the loaded model directory contains `ood_stats.npz` (generated automatically
+during `train`, or backfilled for an existing model — see below), predictions
+include three extra fields:
+
+```json
+{
+  "label": "boletines",
+  "confidence": 0.9429,
+  "mahalanobisPValue": 0.0003,
+  "cosineZ": 1.1,
+  "inDistribution": false
+}
+```
+
+`mahalanobisPValue`/`cosineZ` are reported separately rather than combined
+into one score — note they point in **opposite directions**: a LOW
+`mahalanobisPValue` (below `OOD_MAHALANOBIS_P_THRESHOLD`, default `0.01`) is
+anomalous, while a HIGH `cosineZ` (above `OOD_COSINE_THRESHOLD`) is anomalous.
+Either one alone is enough to set `inDistribution: false`. This means
+`inDistribution: false` doesn't hide *which* signal fired: a human reviewing
+predictions can see whether Mahalanobis, cosine, or both flagged the document.
+Treat `inDistribution: false` as "do not trust `label` for this document"
+regardless of how high `confidence` is — this is the mechanism that catches
+documents (e.g. payment receipts) that were never in any training class,
+including `otro`.
+
+Backfill `ood_stats.npz` for an already-trained model (no retraining):
+
+```powershell
+uv run python main.py compute-ood-stats --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
+```
+
+Measure the empirical false-positive rate of the OOD thresholds against the
+model's own held-out test split, and get a suggested better-calibrated
+threshold if the defaults don't match your target:
+
+```powershell
+uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
+```
+
+### Extraction metadata (what the model actually saw)
+
+Every prediction also records which extractor produced the text and the text
+itself:
+
+```json
+{
+  "label": "boletines",
+  "extractorUsed": "OCRExtractor",
+  "extractedText": "..."
+}
+```
+
+`predict-folder`'s CSV output includes `extractedText`/`extractorUsed`
+columns automatically. Use this to check *what was actually extracted* from
+a misclassified document — e.g. confirming whether a wrong classification is
+an extraction-quality problem (garbled OCR output) versus a genuine
+out-of-category document with clean, correctly-extracted text.
 
 ### Serve inference API
 
@@ -246,7 +309,7 @@ docker run -p 8000:8000 -v ./models/bert_tunning_model:/app/models/bert_tunning_
 ```
 
 Available endpoints:
-- `POST /predict` — upload a PDF, returns JSON with label, confidence, and all scores
+- `POST /predict` — upload a PDF, returns JSON with label, confidence, all scores, OOD signals, and extraction metadata
 - `GET /health` — returns `{"status": "healthy", ...}`
 
 API docs at `http://localhost:8000/docs` (Swagger UI).
@@ -264,9 +327,16 @@ API docs at `http://localhost:8000/docs` (Swagger UI).
     "ordenanza": 0.0312,
     "resolucion": 0.0257
   },
-  "error": null
+  "error": null,
+  "mahalanobisPValue": 0.42,
+  "cosineZ": 0.8,
+  "inDistribution": true,
+  "extractedText": "DECRETO N° 123/2026...",
+  "extractorUsed": "MarkItDownExtractor"
 }
 ```
+
+`mahalanobisPValue`/`cosineZ`/`inDistribution` are only present (non-null) when the loaded model directory has an `ood_stats.npz` — see "Out-of-distribution detection" above.
 
 ### Clean state
 
