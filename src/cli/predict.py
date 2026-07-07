@@ -5,6 +5,7 @@ import click
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
+
 from src.inference.pipeline import predict_folder, predict_pdf
 from src.logger import setup_logging
 from src.settings import Settings
@@ -25,6 +26,7 @@ class PredictFolderOptions(BaseModel):
     model_path: str = Settings.default_model_path
     threshold: float = Settings.THRESHOLD
     no_ocr: bool = False
+    output: str | None = None
     log_wandb: bool = False
     debug: bool = False
 
@@ -93,16 +95,13 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
     "--threshold", default=Settings.THRESHOLD, show_default=True, help="Confidence threshold"
 )
 @click.option("--no-ocr", is_flag=True, default=False)
-<<<<<<< HEAD
-@click.option("--output", default="bert_tunning_predictions.csv", show_default=True)
-@click.option(
-    "--log-wandb", is_flag=True, default=False, help="Log per-document predictions to W&B"
-=======
 @click.option(
     "--output",
     default=None,
     help="CSV output path. Defaults to bert_tunning_predictions.csv inside folder_path.",
->>>>>>> dc1e34066288b10fac903852ebef13dbd91f3843
+)
+@click.option(
+    "--log-wandb", is_flag=True, default=False, help="Log per-document predictions to W&B"
 )
 @click.option("--debug", is_flag=True, default=False)
 def predict_folder_cmd(**kwargs: str | float | bool | None) -> None:
