@@ -281,10 +281,12 @@ itself:
 }
 ```
 
-`predict-folder`'s CSV output includes `extractedText`/`extractorUsed`
-columns automatically. Use this to check *what was actually extracted* from
-a misclassified document — e.g. confirming whether a wrong classification is
-an extraction-quality problem (garbled OCR output) versus a genuine
+`predict-folder`'s CSV output includes `extracted_text`/`extractor_used`
+columns automatically (the CSV is built from `model_dump()`, which uses the
+Python field names, not the camelCase aliases the API returns). Use this to
+check *what was actually extracted* from a misclassified document — e.g.
+confirming whether a wrong classification is an extraction-quality problem
+(garbled OCR output) versus a genuine
 out-of-category document with clean, correctly-extracted text.
 
 ### Serve inference API
