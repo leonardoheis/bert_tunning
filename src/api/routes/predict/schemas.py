@@ -13,3 +13,5 @@ class PredictResponse(BaseSchema):
     mahalanobis_p_value: float | None = None
     cosine_z: float | None = None
     in_distribution: bool | None = None
+    extracted_text: str = ""
+    extractor_used: str = ""

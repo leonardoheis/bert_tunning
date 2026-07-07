@@ -157,6 +157,17 @@ def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
     assert result.in_distribution is False
 
 
+def test_predict_text_result_can_carry_extraction_metadata() -> None:
+    clf = _make_mock_classifier()
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    updated = result.model_copy(
+        update={"extracted_text": "raw text", "extractor_used": "MarkItDownExtractor"}
+    )
+    assert updated.extracted_text == "raw text"
+    assert updated.extractor_used == "MarkItDownExtractor"
+
+
 def test_load_ood_stats_returns_none_when_file_missing(tmp_path: Path) -> None:
     assert BertTunningClassifier._load_ood_stats(str(tmp_path)) is None  # noqa: SLF001
 

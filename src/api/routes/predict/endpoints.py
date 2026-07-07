@@ -6,7 +6,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from src.inference.classify import BertTunningClassifier
-from src.ingestion.extract import extract_pdf
+from src.ingestion.extract import extract_pdf_with_metadata
 from src.settings import Settings
 
 from .schemas import PredictResponse
@@ -32,11 +32,13 @@ async def predict(
         tmp_path = tmp.name
 
     try:
-        text = await asyncio.to_thread(extract_pdf, tmp_path, use_ocr_fallback=True)
+        extraction = await asyncio.to_thread(
+            extract_pdf_with_metadata, tmp_path, use_ocr_fallback=True
+        )
     finally:
         await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
-    if not text:
+    if not extraction.text:
         return PredictResponse(
             filename=file.filename,
             label=None,
@@ -45,8 +47,14 @@ async def predict(
             error="empty/unreadable document",
         )
 
-    result = await asyncio.to_thread(clf.predict_text, text)
-    result = result.model_copy(update={"filename": file.filename})
+    result = await asyncio.to_thread(clf.predict_text, extraction.text)
+    result = result.model_copy(
+        update={
+            "filename": file.filename,
+            "extracted_text": extraction.text,
+            "extractor_used": extraction.extractor_used or "",
+        }
+    )
     data = result.model_dump()
     return PredictResponse(
         filename=data["filename"],
@@ -58,4 +66,6 @@ async def predict(
         mahalanobis_p_value=data["mahalanobis_p_value"],
         cosine_z=data["cosine_z"],
         in_distribution=data["in_distribution"],
+        extracted_text=data["extracted_text"],
+        extractor_used=data["extractor_used"],
     )
