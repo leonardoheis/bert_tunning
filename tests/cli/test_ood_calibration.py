@@ -2,12 +2,28 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
-from click.testing import CliRunner
+import torch
+from click.testing import CliRunner, Result
+from transformers import PreTrainedTokenizerBase
 
 from src.cli.ood_calibration import build_calibration_report, evaluate_ood_calibration_cmd
+from src.schema import ClassEmbeddingStats
 from src.settings import Settings
+
+
+def _make_stats() -> ClassEmbeddingStats:
+    return ClassEmbeddingStats(
+        class_names=["decreto", "ordenanza"],
+        pca_mean=np.zeros(8),
+        pca_components=np.eye(8),
+        centroids=np.array([[0.0] * 8, [5.0] * 8]),
+        covariance_inv=np.eye(8),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+    )
 
 
 def test_build_calibration_report_percentile_direction() -> None:
@@ -112,3 +128,70 @@ def test_evaluate_ood_calibration_cmd_fails_on_class_mismatch(tmp_path: Path) ->
 
     assert result.exit_code != 0
     assert "do not match" in str(result.output).lower()
+
+
+def _run_successful_calibration(
+    tmp_path: Path, *, extra_args: list[str]
+) -> tuple[Result, MagicMock]:
+    cache_path = tmp_path / "cache.parquet"
+    pd.DataFrame(
+        {
+            "text": ["decreto uno", "decreto dos", "ordenanza uno", "ordenanza dos"],
+            "label": ["decreto", "decreto", "ordenanza", "ordenanza"],
+        }
+    ).to_parquet(cache_path)
+
+    model_path = tmp_path / "fake-model"
+    model_path.mkdir()
+    (model_path / "ood_stats.npz").touch()
+
+    mock_model = MagicMock()
+    mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
+
+    def _fake_extract_embeddings(
+        _model: torch.nn.Module,
+        _tokenizer: PreTrainedTokenizerBase,
+        texts: list[str],
+        **_kwargs: int | str,
+    ) -> npt.NDArray[np.float64]:
+        return np.zeros((len(texts), 8), dtype=np.float64)
+
+    with (
+        patch("src.cli.ood_calibration.AutoTokenizer.from_pretrained"),
+        patch(
+            "src.cli.ood_calibration.AutoModelForSequenceClassification.from_pretrained",
+            return_value=mock_model,
+        ),
+        patch("src.cli.ood_calibration.load_stats", return_value=_make_stats()),
+        patch("src.cli.ood_calibration.extract_embeddings", side_effect=_fake_extract_embeddings),
+        patch("torch.cuda.is_available", return_value=False),
+        patch("src.cli.ood_calibration.log_ood_calibration_results") as mock_log,
+    ):
+        result = CliRunner().invoke(
+            evaluate_ood_calibration_cmd,
+            [
+                "--model-path",
+                str(model_path),
+                "--model",
+                "beto",
+                "--cache-path",
+                str(cache_path),
+                *extra_args,
+            ],
+        )
+    return result, mock_log
+
+
+def test_evaluate_ood_calibration_cmd_logs_to_wandb_when_flag_set(tmp_path: Path) -> None:
+    result, mock_log = _run_successful_calibration(tmp_path, extra_args=["--log-wandb"])
+
+    assert result.exit_code == 0
+    mock_log.assert_called_once()
+    assert mock_log.call_args.kwargs["target_fp_rate"] == Settings.TARGET_FP_RATE
+
+
+def test_evaluate_ood_calibration_cmd_skips_wandb_by_default(tmp_path: Path) -> None:
+    result, mock_log = _run_successful_calibration(tmp_path, extra_args=[])
+
+    assert result.exit_code == 0
+    mock_log.assert_not_called()

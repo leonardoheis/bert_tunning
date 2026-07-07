@@ -40,6 +40,17 @@ class PredictResult(BaseModel):
     extractor_used: str = ""
 
 
+class CalibrationReport(BaseModel):
+    """Return value from build_calibration_report — empirical OOD threshold calibration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    fp_rate_maha: float
+    fp_rate_cosine: float
+    suggested_maha_threshold: float
+    suggested_cosine_threshold: float
+
+
 class ExtractionMetadata(BaseModel):
     """Return value from extract_pdf_with_metadata — extracted text plus provenance."""
 

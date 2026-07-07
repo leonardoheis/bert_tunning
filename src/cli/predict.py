@@ -8,6 +8,7 @@ from pydantic.alias_generators import to_camel
 from src.inference.pipeline import predict_folder, predict_pdf
 from src.logger import setup_logging
 from src.settings import Settings
+from src.wandb import log_predict_folder_results
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class PredictFolderOptions(BaseModel):
     threshold: float = Settings.THRESHOLD
     no_ocr: bool = False
     output: str = "bert_tunning_predictions.csv"
+    log_wandb: bool = False
     debug: bool = False
 
 
@@ -78,6 +80,11 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
     df.to_csv(opts.output, index=False)
     log.info("Results saved to %s", opts.output)
 
+    if opts.log_wandb:
+        log_predict_folder_results(
+            results, model_path=opts.model_path, folder_path=opts.folder_path
+        )
+
 
 @click.command("predict-folder")
 @click.argument("folder_path", type=click.Path(exists=True, file_okay=False))
@@ -87,6 +94,9 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
 )
 @click.option("--no-ocr", is_flag=True, default=False)
 @click.option("--output", default="bert_tunning_predictions.csv", show_default=True)
+@click.option(
+    "--log-wandb", is_flag=True, default=False, help="Log per-document predictions to W&B"
+)
 @click.option("--debug", is_flag=True, default=False)
 def predict_folder_cmd(**kwargs: str | float | bool) -> None:
     """Classify all PDFs in a folder and save results to CSV."""

@@ -11,27 +11,27 @@ from pydantic.alias_generators import to_camel
 from sklearn.preprocessing import LabelEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.inference.ood import cosine_z_score, extract_embeddings, load_stats, mahalanobis_p_value
+from src.inference.ood import (
+    cosine_z_score,
+    extract_embeddings,
+    load_stats,
+    mahalanobis_p_value,
+)
 from src.logger import setup_logging
+from src.schema import CalibrationReport
 from src.settings import Settings
 from src.training.models import get_model_config
 from src.training.split import make_split
 from src.training.tokenize import prepare_text
+from src.wandb import log_ood_calibration_results
 
 log = logging.getLogger(__name__)
 
 
-class CalibrationReport(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    fp_rate_maha: float
-    fp_rate_cosine: float
-    suggested_maha_threshold: float
-    suggested_cosine_threshold: float
-
-
 def build_calibration_report(
-    p_values: npt.NDArray[np.float64], z_scores: npt.NDArray[np.float64], target_fp_rate: float
+    p_values: npt.NDArray[np.float64],
+    z_scores: npt.NDArray[np.float64],
+    target_fp_rate: float,
 ) -> CalibrationReport:
     """Pure calibration math, isolated from model/IO for direct unit testing.
 
@@ -60,7 +60,8 @@ class OodCalibrationOptions(BaseModel):
     cache_path: str
     chunk_strategy: str = Settings.CHUNK_STRATEGY
     seed: int = Settings.SEED
-    target_fp_rate: float = 0.01
+    target_fp_rate: float = Settings.TARGET_FP_RATE
+    log_wandb: bool = False
     debug: bool = False
 
 
@@ -134,6 +135,14 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         report.suggested_cosine_threshold,
     )
 
+    if opts.log_wandb:
+        log_ood_calibration_results(
+            report,
+            model_path=opts.model_path,
+            cache_path=opts.cache_path,
+            target_fp_rate=opts.target_fp_rate,
+        )
+
 
 @click.command("evaluate-ood-calibration")
 @click.option(
@@ -164,9 +173,15 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
 @click.option(
     "--target-fp-rate",
     type=click.FloatRange(0.0, 1.0, min_open=True, max_open=True),
-    default=0.01,
+    default=Settings.TARGET_FP_RATE,
     show_default=True,
     help="Target false-positive rate used to compute the suggested threshold",
+)
+@click.option(
+    "--log-wandb",
+    is_flag=True,
+    default=False,
+    help="Log calibration summary metrics to W&B",
 )
 @click.option("--debug", is_flag=True, default=False)
 def evaluate_ood_calibration_cmd(**kwargs: str | float | bool) -> None:
