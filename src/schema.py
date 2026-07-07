@@ -20,7 +20,12 @@ Float64Array = Annotated[npt.NDArray[np.float64], BeforeValidator(_as_float64_ar
 class PredictResult(BaseModel):
     """Return value from BertTunningClassifier.predict_text and predict_pdf."""
 
-    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        frozen=True,
+        populate_by_name=True,
+    )
 
     label: str | None = None
     confidence: float = 0.0
@@ -31,6 +36,18 @@ class PredictResult(BaseModel):
     mahalanobis_p_value: float | None = None
     cosine_z: float | None = None
     in_distribution: bool | None = None
+    extracted_text: str = ""
+    extractor_used: str = ""
+
+
+class ExtractionMetadata(BaseModel):
+    """Return value from extract_pdf_with_metadata — extracted text plus provenance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str | None
+    extractor_used: str | None
+    char_count: int
 
 
 # classification_report(output_dict=True) returns per-class dicts and scalar floats.

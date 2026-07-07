@@ -58,6 +58,8 @@ def predict_cmd(
         click.echo(f"  Mahalanobis p: {result.mahalanobis_p_value:.6f}")
         click.echo(f"  Cosine Z     : {result.cosine_z:.4f}")
         click.echo(f"  In-Dist.     : {result.in_distribution}")
+    click.echo(f"  Extractor : {result.extractor_used or 'n/a'}")
+    click.echo(f"  Extracted text (first 200 chars): {result.extracted_text[:200]!r}")
     click.echo("\n  All scores:")
     for lbl, sc in sorted(result.all_scores.items(), key=lambda x: -x[1]):
         bar = "█" * int(sc * 40)

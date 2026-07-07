@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 
 from src.inference.classify import BertTunningClassifier
-from src.ingestion.extract import extract_pdf
+from src.ingestion.extract import extract_pdf_with_metadata
 from src.schema import PredictResult
 from src.settings import Settings
 
@@ -29,14 +29,20 @@ def predict_pdf(
     clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
     name = Path(pdf_path).name
     log.info("Classifying: %s", name)
-    text = extract_pdf(pdf_path, use_ocr_fallback=use_ocr)
+    extraction = extract_pdf_with_metadata(pdf_path, use_ocr_fallback=use_ocr)
 
-    if not text:
+    if not extraction.text:
         log.warning("Could not extract text from %s", name)
         return _extraction_failed(name)
 
-    result = clf.predict_text(text)
-    result = result.model_copy(update={"filename": name})
+    result = clf.predict_text(extraction.text)
+    result = result.model_copy(
+        update={
+            "filename": name,
+            "extracted_text": extraction.text,
+            "extractor_used": extraction.extractor_used or "",
+        }
+    )
     log.info("%s → %s (%.2f%%)", name, result.label, result.confidence * 100)
     return result
 
@@ -54,12 +60,18 @@ def predict_folder(
 
     results: list[PredictResult] = []
     for pdf in pdfs:
-        text = extract_pdf(str(pdf), use_ocr_fallback=use_ocr)
-        if not text:
+        extraction = extract_pdf_with_metadata(str(pdf), use_ocr_fallback=use_ocr)
+        if not extraction.text:
             results.append(_extraction_failed(pdf.name))
             continue
-        r = clf.predict_text(text)
-        r = r.model_copy(update={"filename": pdf.name})
+        r = clf.predict_text(extraction.text)
+        r = r.model_copy(
+            update={
+                "filename": pdf.name,
+                "extracted_text": extraction.text,
+                "extractor_used": extraction.extractor_used or "",
+            }
+        )
         results.append(r)
 
     log.info("Folder classification complete")
