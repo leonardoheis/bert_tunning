@@ -8,6 +8,11 @@ repos:
       - id: check-yaml
       - id: debug-statements
 
+  - repo: https://github.com/asottile/reorder-python-imports
+    rev: v3.13.0
+    hooks:
+      - id: reorder-python-imports
+
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.10.7
     hooks:
@@ -44,3 +49,12 @@ repos:
     hooks:
       - id: pre-commit-update
         stages: [manual]
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        name: Spell Checker (backend and frontend)
+        files: ^(backend|frontend)/ # Only backend and frontend directories
+        args: ["--exclude-file=frontend/package-lock.json"]
+        stages: [pre-commit]
