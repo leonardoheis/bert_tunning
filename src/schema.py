@@ -20,7 +20,12 @@ Float64Array = Annotated[npt.NDArray[np.float64], BeforeValidator(_as_float64_ar
 class PredictResult(BaseModel):
     """Return value from BertTunningClassifier.predict_text and predict_pdf."""
 
-    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        frozen=True,
+        populate_by_name=True,
+    )
 
     label: str | None = None
     confidence: float = 0.0

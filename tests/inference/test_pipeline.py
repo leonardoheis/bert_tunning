@@ -6,7 +6,8 @@ import torch
 
 from src.inference.classify import BertTunningClassifier
 from src.inference.ood import save_stats
-from src.schema import ClassEmbeddingStats
+from src.inference.pipeline import predict_pdf
+from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
 from src.settings import Settings
 
 
@@ -81,6 +82,11 @@ def test_predict_text_returns_expected_keys() -> None:
     assert isinstance(result.confidence, float)
     assert isinstance(result.certain, bool)
     assert isinstance(result.all_scores, dict)
+    # Regression guard: PredictResult(all_scores=...) is constructed with a snake_case
+    # kwarg while alias_generator=to_camel is set — without populate_by_name=True on the
+    # model, Pydantic v2 silently drops unrecognized-alias kwargs to their default ({})
+    # instead of raising, so this must assert non-empty, not just isinstance.
+    assert result.all_scores == {"decreto": 0.8176, "ordenanza": 0.1824}
 
 
 def test_predict_text_certain_above_threshold() -> None:
@@ -157,15 +163,37 @@ def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
     assert result.in_distribution is False
 
 
-def test_predict_text_result_can_carry_extraction_metadata() -> None:
-    clf = _make_mock_classifier()
-    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
-        result = clf.predict_text("anything")
-    updated = result.model_copy(
-        update={"extracted_text": "raw text", "extractor_used": "MarkItDownExtractor"}
+def test_predict_pdf_attaches_extraction_metadata() -> None:
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
     )
-    assert updated.extracted_text == "raw text"
-    assert updated.extractor_used == "MarkItDownExtractor"
+    fake_result = PredictResult(label="decreto", confidence=0.9, certain=True)
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier") as mock_clf_cls,
+    ):
+        mock_clf = MagicMock()
+        mock_clf.predict_text.return_value = fake_result
+        mock_clf_cls.return_value = mock_clf
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    mock_clf.predict_text.assert_called_once_with("hola mundo")
+    assert result.extracted_text == "hola mundo"
+    assert result.extractor_used == "OCRExtractor"
+
+
+def test_predict_pdf_returns_extraction_failed_result_when_text_missing() -> None:
+    fake_extraction = ExtractionMetadata(text=None, extractor_used=None, char_count=0)
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier"),
+    ):
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.label is None
+    assert result.error == "empty/unreadable document"
+    assert result.extracted_text == ""
+    assert result.extractor_used == ""
 
 
 def test_load_ood_stats_returns_none_when_file_missing(tmp_path: Path) -> None:

@@ -1,10 +1,11 @@
 from http import HTTPStatus
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.routes.predict.schemas import PredictResponse
+from src.schema import ExtractionMetadata, PredictResult
 
 
 def test_health_endpoint() -> None:
@@ -32,3 +33,29 @@ def test_predict_response_has_ood_fields() -> None:
     assert response.mahalanobis_p_value is None
     assert response.cosine_z is None
     assert response.in_distribution is None
+
+
+def test_predict_endpoint_returns_extraction_metadata() -> None:
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.return_value = PredictResult(
+        label="decreto", confidence=0.9, certain=True
+    )
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["extractedText"] == "hola mundo"
+    assert body["extractorUsed"] == "OCRExtractor"
