@@ -48,10 +48,10 @@ class CalibrationReport(BaseModel):
 
     fp_rate_maha: float
     fp_rate_cosine: float
-    fp_rate_knn: float = 0.0
+    fp_rate_knn: float
     suggested_maha_threshold: float
     suggested_cosine_threshold: float
-    suggested_knn_threshold: float = 0.0
+    suggested_knn_threshold: float
 
 
 class ExtractionMetadata(BaseModel):

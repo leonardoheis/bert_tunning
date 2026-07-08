@@ -30,8 +30,10 @@ def test_log_ood_calibration_results_logs_summary_metrics() -> None:
     report = CalibrationReport(
         fp_rate_maha=0.2951,
         fp_rate_cosine=0.0104,
+        fp_rate_knn=0.0087,
         suggested_maha_threshold=0.0,
         suggested_cosine_threshold=13.7186,
+        suggested_knn_threshold=4.2,
     )
     with (
         patch("src.wandb.wandb.init") as mock_init,

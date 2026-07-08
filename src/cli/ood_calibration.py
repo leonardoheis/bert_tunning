@@ -42,8 +42,12 @@ def build_calibration_report(
     return CalibrationReport(
         fp_rate_maha=float(np.mean(p_values < Settings.OOD_MAHALANOBIS_P_THRESHOLD)),
         fp_rate_cosine=float(np.mean(z_scores > Settings.OOD_COSINE_THRESHOLD)),
+        # Placeholder — the k-NN signal isn't computed here yet (see the k-NN OOD plan's
+        # Task 3), which is due to wire in real knn_distances and replace these two values.
+        fp_rate_knn=0.0,
         suggested_maha_threshold=float(np.percentile(p_values, target_fp_rate * 100)),
         suggested_cosine_threshold=float(np.percentile(z_scores, (1 - target_fp_rate) * 100)),
+        suggested_knn_threshold=0.0,
     )
 
 
