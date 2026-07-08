@@ -5,11 +5,10 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import pytest
-import torch
 from click.testing import CliRunner, Result
-from transformers import PreTrainedTokenizerBase
 
 from src.cli.ood_calibration import build_calibration_report, evaluate_ood_calibration_cmd
+from src.ood import LoadedModel
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
 
@@ -169,10 +168,7 @@ def _run_successful_calibration(
     mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
 
     def _fake_extract_embeddings(
-        _model: torch.nn.Module,
-        _tokenizer: PreTrainedTokenizerBase,
-        texts: list[str],
-        **_kwargs: int | str,
+        _loaded: LoadedModel, texts: list[str], **_kwargs: int | str
     ) -> npt.NDArray[np.float64]:
         return np.zeros((len(texts), 8), dtype=np.float64)
 
@@ -254,10 +250,7 @@ def _run_calibration_with_stats(
     mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
 
     def _fake_extract_embeddings(
-        _model: torch.nn.Module,
-        _tokenizer: PreTrainedTokenizerBase,
-        texts: list[str],
-        **_kwargs: int | str,
+        _loaded: LoadedModel, texts: list[str], **_kwargs: int | str
     ) -> npt.NDArray[np.float64]:
         return np.zeros((len(texts), 8), dtype=np.float64)
 

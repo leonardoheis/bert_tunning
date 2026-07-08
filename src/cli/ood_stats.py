@@ -48,13 +48,11 @@ def _run_compute_ood_stats(opts: ComputeOodStatsOptions) -> None:
     train_df, _val_df, _test_df = make_split(df, seed=opts.seed)
     log.info("Reconstructed train split: %d docs", len(train_df))
 
-    model, tokenizer, device = load_model_and_verify_classes(opts.model_path, set(le.classes_))
-    log.info("Extracting embeddings on %s", device)
+    loaded = load_model_and_verify_classes(opts.model_path, set(le.classes_))
+    log.info("Extracting embeddings on %s", loaded.device)
 
-    texts = [prepare_text(t, tokenizer, opts.chunk_strategy) for t in train_df["text"]]
-    embeddings = extract_embeddings(
-        model, tokenizer, texts, max_length=model_cfg.max_tokens, device=device
-    )
+    texts = [prepare_text(t, loaded.tokenizer, opts.chunk_strategy) for t in train_df["text"]]
+    embeddings = extract_embeddings(loaded, texts, max_length=model_cfg.max_tokens)
     stats = compute_class_stats(
         embeddings,
         train_df["label_id"].tolist(),

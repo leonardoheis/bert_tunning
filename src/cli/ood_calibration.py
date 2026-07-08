@@ -90,13 +90,11 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         raise click.ClickException(msg)
     stats = load_stats(stats_path)
 
-    model, tokenizer, device = load_model_and_verify_classes(opts.model_path, set(le.classes_))
-    log.info("Extracting embeddings on %s", device)
+    loaded = load_model_and_verify_classes(opts.model_path, set(le.classes_))
+    log.info("Extracting embeddings on %s", loaded.device)
 
-    texts = [prepare_text(t, tokenizer, opts.chunk_strategy) for t in test_df["text"]]
-    embeddings = extract_embeddings(
-        model, tokenizer, texts, max_length=model_cfg.max_tokens, device=device
-    )
+    texts = [prepare_text(t, loaded.tokenizer, opts.chunk_strategy) for t in test_df["text"]]
+    embeddings = extract_embeddings(loaded, texts, max_length=model_cfg.max_tokens)
 
     p_values = np.array([mahalanobis_p_value(e, stats) for e in embeddings])
     z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
