@@ -83,6 +83,8 @@ def compute_class_stats(
         covariance_inv=covariance_inv,
         cosine_calibration_mean=float(cosine_scores.mean()),
         cosine_calibration_std=float(cosine_scores.std() + 1e-9),
+        knn_train_embeddings=reduced,
+        knn_train_labels=labels_arr.tolist(),
     )
 
 
@@ -115,6 +117,31 @@ def cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStat
     return (cosine_raw - stats.cosine_calibration_mean) / stats.cosine_calibration_std
 
 
+def knn_mean_distance(
+    embedding: npt.NDArray[np.float64],
+    stats: ClassEmbeddingStats,
+    predicted_label_id: int,
+    *,
+    k: int = 10,
+) -> float:
+    """Mean Euclidean distance, in PCA space, to the k nearest training documents that share
+    the predicted class. Unlike Mahalanobis (global shared covariance, assumes one Gaussian
+    shape) and cosine (distance to a single centroid), this makes no assumption about the
+    class's shape — it directly measures local density around the predicted class's own
+    training examples, which matters for heterogeneous classes (e.g. a broad `otro`
+    catch-all) that a single centroid represents poorly. A HIGH distance means anomalous —
+    same comparison direction as cosine_z_score."""
+    point = _project(embedding, stats)
+    labels_arr = np.array(stats.knn_train_labels)
+    class_points = stats.knn_train_embeddings[labels_arr == predicted_label_id]
+    if class_points.shape[0] == 0:
+        return float("nan")
+    k_eff = min(k, class_points.shape[0])
+    distances = np.linalg.norm(class_points - point, axis=1)
+    nearest = np.partition(distances, k_eff - 1)[:k_eff]
+    return float(nearest.mean())
+
+
 def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
     np.savez(
         str(path),
@@ -125,6 +152,8 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
         covariance_inv=stats.covariance_inv,
         cosine_calibration_mean=stats.cosine_calibration_mean,
         cosine_calibration_std=stats.cosine_calibration_std,
+        knn_train_embeddings=stats.knn_train_embeddings,
+        knn_train_labels=np.array(stats.knn_train_labels),
     )
 
 
@@ -138,6 +167,8 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         covariance_inv=data["covariance_inv"],
         cosine_calibration_mean=float(data["cosine_calibration_mean"]),
         cosine_calibration_std=float(data["cosine_calibration_std"]),
+        knn_train_embeddings=data["knn_train_embeddings"],
+        knn_train_labels=data["knn_train_labels"].tolist(),
     )
 
 

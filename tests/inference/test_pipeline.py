@@ -20,6 +20,9 @@ def _make_stats() -> ClassEmbeddingStats:
         covariance_inv=np.eye(8),
         cosine_calibration_mean=0.0,
         cosine_calibration_std=1.0,
+        # A handful of training points tightly clustered around each centroid, for k-NN.
+        knn_train_embeddings=np.array([[0.0] * 8] * 5 + [[5.0] * 8] * 5),
+        knn_train_labels=[0] * 5 + [1] * 5,
     )
 
 
@@ -36,6 +39,8 @@ def _make_tight_cosine_stats() -> ClassEmbeddingStats:
         covariance_inv=np.eye(8),
         cosine_calibration_mean=0.0,
         cosine_calibration_std=0.005,
+        knn_train_embeddings=np.array([[5.0] * 8] * 5 + [[-5.0] * 8] * 5),
+        knn_train_labels=[0] * 5 + [1] * 5,
     )
 
 

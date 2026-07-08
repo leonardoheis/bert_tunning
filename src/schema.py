@@ -35,6 +35,7 @@ class PredictResult(BaseModel):
     error: str = ""
     mahalanobis_p_value: float | None = None
     cosine_z: float | None = None
+    knn_distance: float | None = None
     in_distribution: bool | None = None
     extracted_text: str = ""
     extractor_used: str = ""
@@ -47,8 +48,10 @@ class CalibrationReport(BaseModel):
 
     fp_rate_maha: float
     fp_rate_cosine: float
+    fp_rate_knn: float
     suggested_maha_threshold: float
     suggested_cosine_threshold: float
+    suggested_knn_threshold: float
 
 
 class ExtractionMetadata(BaseModel):
@@ -86,7 +89,8 @@ class EvaluationResult(BaseModel):
 
 
 class ClassEmbeddingStats(BaseModel):
-    """Per-class embedding centroids + shared covariance for Mahalanobis/cosine OOD scoring."""
+    """Per-class embedding centroids + shared covariance for Mahalanobis/cosine OOD scoring,
+    plus the raw per-class training embeddings needed for k-NN local-density scoring."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -97,10 +101,14 @@ class ClassEmbeddingStats(BaseModel):
     covariance_inv: Float64Array
     cosine_calibration_mean: float
     cosine_calibration_std: float
+    knn_train_embeddings: Float64Array  # (n_train_docs, n_components), PCA-reduced
+    knn_train_labels: list[int]  # length n_train_docs, parallel to knn_train_embeddings
 
 
 class Hyperparams(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(
+        alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True
+    )
 
     model: str
     epochs: int

@@ -10,6 +10,7 @@ from src.inference.ood import (
     cosine_min_distance,
     cosine_z_score,
     extract_embeddings,
+    knn_mean_distance,
     load_stats,
     mahalanobis_min_distance,
     mahalanobis_p_value,
@@ -97,6 +98,43 @@ def test_save_and_load_stats_roundtrip(tmp_path: Path) -> None:
     np.testing.assert_allclose(loaded.centroids, stats.centroids)
     np.testing.assert_allclose(loaded.covariance_inv, stats.covariance_inv)
     assert loaded.cosine_calibration_mean == stats.cosine_calibration_mean
+
+
+def test_knn_mean_distance_is_zero_for_a_training_point_itself() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    # embeddings[0] is a class_a point; its own class-conditional 10-NN distance
+    # should be small (it's one of its own neighbors, distance 0 to itself).
+    dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=0, k=10)
+    assert dist >= 0.0
+    assert dist < 1.0  # class_a cluster has scale=0.1, so neighbor distances are small
+
+
+def test_knn_mean_distance_is_larger_for_a_far_point() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    far_point = np.full(16, 100.0)
+    near_dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=0, k=10)
+    far_dist = knn_mean_distance(far_point, stats, predicted_label_id=0, k=10)
+    assert far_dist > near_dist
+
+
+def test_knn_mean_distance_handles_k_larger_than_class_size() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    # class_a has 20 members in the fixture; request more neighbors than exist.
+    dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=0, k=1000)
+    assert dist >= 0.0  # falls back to using all available class members, not an error
+
+
+def test_save_and_load_stats_roundtrip_includes_knn_fields(tmp_path: Path) -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = tmp_path / "ood_stats.npz"
+    save_stats(stats, path)
+    loaded = load_stats(path)
+    np.testing.assert_allclose(loaded.knn_train_embeddings, stats.knn_train_embeddings)
+    assert loaded.knn_train_labels == stats.knn_train_labels
 
 
 def test_extract_embeddings_returns_correct_shape() -> None:

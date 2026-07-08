@@ -64,6 +64,9 @@ class _Settings(BaseSettings):
     OOD_PCA_COMPONENTS: int = 64
     OOD_MAHALANOBIS_P_THRESHOLD: float = 0.01
     OOD_COSINE_THRESHOLD: float = 2.5
+    OOD_KNN_NEIGHBORS: int = 10
+    OOD_KNN_DISTANCE_THRESHOLD: float = 5.0  # uncalibrated placeholder — run
+    # evaluate-ood-calibration per-model before trusting this, same caveat as OOD_COSINE_THRESHOLD
     TARGET_FP_RATE: float = 0.01
 
     model_config = SettingsConfigDict(
