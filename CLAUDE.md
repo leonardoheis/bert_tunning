@@ -292,3 +292,4 @@ samples/    sample PDFs for quick tests
 | `# noqa: FBT001, FBT002` | `src/training/trainer.py:25` | Boolean arg in WeightedTrainer — matches HuggingFace Trainer signature |
 | `# noqa: PLC0415` | `src/training/models/__init__.py:_build_registry` | Deferred import avoids circular import with model submodules |
 | `# noqa: PLR0913` | `src/ood.py:extract_embeddings` | Too-many-arguments — model, tokenizer, texts, max_length, device, batch_size are all needed at the call site |
+| `# noqa: B019` | `src/ingestion/extractors/ocr.py:OCRExtractor._get_reader` | `lru_cache` on an instance method normally risks keeping `self` alive forever, but `OCRExtractor` is a process-lifetime singleton in `_CHAIN` (`src/ingestion/extract.py`) — no leak in practice |
