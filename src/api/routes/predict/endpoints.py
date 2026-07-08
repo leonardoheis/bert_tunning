@@ -65,6 +65,7 @@ async def predict(
         error=data["error"] or None,
         mahalanobis_p_value=data["mahalanobis_p_value"],
         cosine_z=data["cosine_z"],
+        knn_distance=data["knn_distance"],
         in_distribution=data["in_distribution"],
         extracted_text=data["extracted_text"],
         extractor_used=data["extractor_used"],

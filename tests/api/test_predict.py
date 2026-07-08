@@ -35,6 +35,11 @@ def test_predict_response_has_ood_fields() -> None:
     assert response.in_distribution is None
 
 
+def test_predict_response_has_knn_field() -> None:
+    response = PredictResponse(filename="doc.pdf", label="decreto", confidence=0.9, certain=True)
+    assert response.knn_distance is None
+
+
 def test_predict_endpoint_returns_extraction_metadata() -> None:
     app = create_app(model_path="fake/path")
     mock_clf = MagicMock()
@@ -59,3 +64,28 @@ def test_predict_endpoint_returns_extraction_metadata() -> None:
     body = response.json()
     assert body["extractedText"] == "hola mundo"
     assert body["extractorUsed"] == "OCRExtractor"
+
+
+def test_predict_endpoint_returns_knn_distance() -> None:
+    expected_knn_distance = 4.2
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.return_value = PredictResult(
+        label="decreto", confidence=0.9, certain=True, knn_distance=expected_knn_distance
+    )
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["knnDistance"] == expected_knn_distance
