@@ -1,5 +1,5 @@
+import functools
 import logging
-import threading
 
 import easyocr
 import fitz
@@ -14,18 +14,15 @@ log = logging.getLogger(__name__)
 
 
 class OCRExtractor(ExtractorBase):
-    def __init__(self) -> None:
-        self._reader: easyocr.Reader | None = None
-        self._lock = threading.Lock()
-
+    # ponytail: lru_cache is CPython's own lock-protected memoization, so a zero-arg
+    # instance method decorated this way already gives lazy, thread-safe, compute-once
+    # initialization — no need to hand-roll double-checked locking for the same guarantee.
+    @functools.lru_cache(maxsize=1)  # noqa: B019
     def _get_reader(self) -> easyocr.Reader:
-        if self._reader is None:
-            with self._lock:
-                if self._reader is None:
-                    log.info("Initializing EasyOCR reader (first use — may take ~10s)")
-                    self._reader = easyocr.Reader(["es"], gpu=torch.cuda.is_available())
-                    log.info("EasyOCR reader ready")
-        return self._reader
+        log.info("Initializing EasyOCR reader (first use — may take ~10s)")
+        reader = easyocr.Reader(["es"], gpu=torch.cuda.is_available())
+        log.info("EasyOCR reader ready")
+        return reader
 
     def extract(self, pdf_path: str) -> str:
         try:

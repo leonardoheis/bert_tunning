@@ -5,12 +5,11 @@ import click
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-import torch
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 from sklearn.preprocessing import LabelEncoder
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+from src.cli._ood_common import load_model_and_verify_classes
 from src.logger import setup_logging
 from src.ood import (
     cosine_z_score,
@@ -91,21 +90,8 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         raise click.ClickException(msg)
     stats = load_stats(stats_path)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(opts.model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(opts.model_path)
-    model.eval()
-    model.to(device)
+    model, tokenizer, device = load_model_and_verify_classes(opts.model_path, set(le.classes_))
     log.info("Extracting embeddings on %s", device)
-
-    model_labels = set(model.config.id2label.values())
-    cache_labels = set(le.classes_)
-    if model_labels != cache_labels:
-        msg = (
-            f"Cache classes {sorted(cache_labels)} do not match model classes "
-            f"{sorted(model_labels)} — wrong --cache-path or --model-path?"
-        )
-        raise click.ClickException(msg)
 
     texts = [prepare_text(t, tokenizer, opts.chunk_strategy) for t in test_df["text"]]
     embeddings = extract_embeddings(

@@ -22,7 +22,6 @@ class _Settings(BaseSettings):
     CACHE_PATH: str = "./data/bert_tunning_cache.parquet"
 
     # ── Model ─────────────────────────────────────────────────────────────────
-    MODEL_NAME: str = "xlm-roberta-base"
     MODEL_KEY: str = "xlm-roberta"
 
     # ── Training ──────────────────────────────────────────────────────────────
