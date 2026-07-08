@@ -182,27 +182,35 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
     )
 
 
-def extract_embeddings(  # noqa: PLR0913
-    model: torch.nn.Module,
-    tokenizer: PreTrainedTokenizerBase,
+class LoadedModel(NamedTuple):
+    """A trained model + its tokenizer + the device it's on — these three always travel
+    together at every call site, so bundling them is what actually gets extract_embeddings
+    under ruff's 5-argument limit, not a noqa."""
+
+    model: torch.nn.Module
+    tokenizer: PreTrainedTokenizerBase
+    device: str
+
+
+def extract_embeddings(
+    loaded: LoadedModel,
     texts: list[str],
     *,
     max_length: int,
-    device: str,
     batch_size: int = 16,
 ) -> npt.NDArray[np.float64]:
-    model.eval()
+    loaded.model.eval()
     batches: list[npt.NDArray[np.float64]] = []
     with torch.no_grad():
         for start in range(0, len(texts), batch_size):
             batch = texts[start : start + batch_size]
-            inputs = tokenizer(
+            inputs = loaded.tokenizer(
                 batch,
                 truncation=True,
                 padding="max_length",
                 max_length=max_length,
                 return_tensors="pt",
-            ).to(device)
-            hidden = model.base_model(**inputs).last_hidden_state  # type: ignore[operator]
+            ).to(loaded.device)
+            hidden = loaded.model.base_model(**inputs).last_hidden_state  # type: ignore[operator]
             batches.append(hidden[:, 0, :].cpu().numpy().astype(np.float64))
     return np.vstack(batches)

@@ -15,7 +15,7 @@ from transformers import (
     TrainingArguments,
 )
 
-from src.ood import compute_class_stats, extract_embeddings, save_stats
+from src.ood import LoadedModel, compute_class_stats, extract_embeddings, save_stats
 from src.schema import Hyperparams
 from src.settings import Settings
 from src.training.evaluate import run_evaluation
@@ -153,11 +153,9 @@ def run(
     log.info("Training complete")
 
     train_embeddings = extract_embeddings(
-        model,
-        tokenizer,
+        LoadedModel(model=model, tokenizer=tokenizer, device=str(model.device)),
         _texts(train_df, request.chunk_strategy),
         max_length=model_cfg.max_tokens,
-        device=str(model.device),
     )
     ood_stats = compute_class_stats(
         train_embeddings,

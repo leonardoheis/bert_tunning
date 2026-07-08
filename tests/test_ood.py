@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from src.ood import (
+    LoadedModel,
     compute_class_stats,
     cosine_min_distance,
     cosine_z_score,
@@ -159,7 +160,6 @@ def test_extract_embeddings_returns_correct_shape() -> None:
     model = MagicMock()
     model.base_model.return_value.last_hidden_state = torch.zeros(2, 8, 16)
 
-    embeddings = extract_embeddings(
-        model, tokenizer, ["doc one", "doc two"], max_length=8, device="cpu", batch_size=2
-    )
+    loaded = LoadedModel(model=model, tokenizer=tokenizer, device="cpu")
+    embeddings = extract_embeddings(loaded, ["doc one", "doc two"], max_length=8, batch_size=2)
     assert embeddings.shape == (2, 16)

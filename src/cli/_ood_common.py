@@ -1,11 +1,11 @@
 import click
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+from src.ood import LoadedModel
 
 
-def load_model_and_verify_classes(
-    model_path: str, cache_labels: set[str]
-) -> tuple[torch.nn.Module, PreTrainedTokenizerBase, str]:
+def load_model_and_verify_classes(model_path: str, cache_labels: set[str]) -> LoadedModel:
     """Load a trained model + tokenizer for an OOD command, on the right device, and verify
     its classes match the cache the caller is about to reconstruct a split from — shared by
     compute-ood-stats and evaluate-ood-calibration, which both need exactly this."""
@@ -23,4 +23,4 @@ def load_model_and_verify_classes(
         )
         raise click.ClickException(msg)
 
-    return model, tokenizer, device
+    return LoadedModel(model=model, tokenizer=tokenizer, device=device)
