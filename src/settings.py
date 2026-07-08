@@ -65,8 +65,12 @@ class _Settings(BaseSettings):
     OOD_MAHALANOBIS_P_THRESHOLD: float = 0.01
     OOD_COSINE_THRESHOLD: float = 2.5
     OOD_KNN_NEIGHBORS: int = 10
-    OOD_KNN_DISTANCE_THRESHOLD: float = 5.0  # uncalibrated placeholder — run
-    # evaluate-ood-calibration per-model before trusting this, same caveat as OOD_COSINE_THRESHOLD
+    # Calibrated 2026-07-08 against BETO v2 (bert_tunning_model_beto_v2) via
+    # evaluate-ood-calibration: the prior placeholder (5.0) gave a 21.88% empirical
+    # false-positive rate vs. the 1% target; 26.125 is the suggested threshold for a
+    # 1% target FP rate on that run. Same caveat as OOD_COSINE_THRESHOLD — re-run
+    # evaluate-ood-calibration if the training corpus changes materially.
+    OOD_KNN_DISTANCE_THRESHOLD: float = 26.125
     TARGET_FP_RATE: float = 0.01
 
     model_config = SettingsConfigDict(
