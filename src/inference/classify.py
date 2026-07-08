@@ -5,8 +5,8 @@ import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.inference.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_p_value
 from src.ingestion.extract import clean_text
+from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_p_value
 from src.schema import ClassEmbeddingStats, PredictResult
 from src.settings import Settings
 
@@ -75,7 +75,10 @@ class BertTunningClassifier:
         )
         maha_anomalous = maha_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
         cosine_anomalous = cosine_z > Settings.OOD_COSINE_THRESHOLD
-        knn_anomalous = knn_dist > Settings.OOD_KNN_DISTANCE_THRESHOLD
+        # NaN means the predicted class had zero training points to compare against — treat
+        # that as anomalous (fail safe) rather than let `nan > threshold` silently evaluate
+        # to False and never flag it.
+        knn_anomalous = bool(np.isnan(knn_dist)) or knn_dist > Settings.OOD_KNN_DISTANCE_THRESHOLD
         out_of_distribution = maha_anomalous or cosine_anomalous or knn_anomalous
         return result.model_copy(
             update={

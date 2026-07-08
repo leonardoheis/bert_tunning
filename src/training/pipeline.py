@@ -15,7 +15,7 @@ from transformers import (
     TrainingArguments,
 )
 
-from src.inference.ood import compute_class_stats, extract_embeddings, save_stats
+from src.ood import compute_class_stats, extract_embeddings, save_stats
 from src.schema import Hyperparams
 from src.settings import Settings
 from src.training.evaluate import run_evaluation

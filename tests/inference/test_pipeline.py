@@ -5,8 +5,8 @@ import numpy as np
 import torch
 
 from src.inference.classify import BertTunningClassifier
-from src.inference.ood import save_stats
 from src.inference.pipeline import predict_pdf
+from src.ood import save_stats
 from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
 from src.settings import Settings
 
@@ -61,6 +61,22 @@ def _make_stats_with_isolated_knn_cluster() -> ClassEmbeddingStats:
         cosine_calibration_std=1.0,
         knn_train_embeddings=np.array([[50.0] * 8] * 5 + [[5.0] * 8] * 5),
         knn_train_labels=[0] * 5 + [1] * 5,
+    )
+
+
+def _make_stats_with_no_knn_training_data_for_decreto() -> ClassEmbeddingStats:
+    # "decreto" (label 0) has zero stored k-NN training points, so knn_mean_distance
+    # returns NaN for any document predicted as "decreto" — the fail-safe case.
+    return ClassEmbeddingStats(
+        class_names=["decreto", "ordenanza"],
+        pca_mean=np.zeros(8),
+        pca_components=np.eye(8),
+        centroids=np.array([[0.0] * 8, [5.0] * 8]),
+        covariance_inv=np.eye(8),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.array([[5.0] * 8] * 5),
+        knn_train_labels=[1] * 5,
     )
 
 
@@ -202,6 +218,20 @@ def test_predict_text_flags_out_of_distribution_via_knn_only() -> None:
     assert result.cosine_z <= Settings.OOD_COSINE_THRESHOLD
     assert result.knn_distance is not None
     assert result.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
+    assert result.in_distribution is False
+
+
+def test_predict_text_flags_out_of_distribution_when_knn_distance_is_nan() -> None:
+    clf = _make_mock_classifier()
+    clf._ood_stats = _make_stats_with_no_knn_training_data_for_decreto()  # noqa: SLF001
+    # [CLS] embedding is all zeros, exactly the "decreto" centroid — Mahalanobis and cosine
+    # both pass — but "decreto" has zero k-NN training points, so knn_mean_distance returns
+    # NaN. `nan > threshold` is False in Python, so without an explicit guard this would
+    # silently pass as in-distribution; it must instead be treated as anomalous (fail safe).
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.knn_distance is not None
+    assert np.isnan(result.knn_distance)
     assert result.in_distribution is False
 
 

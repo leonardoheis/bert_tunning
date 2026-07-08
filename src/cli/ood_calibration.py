@@ -11,14 +11,14 @@ from pydantic.alias_generators import to_camel
 from sklearn.preprocessing import LabelEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.inference.ood import (
+from src.logger import setup_logging
+from src.ood import (
     cosine_z_score,
     extract_embeddings,
     knn_mean_distance,
     load_stats,
     mahalanobis_p_value,
 )
-from src.logger import setup_logging
 from src.schema import CalibrationReport
 from src.settings import Settings
 from src.training.models import get_model_config
@@ -121,7 +121,22 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
             for e, lbl in zip(embeddings, label_ids, strict=True)
         ]
     )
-    report = build_calibration_report(p_values, z_scores, knn_distances, opts.target_fp_rate)
+    # knn_mean_distance returns NaN when a document's class has zero training points in
+    # the reconstructed split — exclude those from the k-NN calibration rather than let
+    # NaN silently propagate into np.mean/np.percentile and corrupt the whole report.
+    knn_valid = ~np.isnan(knn_distances)
+    if not knn_valid.all():
+        log.warning(
+            "Skipping %d/%d test docs with no same-class training points for k-NN calibration",
+            int((~knn_valid).sum()),
+            len(knn_distances),
+        )
+    if not knn_valid.any():
+        msg = "No test documents have same-class training points — cannot calibrate k-NN"
+        raise click.ClickException(msg)
+    report = build_calibration_report(
+        p_values, z_scores, knn_distances[knn_valid], opts.target_fp_rate
+    )
 
     log.info("=" * 60)
     log.info("OOD threshold calibration — %s", opts.model_path)

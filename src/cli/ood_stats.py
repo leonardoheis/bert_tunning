@@ -9,8 +9,8 @@ from pydantic.alias_generators import to_camel
 from sklearn.preprocessing import LabelEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.inference.ood import compute_class_stats, extract_embeddings, save_stats
 from src.logger import setup_logging
+from src.ood import compute_class_stats, extract_embeddings, save_stats
 from src.settings import Settings
 from src.training.models import get_model_config
 from src.training.split import make_split

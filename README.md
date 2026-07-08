@@ -54,15 +54,17 @@ src/
 ├── __init__.py        package entry — exports BertTunningError, Settings, __version__
 ├── __main__.py        python -m src entry — spawns run_api() via multiprocessing.Process
 ├── settings.py        all configuration (Pydantic BaseSettings, overridable via .env)
-├── schema.py          shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, Hyperparams, ReportDict)
+├── schema.py          shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, CalibrationReport, Hyperparams, ReportDict)
+├── wandb.py            all W&B interaction — WandbLogger (training) + log_predict_folder_results/log_ood_calibration_results (--log-wandb)
+├── ood.py              OOD math — compute_class_stats, mahalanobis_p_value, cosine_z_score, knn_mean_distance, extract_embeddings, save_stats/load_stats.
+│                       Lives at top level, not under training/ or inference/, since it's used by both (training-time stats computation, inference-time scoring)
 ├── exceptions.py      BertTunningError base
 ├── logger.py          setup_logging() — per-run timestamped log file
 ├── ingestion/         extract.py (extract_pdf_with_metadata) · scan.py · cache.py · pipeline.py · extractors/
 ├── training/
 │   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
-│   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py
-│                      reporting.py · wandb_logger.py
-├── inference/         classify.py (BertTunningClassifier) · ood.py (Mahalanobis/cosine scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
+│   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py · reporting.py
+├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
 ├── api/               app.py · schema.py · __init__.py · routes/predict/ · routes/health/
 └── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · clean.py
 
@@ -92,7 +94,7 @@ All settings live in `src/settings.py` and can be overridden via a `.env` file a
 # .env (optional — values shown are the defaults)
 DOCS_ROOT=C:\path\to\downloads
 MODEL_KEY=xlm-roberta
-OUTPUT_DIR=./models/bert_tunning_model
+OUTPUT_DIR=./models/bert_tunning_model_beto_v2
 EPOCHS=15
 EARLY_STOP_PATIENCE=5
 CHUNK_STRATEGY=first
@@ -107,11 +109,13 @@ THRESHOLD=0.70
 | Variable | Default | Description |
 |---|---|---|
 | `DOCS_ROOT` | *(set this)* | Root folder containing labeled subfolders of PDFs |
-| `MODEL_KEY` | `xlm-roberta` | Default model registry key |
-| `OUTPUT_DIR` | `./models/bert_tunning_model` | Where the fine-tuned model is saved (`/final` is the inference path) |
+| `MODEL_KEY` | `xlm-roberta` | Default model registry key (used by `train`; `predict`/`predict-folder`/`serve` load whatever `--model-path` points at directly, model-agnostic) |
+| `OUTPUT_DIR` | `./models/bert_tunning_model_beto_v2` | Where the fine-tuned model is saved (`/final` is the inference path) — currently points at the best-performing checkpoint (BETO v2) |
 | `EPOCHS` | `15` | Max training epochs |
 | `EARLY_STOP_PATIENCE` | `5` | Epochs without macro-F1 improvement before stopping |
 | `CHUNK_STRATEGY` | `first` | `first` = first 512 tokens; `middle` = first 256 + last 256 |
+
+See `CLAUDE.md`'s Settings table for the full list, including the OOD-related settings (`OOD_MAHALANOBIS_P_THRESHOLD`, `OOD_COSINE_THRESHOLD`, `OOD_KNN_NEIGHBORS`, `OOD_KNN_DISTANCE_THRESHOLD`) described in the "Out-of-distribution detection" section below.
 
 Model hyperparameters (lr, batch size, etc.) live in the model registry — see `src/training/models/xlm_roberta.py`.
 

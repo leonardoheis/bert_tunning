@@ -5,7 +5,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-from src.inference.ood import (
+from src.ood import (
     compute_class_stats,
     cosine_min_distance,
     cosine_z_score,

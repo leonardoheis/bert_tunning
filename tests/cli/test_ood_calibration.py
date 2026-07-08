@@ -217,3 +217,98 @@ def test_evaluate_ood_calibration_cmd_skips_wandb_by_default(tmp_path: Path) -> 
 
     assert result.exit_code == 0
     mock_log.assert_not_called()
+
+
+def _make_stats_missing_class(missing_label_id: int) -> ClassEmbeddingStats:
+    """Same shape as _make_stats(), but one class has zero stored k-NN training points —
+    knn_mean_distance returns NaN for any test document whose true label is that class."""
+    present_label_id = 1 - missing_label_id
+    return ClassEmbeddingStats(
+        class_names=["decreto", "ordenanza"],
+        pca_mean=np.zeros(8),
+        pca_components=np.eye(8),
+        centroids=np.array([[0.0] * 8, [5.0] * 8]),
+        covariance_inv=np.eye(8),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.array([[float(present_label_id) * 5.0] * 8] * 5),
+        knn_train_labels=[present_label_id] * 5,
+    )
+
+
+def _run_calibration_with_stats(
+    tmp_path: Path, stats: ClassEmbeddingStats
+) -> tuple[Result, MagicMock]:
+    # 20 docs/class so the stratified test split reliably contains both classes.
+    cache_path = tmp_path / "cache.parquet"
+    pd.DataFrame(
+        {
+            "text": [f"decreto {i}" for i in range(20)] + [f"ordenanza {i}" for i in range(20)],
+            "label": ["decreto"] * 20 + ["ordenanza"] * 20,
+        }
+    ).to_parquet(cache_path)
+
+    model_path = tmp_path / "fake-model"
+    model_path.mkdir()
+    (model_path / "ood_stats.npz").touch()
+
+    mock_model = MagicMock()
+    mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
+
+    def _fake_extract_embeddings(
+        _model: torch.nn.Module,
+        _tokenizer: PreTrainedTokenizerBase,
+        texts: list[str],
+        **_kwargs: int | str,
+    ) -> npt.NDArray[np.float64]:
+        return np.zeros((len(texts), 8), dtype=np.float64)
+
+    with (
+        patch("src.cli.ood_calibration.AutoTokenizer.from_pretrained"),
+        patch(
+            "src.cli.ood_calibration.AutoModelForSequenceClassification.from_pretrained",
+            return_value=mock_model,
+        ),
+        patch("src.cli.ood_calibration.load_stats", return_value=stats),
+        patch("src.cli.ood_calibration.extract_embeddings", side_effect=_fake_extract_embeddings),
+        patch("torch.cuda.is_available", return_value=False),
+        patch("src.cli.ood_calibration.log_ood_calibration_results") as mock_log,
+    ):
+        result = CliRunner().invoke(
+            evaluate_ood_calibration_cmd,
+            ["--model-path", str(model_path), "--model", "beto", "--cache-path", str(cache_path)],
+        )
+    return result, mock_log
+
+
+def test_evaluate_ood_calibration_cmd_skips_docs_with_nan_knn_distance(tmp_path: Path) -> None:
+    # "decreto" (label 0) has no stored k-NN training points, so every decreto test doc
+    # gets a NaN knn_distance — the command should skip those and still succeed using the
+    # remaining (ordenanza) docs, rather than letting NaN corrupt the whole report.
+    result, _ = _run_calibration_with_stats(tmp_path, _make_stats_missing_class(0))
+
+    assert result.exit_code == 0
+    assert "Skipping" in result.output or "skipping" in result.output.lower()
+
+
+def test_evaluate_ood_calibration_cmd_fails_when_every_doc_has_nan_knn_distance(
+    tmp_path: Path,
+) -> None:
+    # Both classes missing k-NN training data — every test doc is NaN, nothing left to
+    # calibrate against.
+    stats = ClassEmbeddingStats(
+        class_names=["decreto", "ordenanza"],
+        pca_mean=np.zeros(8),
+        pca_components=np.eye(8),
+        centroids=np.array([[0.0] * 8, [5.0] * 8]),
+        covariance_inv=np.eye(8),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.zeros((0, 8)),
+        knn_train_labels=[],
+    )
+
+    result, _ = _run_calibration_with_stats(tmp_path, stats)
+
+    assert result.exit_code != 0
+    assert "cannot calibrate" in str(result.output).lower()
