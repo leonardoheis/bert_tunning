@@ -4,6 +4,15 @@ from src.schema import CalibrationReport, PredictResult
 from src.wandb import log_ood_calibration_results, log_predict_folder_results
 
 
+def _logged_row(mock_table_cls: MagicMock, mock_table: MagicMock) -> dict[str, object]:
+    """Pair the wandb.Table(columns=...) call with an add_data(...) call by position,
+    keyed by column name — a plain `x in columns` / `x in add_data.args` membership check
+    can't catch the column list and the add_data positional values drifting out of sync."""
+    columns = mock_table_cls.call_args.kwargs["columns"]
+    args = mock_table.add_data.call_args.args
+    return dict(zip(columns, args, strict=True))
+
+
 def test_log_predict_folder_results_logs_a_table_per_result() -> None:
     results = [
         PredictResult(filename="a.pdf", label="decreto", confidence=0.9, certain=True),
@@ -46,8 +55,7 @@ def test_log_predict_folder_results_table_includes_knn_distance_column() -> None
     ):
         log_predict_folder_results(results, model_path="fake/model", folder_path="fake/folder")
 
-    assert "knn_distance" in mock_table_cls.call_args.kwargs["columns"]
-    assert expected_knn_distance in mock_table.add_data.call_args.args
+    assert _logged_row(mock_table_cls, mock_table)["knn_distance"] == expected_knn_distance
 
 
 def test_log_ood_calibration_results_logs_summary_metrics() -> None:

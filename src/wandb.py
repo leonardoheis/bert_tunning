@@ -75,18 +75,8 @@ def log_predict_folder_results(
     )
     table = wandb.Table(columns=_PREDICTION_COLUMNS)
     for r in results:
-        table.add_data(
-            r.filename,
-            r.label,
-            r.confidence,
-            r.certain,
-            r.mahalanobis_p_value,
-            r.cosine_z,
-            r.knn_distance,
-            r.in_distribution,
-            r.extractor_used,
-            r.error,
-        )
+        row = r.model_dump()
+        table.add_data(*(row[col] for col in _PREDICTION_COLUMNS))
     wandb.log({"predictions": table})
     wandb.finish()
     log.info(
