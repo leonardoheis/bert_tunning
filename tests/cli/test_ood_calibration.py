@@ -36,14 +36,29 @@ def test_build_calibration_report_percentile_direction() -> None:
     # Cosine: HIGH z-score = anomalous, so the suggested threshold for a 25% target rate
     # is the value above which 25% of in-distribution z-scores fall — the 75th percentile.
     z_scores = np.array([1.0, 2.0, 3.0, 4.0])
+    knn_distances = np.array([1.0, 2.0, 3.0, 4.0])
 
-    report = build_calibration_report(p_values, z_scores, target_fp_rate=0.25)
+    report = build_calibration_report(p_values, z_scores, knn_distances, target_fp_rate=0.25)
 
     assert report.suggested_maha_threshold == pytest.approx(np.percentile(p_values, 25))
     assert report.suggested_cosine_threshold == pytest.approx(np.percentile(z_scores, 75))
     # Sanity check the two percentiles land on opposite ends, catching a swapped formula.
     assert report.suggested_maha_threshold < np.median(p_values)
     assert report.suggested_cosine_threshold > np.median(z_scores)
+
+
+def test_build_calibration_report_knn_percentile_direction() -> None:
+    # k-NN mean distance: HIGH distance = anomalous, same direction as cosine, so the
+    # suggested threshold for a 25% target false-positive rate is the value above which
+    # 25% of in-distribution knn distances fall — the 75th percentile, NOT the 25th.
+    p_values = np.array([0.1, 0.2, 0.3, 0.4])
+    z_scores = np.array([1.0, 2.0, 3.0, 4.0])
+    knn_distances = np.array([1.0, 2.0, 3.0, 4.0])
+
+    report = build_calibration_report(p_values, z_scores, knn_distances, target_fp_rate=0.25)
+
+    assert report.suggested_knn_threshold == pytest.approx(np.percentile(knn_distances, 75))
+    assert report.suggested_knn_threshold > np.median(knn_distances)
 
 
 def test_build_calibration_report_fp_rates() -> None:
@@ -57,10 +72,15 @@ def test_build_calibration_report_fp_rates() -> None:
     z_above = Settings.OOD_COSINE_THRESHOLD + 1.0
     z_scores = np.array([z_below, z_above, z_above, z_below])
 
-    report = build_calibration_report(p_values, z_scores, target_fp_rate=0.01)
+    knn_below = Settings.OOD_KNN_DISTANCE_THRESHOLD - 1.0
+    knn_above = Settings.OOD_KNN_DISTANCE_THRESHOLD + 1.0
+    knn_distances = np.array([knn_below, knn_above, knn_above, knn_below])
+
+    report = build_calibration_report(p_values, z_scores, knn_distances, target_fp_rate=0.01)
 
     assert report.fp_rate_maha == pytest.approx(0.5)
     assert report.fp_rate_cosine == pytest.approx(0.5)
+    assert report.fp_rate_knn == pytest.approx(0.5)
 
 
 def test_evaluate_ood_calibration_cmd_help() -> None:

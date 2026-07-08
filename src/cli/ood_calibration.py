@@ -14,6 +14,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from src.inference.ood import (
     cosine_z_score,
     extract_embeddings,
+    knn_mean_distance,
     load_stats,
     mahalanobis_p_value,
 )
@@ -31,23 +32,23 @@ log = logging.getLogger(__name__)
 def build_calibration_report(
     p_values: npt.NDArray[np.float64],
     z_scores: npt.NDArray[np.float64],
+    knn_distances: npt.NDArray[np.float64],
     target_fp_rate: float,
 ) -> CalibrationReport:
     """Pure calibration math, isolated from model/IO for direct unit testing.
 
     Mahalanobis: LOW p-value = anomalous, so the threshold for a target false-positive
-    rate is the `target_fp_rate`-th percentile of in-distribution p-values. Cosine: HIGH
-    z-score = anomalous, so its threshold is the `(1 - target_fp_rate)`-th percentile.
+    rate is the `target_fp_rate`-th percentile of in-distribution p-values. Cosine and
+    k-NN mean distance: HIGH value = anomalous, so their thresholds are the
+    `(1 - target_fp_rate)`-th percentile.
     """
     return CalibrationReport(
         fp_rate_maha=float(np.mean(p_values < Settings.OOD_MAHALANOBIS_P_THRESHOLD)),
         fp_rate_cosine=float(np.mean(z_scores > Settings.OOD_COSINE_THRESHOLD)),
-        # Placeholder — the k-NN signal isn't computed here yet (see the k-NN OOD plan's
-        # Task 3), which is due to wire in real knn_distances and replace these two values.
-        fp_rate_knn=0.0,
+        fp_rate_knn=float(np.mean(knn_distances > Settings.OOD_KNN_DISTANCE_THRESHOLD)),
         suggested_maha_threshold=float(np.percentile(p_values, target_fp_rate * 100)),
         suggested_cosine_threshold=float(np.percentile(z_scores, (1 - target_fp_rate) * 100)),
-        suggested_knn_threshold=0.0,
+        suggested_knn_threshold=float(np.percentile(knn_distances, (1 - target_fp_rate) * 100)),
     )
 
 
@@ -113,7 +114,14 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
 
     p_values = np.array([mahalanobis_p_value(e, stats) for e in embeddings])
     z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
-    report = build_calibration_report(p_values, z_scores, opts.target_fp_rate)
+    label_ids = test_df["label_id"].to_numpy()
+    knn_distances = np.array(
+        [
+            knn_mean_distance(e, stats, int(lbl), k=Settings.OOD_KNN_NEIGHBORS)
+            for e, lbl in zip(embeddings, label_ids, strict=True)
+        ]
+    )
+    report = build_calibration_report(p_values, z_scores, knn_distances, opts.target_fp_rate)
 
     log.info("=" * 60)
     log.info("OOD threshold calibration — %s", opts.model_path)
@@ -137,6 +145,16 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         "Cosine — suggested threshold for %.1f%% target FP rate: %.4f",
         opts.target_fp_rate * 100,
         report.suggested_cosine_threshold,
+    )
+    log.info(
+        "k-NN — current threshold=%.4f, empirical false-positive rate=%.2f%%",
+        Settings.OOD_KNN_DISTANCE_THRESHOLD,
+        report.fp_rate_knn * 100,
+    )
+    log.info(
+        "k-NN — suggested threshold for %.1f%% target FP rate: %.4f",
+        opts.target_fp_rate * 100,
+        report.suggested_knn_threshold,
     )
 
     if opts.log_wandb:
