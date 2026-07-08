@@ -80,7 +80,8 @@ src/
 ├── __init__.py         package entry — exports BertTunningError, Settings, __version__
 ├── __main__.py         python -m src entry — spawns run_api() via multiprocessing.Process
 ├── settings.py         all configuration (Pydantic BaseSettings, overridable via .env)
-├── schema.py           shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, Hyperparams, ReportDict)
+├── schema.py           shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, CalibrationReport, Hyperparams, ReportDict)
+├── wandb.py            all W&B interaction — WandbLogger (training), log_predict_folder_results/log_ood_calibration_results (--log-wandb on the CLI)
 ├── exceptions.py       BertTunningError base
 ├── logger.py           setup_logging() → per-run timestamped log file
 ├── ingestion/
@@ -105,8 +106,7 @@ src/
 │   ├── trainer.py      WeightedTrainer, compute_metrics
 │   ├── evaluate.py     run_evaluation() → EvaluationResult (defined in schema.py; macro_f1/accuracy are @property)
 │   ├── reporting.py    generate_html_report() → reports/
-│   ├── wandb_logger.py WandbLogger class
-│   └── pipeline.py     orchestrates split → tokenize → train → evaluate
+│   └── pipeline.py     orchestrates split → tokenize → train → evaluate (uses src/wandb.py's WandbLogger)
 ├── inference/
 │   ├── classify.py     BertTunningClassifier, predict_text — computes mahalanobis_p_value/cosine_z/in_distribution when ood_stats.npz is present
 │   ├── ood.py           Mahalanobis/cosine OOD math — compute_class_stats, mahalanobis_p_value, cosine_z_score, extract_embeddings, save_stats/load_stats
@@ -120,9 +120,9 @@ src/
 │       └── predict/    POST /predict — multipart PDF upload; response includes OOD + extraction-metadata fields
 └── cli/
     ├── train.py        @click.command "train" — TrainOptions (Pydantic), supports --epochs
-    ├── predict.py      @click.command "predict" + "predict-folder" — prints/exports OOD + extraction fields
+    ├── predict.py      @click.command "predict" + "predict-folder" — prints/exports OOD + extraction fields; predict-folder supports --log-wandb and defaults --output to bert_tunning_predictions.csv inside folder_path
     ├── ood_stats.py     @click.command "compute-ood-stats" — backfills ood_stats.npz for an already-trained model, no retraining
-    ├── ood_calibration.py @click.command "evaluate-ood-calibration" — measures empirical FP rate of OOD thresholds against the model's own test split
+    ├── ood_calibration.py @click.command "evaluate-ood-calibration" — measures empirical FP rate of OOD thresholds against the model's own test split; supports --log-wandb
     └── clean.py        @click.command "clean"
 
 Dockerfile              multi-stage build: uv builder + python:3.10-slim-bookworm runtime
@@ -223,6 +223,9 @@ Softmax classifiers always output a label — there is no "I don't know." `ood_s
 
 **Extraction metadata (`extract_pdf_with_metadata`) — which extractor produced the text, alongside the text itself**
 When a document is misclassified, there was previously no way to see what text was actually extracted or which extractor (MarkItDown vs. OCR) produced it. `extract_pdf_with_metadata()` returns an `ExtractionMetadata` (`text`, `extractor_used`, `char_count`); `extract_pdf()` is now a thin wrapper around it (`.text`), so its signature and behavior are unchanged and `src/ingestion/scan.py` needed no modification. `predict_pdf`/`predict_folder` attach `extracted_text`/`extractor_used` onto `PredictResult`, so the `predict-folder` CSV, the CLI `predict` output, and the `/predict` API response all surface what the model actually saw — essential for telling apart an extraction-quality problem (garbled OCR) from a genuine out-of-category document with clean text.
+
+**One `src/wandb.py` module for all W&B interaction — training class + one-shot CLI reporting functions**
+`src/training/wandb_logger.py`'s `WandbLogger` class (stateful: `init`/`log_results`/`finish` tied to a single `Trainer` run's lifecycle) and a separate `src/wandb_logging.py` (one-shot functions for `predict-folder`/`evaluate-ood-calibration`'s `--log-wandb` flag) were briefly two files with near-identical names before being merged into one `src/wandb.py`. They intentionally were **not** unified into one shared abstraction beyond that — `WandbLogger` and the two `log_*_results()` functions have genuinely different call shapes (a long-lived class vs. fire-and-forget `init → log → finish` in one function body) and forcing them into a common interface would either bolt unrelated methods onto one class or throw away the type safety of `Hyperparams`/`EvaluationResult`/`CalibrationReport`/`PredictResult`. `predict-folder --log-wandb` logs a `wandb.Table` of per-document predictions (`job_type="predict-folder"`); `evaluate-ood-calibration --log-wandb` logs the empirical FP-rate/suggested-threshold summary (`job_type="ood-calibration"`). Both flags default to `False` — nothing changes about local CSV/console output when omitted.
 
 **`populate_by_name=True` is required on every Pydantic model built via direct snake_case keyword construction, not just CLI-facing ones**
 The gotcha documented below for CLI options classes turned out to be broader: `PredictResponse` (`alias_generator=to_camel`, no `populate_by_name`) is constructed in `src/api/routes/predict/endpoints.py` with snake_case kwargs (`mahalanobis_p_value=...`, `extracted_text=...`) — Pydantic v2 silently drops any kwarg that isn't the field's alias instead of raising, so the `/predict` API response returned `null`/default values for the OOD and extraction-metadata fields regardless of what was actually computed, undetected until a real end-to-end API test was added. The same pattern was found in `PredictResult` itself: `classify.py` constructs `PredictResult(all_scores={...})` directly, silently dropping `all_scores` to `{}` on every real prediction (the OOD fields on that same class were unaffected because they're set via `model_copy`, which bypasses the alias check entirely). Both `PredictResult` and `BaseSchema` now set `populate_by_name=True`. **Rule of thumb:** any Pydantic model with `alias_generator=to_camel` that is ever constructed with keyword arguments matching its Python field names (directly, or via `model_validate`/a dict) — as opposed to exclusively via `model_copy(update=...)` — must set `populate_by_name=True`, or fields whose alias differs from the field name (any multi-word snake_case name) will silently keep their default value with no error.

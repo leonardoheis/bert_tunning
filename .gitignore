@@ -214,6 +214,18 @@ models/bert_tunning_model_*/
 !models/bert_tunning_model_beto_v2/
 !models/bert_tunning_model_beto_v2/**
 
+# Exception: BETO v1 (8-class, no `otro`) is tracked via Git LFS (see .gitattributes) —
+# kept alongside v2 for comparison/reproducibility.
+!models/bert_tunning_model_beto/
+!models/bert_tunning_model_beto/**
+
+# ood_stats.npz is a locally-generated artifact (via train/compute-ood-stats), not part of
+# the committed checkpoint. Re-ignore it inside the two exceptions above so it can't be
+# silently deleted by git operations (e.g. git clean) that remove untracked files — it
+# disappeared once already because it was un-ignored but never actually committed.
+models/bert_tunning_model_beto_v2/**/ood_stats.npz
+models/bert_tunning_model_beto/**/ood_stats.npz
+
 # Cache / data
 data/
 bert_tunning_predictions.csv

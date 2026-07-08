@@ -205,7 +205,10 @@ uv run python main.py train --docs-root "C:\path\to\downloads" --no-wandb
 # Single PDF
 uv run python main.py predict path/to/documento.pdf
 
-# Folder of PDFs → saves results to bert_tunning_predictions.csv
+# Folder of PDFs → saves results to <folder>/bert_tunning_predictions.csv by default
+uv run python main.py predict-folder path/to/folder
+
+# Explicit output path overrides the default
 uv run python main.py predict-folder path/to/folder --output results.csv
 ```
 
@@ -267,6 +270,27 @@ threshold if the defaults don't match your target:
 ```powershell
 uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
 ```
+
+### Logging predictions and calibration runs to W&B
+
+Both `predict-folder` and `evaluate-ood-calibration` accept `--log-wandb` to
+additionally log their results to Weights & Biases (project/entity from
+`Settings.WANDB_PROJECT`/`WANDB_ENTITY`), on top of writing the usual
+CSV/console output — nothing changes about the local output when the flag is
+omitted (the default).
+
+```powershell
+uv run python main.py predict-folder path/to/folder --log-wandb
+uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet --log-wandb
+```
+
+`predict-folder --log-wandb` logs a `predictions` table (one row per
+document: filename, label, confidence, certain, the three OOD fields,
+extractor used, error) to a run tagged `job_type=predict-folder`.
+`evaluate-ood-calibration --log-wandb` logs the empirical false-positive
+rates and suggested thresholds for both signals to a run tagged
+`job_type=ood-calibration`, so calibration history is trackable across
+models/thresholds over time instead of only living in a console log.
 
 ### Extraction metadata (what the model actually saw)
 

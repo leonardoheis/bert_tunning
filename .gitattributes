@@ -1,1 +1,2 @@
 models/bert_tunning_model_beto_v2/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
+models/bert_tunning_model_beto/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
