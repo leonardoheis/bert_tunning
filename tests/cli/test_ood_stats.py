@@ -30,8 +30,8 @@ def test_compute_ood_stats_cmd_fails_on_class_mismatch(tmp_path: Path) -> None:
     mock_model.config.id2label = {0: "resolucion", 1: "boletines"}
 
     with (
-        patch("src.cli.ood_stats.AutoTokenizer.from_pretrained"),
-        patch("src.cli.ood_stats.AutoModelForSequenceClassification.from_pretrained") as mock_mdl,
+        patch("src.cli._ood_common.AutoTokenizer.from_pretrained"),
+        patch("src.cli._ood_common.AutoModelForSequenceClassification.from_pretrained") as mock_mdl,
         patch("torch.cuda.is_available", return_value=False),
     ):
         mock_mdl.return_value = mock_model

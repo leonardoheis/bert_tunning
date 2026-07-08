@@ -128,10 +128,8 @@ def test_evaluate_ood_calibration_cmd_fails_on_class_mismatch(tmp_path: Path) ->
     mock_model.config.id2label = {0: "resolucion", 1: "boletines"}
 
     with (
-        patch("src.cli.ood_calibration.AutoTokenizer.from_pretrained"),
-        patch(
-            "src.cli.ood_calibration.AutoModelForSequenceClassification.from_pretrained"
-        ) as mock_mdl,
+        patch("src.cli._ood_common.AutoTokenizer.from_pretrained"),
+        patch("src.cli._ood_common.AutoModelForSequenceClassification.from_pretrained") as mock_mdl,
         patch("src.cli.ood_calibration.load_stats"),
         patch("torch.cuda.is_available", return_value=False),
     ):
@@ -179,9 +177,9 @@ def _run_successful_calibration(
         return np.zeros((len(texts), 8), dtype=np.float64)
 
     with (
-        patch("src.cli.ood_calibration.AutoTokenizer.from_pretrained"),
+        patch("src.cli._ood_common.AutoTokenizer.from_pretrained"),
         patch(
-            "src.cli.ood_calibration.AutoModelForSequenceClassification.from_pretrained",
+            "src.cli._ood_common.AutoModelForSequenceClassification.from_pretrained",
             return_value=mock_model,
         ),
         patch("src.cli.ood_calibration.load_stats", return_value=_make_stats()),
@@ -264,9 +262,9 @@ def _run_calibration_with_stats(
         return np.zeros((len(texts), 8), dtype=np.float64)
 
     with (
-        patch("src.cli.ood_calibration.AutoTokenizer.from_pretrained"),
+        patch("src.cli._ood_common.AutoTokenizer.from_pretrained"),
         patch(
-            "src.cli.ood_calibration.AutoModelForSequenceClassification.from_pretrained",
+            "src.cli._ood_common.AutoModelForSequenceClassification.from_pretrained",
             return_value=mock_model,
         ),
         patch("src.cli.ood_calibration.load_stats", return_value=stats),

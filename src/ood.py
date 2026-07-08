@@ -1,27 +1,27 @@
 import logging
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 import torch
-from pydantic import BaseModel, ConfigDict
 from scipy.stats import chi2
 from sklearn.decomposition import PCA
 from transformers import PreTrainedTokenizerBase
 
-from src.schema import ClassEmbeddingStats, Float64Array
+from src.schema import ClassEmbeddingStats
 
 log = logging.getLogger(__name__)
 
 
-class _PcaReduction(BaseModel):
-    """Internal return type for _reduce_dimensionality — not part of the public schema."""
+class _PcaReduction(NamedTuple):
+    """Internal return type for _reduce_dimensionality — not part of the public schema.
+    A NamedTuple, not a Pydantic model: this is trusted internal data straight out of
+    sklearn's PCA, not external input that needs validation/coercion."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    reduced: Float64Array
-    mean: Float64Array
-    components: Float64Array
+    reduced: npt.NDArray[np.float64]
+    mean: npt.NDArray[np.float64]
+    components: npt.NDArray[np.float64]
 
 
 def _reduce_dimensionality(embeddings: npt.NDArray[np.float64], n_components: int) -> _PcaReduction:
