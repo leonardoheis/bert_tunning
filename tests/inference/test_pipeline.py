@@ -44,6 +44,26 @@ def _make_tight_cosine_stats() -> ClassEmbeddingStats:
     )
 
 
+def _make_stats_with_isolated_knn_cluster() -> ClassEmbeddingStats:
+    # Centroids sit exactly where the mocked [CLS] embedding for "decreto" lands (the origin),
+    # so Mahalanobis and cosine both see a perfect in-distribution match. But the individual
+    # k-NN training points stored for "decreto" are a tight cluster far away from that centroid
+    # — a decoupling that's only possible because ClassEmbeddingStats stores centroids and
+    # knn_train_embeddings as independent fields. This isolates the k-NN signal: it should fire
+    # even though the other two signals pass.
+    return ClassEmbeddingStats(
+        class_names=["decreto", "ordenanza"],
+        pca_mean=np.zeros(8),
+        pca_components=np.eye(8),
+        centroids=np.array([[0.0] * 8, [5.0] * 8]),
+        covariance_inv=np.eye(8),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.array([[50.0] * 8] * 5 + [[5.0] * 8] * 5),
+        knn_train_labels=[0] * 5 + [1] * 5,
+    )
+
+
 def _make_mock_classifier() -> BertTunningClassifier:
     asc_path = "src.inference.classify.AutoModelForSequenceClassification.from_pretrained"
     with (
@@ -165,6 +185,23 @@ def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
     assert result.cosine_z is not None
     assert result.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
     assert result.cosine_z > Settings.OOD_COSINE_THRESHOLD
+    assert result.in_distribution is False
+
+
+def test_predict_text_flags_out_of_distribution_via_knn_only() -> None:
+    clf = _make_mock_classifier()
+    clf._ood_stats = _make_stats_with_isolated_knn_cluster()  # noqa: SLF001
+    # [CLS] embedding is all zeros (from the mock hidden_states), which is exactly the
+    # "decreto" centroid — Mahalanobis and cosine both pass — but the "decreto" k-NN training
+    # points are stored far away ([50]*8), so only the k-NN signal should fire.
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.mahalanobis_p_value is not None
+    assert result.cosine_z is not None
+    assert result.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    assert result.cosine_z <= Settings.OOD_COSINE_THRESHOLD
+    assert result.knn_distance is not None
+    assert result.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
     assert result.in_distribution is False
 
 
