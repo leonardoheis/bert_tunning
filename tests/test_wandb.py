@@ -4,6 +4,15 @@ from src.schema import CalibrationReport, PredictResult
 from src.wandb import log_ood_calibration_results, log_predict_folder_results
 
 
+def _logged_row(mock_table_cls: MagicMock, mock_table: MagicMock) -> dict[str, object]:
+    """Pair the wandb.Table(columns=...) call with an add_data(...) call by position,
+    keyed by column name — a plain `x in columns` / `x in add_data.args` membership check
+    can't catch the column list and the add_data positional values drifting out of sync."""
+    columns = mock_table_cls.call_args.kwargs["columns"]
+    args = mock_table.add_data.call_args.args
+    return dict(zip(columns, args, strict=True))
+
+
 def test_log_predict_folder_results_logs_a_table_per_result() -> None:
     results = [
         PredictResult(filename="a.pdf", label="decreto", confidence=0.9, certain=True),
@@ -24,6 +33,29 @@ def test_log_predict_folder_results_logs_a_table_per_result() -> None:
     assert mock_table.add_data.call_count == len(results)
     mock_log.assert_called_once_with({"predictions": mock_table})
     mock_finish.assert_called_once()
+
+
+def test_log_predict_folder_results_table_includes_knn_distance_column() -> None:
+    expected_knn_distance = 4.2
+    results = [
+        PredictResult(
+            filename="a.pdf",
+            label="decreto",
+            confidence=0.9,
+            certain=True,
+            knn_distance=expected_knn_distance,
+        ),
+    ]
+    mock_table = MagicMock()
+    with (
+        patch("src.wandb.wandb.init"),
+        patch("src.wandb.wandb.Table", return_value=mock_table) as mock_table_cls,
+        patch("src.wandb.wandb.log"),
+        patch("src.wandb.wandb.finish"),
+    ):
+        log_predict_folder_results(results, model_path="fake/model", folder_path="fake/folder")
+
+    assert _logged_row(mock_table_cls, mock_table)["knn_distance"] == expected_knn_distance
 
 
 def test_log_ood_calibration_results_logs_summary_metrics() -> None:
@@ -55,6 +87,8 @@ def test_log_ood_calibration_results_logs_summary_metrics() -> None:
             "ood/fp_rate_cosine": 0.0104,
             "ood/suggested_mahalanobis_threshold": 0.0,
             "ood/suggested_cosine_threshold": 13.7186,
+            "ood/fp_rate_knn": 0.0087,
+            "ood/suggested_knn_threshold": 4.2,
         }
     )
     mock_finish.assert_called_once()

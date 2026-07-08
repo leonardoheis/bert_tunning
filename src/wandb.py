@@ -13,6 +13,7 @@ _PREDICTION_COLUMNS = [
     "certain",
     "mahalanobis_p_value",
     "cosine_z",
+    "knn_distance",
     "in_distribution",
     "extractor_used",
     "error",
@@ -74,17 +75,8 @@ def log_predict_folder_results(
     )
     table = wandb.Table(columns=_PREDICTION_COLUMNS)
     for r in results:
-        table.add_data(
-            r.filename,
-            r.label,
-            r.confidence,
-            r.certain,
-            r.mahalanobis_p_value,
-            r.cosine_z,
-            r.in_distribution,
-            r.extractor_used,
-            r.error,
-        )
+        row = r.model_dump()
+        table.add_data(*(row[col] for col in _PREDICTION_COLUMNS))
     wandb.log({"predictions": table})
     wandb.finish()
     log.info(
@@ -117,6 +109,8 @@ def log_ood_calibration_results(
             "ood/fp_rate_cosine": report.fp_rate_cosine,
             "ood/suggested_mahalanobis_threshold": report.suggested_maha_threshold,
             "ood/suggested_cosine_threshold": report.suggested_cosine_threshold,
+            "ood/fp_rate_knn": report.fp_rate_knn,
+            "ood/suggested_knn_threshold": report.suggested_knn_threshold,
         }
     )
     wandb.finish()
