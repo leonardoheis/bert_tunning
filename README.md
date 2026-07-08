@@ -233,7 +233,7 @@ Output:
 
 If the loaded model directory contains `ood_stats.npz` (generated automatically
 during `train`, or backfilled for an existing model — see below), predictions
-include three extra fields:
+include four extra fields:
 
 ```json
 {
@@ -241,21 +241,30 @@ include three extra fields:
   "confidence": 0.9429,
   "mahalanobisPValue": 0.0003,
   "cosineZ": 1.1,
+  "knnDistance": 31.4,
   "inDistribution": false
 }
 ```
 
-`mahalanobisPValue`/`cosineZ` are reported separately rather than combined
-into one score — note they point in **opposite directions**: a LOW
-`mahalanobisPValue` (below `OOD_MAHALANOBIS_P_THRESHOLD`, default `0.01`) is
-anomalous, while a HIGH `cosineZ` (above `OOD_COSINE_THRESHOLD`) is anomalous.
-Either one alone is enough to set `inDistribution: false`. This means
-`inDistribution: false` doesn't hide *which* signal fired: a human reviewing
-predictions can see whether Mahalanobis, cosine, or both flagged the document.
+`mahalanobisPValue`/`cosineZ`/`knnDistance` are reported separately rather
+than combined into one score — note `mahalanobisPValue` points in the
+**opposite direction** from the other two: a LOW `mahalanobisPValue` (below
+`OOD_MAHALANOBIS_P_THRESHOLD`, default `0.01`) is anomalous, while a HIGH
+`cosineZ` (above `OOD_COSINE_THRESHOLD`) or a HIGH `knnDistance` (above
+`OOD_KNN_DISTANCE_THRESHOLD`) is anomalous. Any one of the three alone is
+enough to set `inDistribution: false`. This means `inDistribution: false`
+doesn't hide *which* signal fired: a human reviewing predictions can see
+whether Mahalanobis, cosine, k-NN, or several flagged the document.
 Treat `inDistribution: false` as "do not trust `label` for this document"
 regardless of how high `confidence` is — this is the mechanism that catches
 documents (e.g. payment receipts) that were never in any training class,
 including `otro`.
+
+`knnDistance` is the mean distance (in PCA space) to the `OOD_KNN_NEIGHBORS`
+(default `10`) nearest training documents *of the class the model just
+predicted* — unlike Mahalanobis/cosine, it makes no assumption that a class
+has one coherent "shape," which matters for broad, heterogeneous classes
+like `otro`.
 
 Backfill `ood_stats.npz` for an already-trained model (no retraining):
 
@@ -263,9 +272,9 @@ Backfill `ood_stats.npz` for an already-trained model (no retraining):
 uv run python main.py compute-ood-stats --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
 ```
 
-Measure the empirical false-positive rate of the OOD thresholds against the
-model's own held-out test split, and get a suggested better-calibrated
-threshold if the defaults don't match your target:
+Measure the empirical false-positive rate of all three OOD thresholds against
+the model's own held-out test split, and get a suggested better-calibrated
+threshold for each if the defaults don't match your target:
 
 ```powershell
 uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
@@ -285,10 +294,10 @@ uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunnin
 ```
 
 `predict-folder --log-wandb` logs a `predictions` table (one row per
-document: filename, label, confidence, certain, the three OOD fields,
+document: filename, label, confidence, certain, the four OOD fields,
 extractor used, error) to a run tagged `job_type=predict-folder`.
 `evaluate-ood-calibration --log-wandb` logs the empirical false-positive
-rates and suggested thresholds for both signals to a run tagged
+rates and suggested thresholds for all three signals to a run tagged
 `job_type=ood-calibration`, so calibration history is trackable across
 models/thresholds over time instead of only living in a console log.
 
@@ -356,13 +365,14 @@ API docs at `http://localhost:8000/docs` (Swagger UI).
   "error": null,
   "mahalanobisPValue": 0.42,
   "cosineZ": 0.8,
+  "knnDistance": 9.7,
   "inDistribution": true,
   "extractedText": "DECRETO N° 123/2026...",
   "extractorUsed": "MarkItDownExtractor"
 }
 ```
 
-`mahalanobisPValue`/`cosineZ`/`inDistribution` are only present (non-null) when the loaded model directory has an `ood_stats.npz` — see "Out-of-distribution detection" above.
+`mahalanobisPValue`/`cosineZ`/`knnDistance`/`inDistribution` are only present (non-null) when the loaded model directory has an `ood_stats.npz` — see "Out-of-distribution detection" above.
 
 ### Clean state
 
