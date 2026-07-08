@@ -1,8 +1,10 @@
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
 import numpy.typing as npt
+import pytest
 import torch
 
 from src.ood import (
@@ -125,6 +127,17 @@ def test_knn_mean_distance_handles_k_larger_than_class_size() -> None:
     # class_a has 20 members in the fixture; request more neighbors than exist.
     dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=0, k=1000)
     assert dist >= 0.0  # falls back to using all available class members, not an error
+
+
+def test_knn_mean_distance_logs_warning_when_class_has_no_training_points(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    with caplog.at_level(logging.WARNING, logger="src.ood"):
+        dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=99, k=10)
+    assert np.isnan(dist)
+    assert any("zero training points" in record.message for record in caplog.records)
 
 
 def test_save_and_load_stats_roundtrip_includes_knn_fields(tmp_path: Path) -> None:

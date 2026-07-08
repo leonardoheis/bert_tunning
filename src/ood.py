@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,8 @@ from sklearn.decomposition import PCA
 from transformers import PreTrainedTokenizerBase
 
 from src.schema import ClassEmbeddingStats, Float64Array
+
+log = logging.getLogger(__name__)
 
 
 class _PcaReduction(BaseModel):
@@ -138,6 +141,10 @@ def knn_mean_distance(
     labels_arr = np.array(stats.knn_train_labels)
     class_points = stats.knn_train_embeddings[labels_arr == predicted_label_id]
     if class_points.shape[0] == 0:
+        log.warning(
+            "knn_mean_distance: class %d has zero training points — returning NaN",
+            predicted_label_id,
+        )
         return float("nan")
     k_eff = min(k, class_points.shape[0])
     distances = np.linalg.norm(class_points - point, axis=1)
