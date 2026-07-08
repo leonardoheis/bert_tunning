@@ -48,10 +48,10 @@ class CalibrationReport(BaseModel):
 
     fp_rate_maha: float
     fp_rate_cosine: float
-    fp_rate_knn: float
+    fp_rate_knn: float = 0.0
     suggested_maha_threshold: float
     suggested_cosine_threshold: float
-    suggested_knn_threshold: float
+    suggested_knn_threshold: float = 0.0
 
 
 class ExtractionMetadata(BaseModel):
@@ -106,9 +106,7 @@ class ClassEmbeddingStats(BaseModel):
 
 
 class Hyperparams(BaseModel):
-    model_config = ConfigDict(
-        alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True
-    )
+    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
 
     model: str
     epochs: int

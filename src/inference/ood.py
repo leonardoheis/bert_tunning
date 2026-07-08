@@ -130,7 +130,10 @@ def knn_mean_distance(
     class's shape — it directly measures local density around the predicted class's own
     training examples, which matters for heterogeneous classes (e.g. a broad `otro`
     catch-all) that a single centroid represents poorly. A HIGH distance means anomalous —
-    same comparison direction as cosine_z_score."""
+    same comparison direction as cosine_z_score. Returns NaN if predicted_label_id has zero
+    training points — callers comparing this against a threshold must handle that explicitly,
+    since `nan > threshold` silently evaluates to False in Python and would never flag as
+    anomalous."""
     point = _project(embedding, stats)
     labels_arr = np.array(stats.knn_train_labels)
     class_points = stats.knn_train_embeddings[labels_arr == predicted_label_id]
