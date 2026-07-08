@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.inference.ood import cosine_z_score, load_stats, mahalanobis_p_value
+from src.inference.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_p_value
 from src.ingestion.extract import clean_text
 from src.schema import ClassEmbeddingStats, PredictResult
 from src.settings import Settings
@@ -70,13 +70,18 @@ class BertTunningClassifier:
 
         maha_p = mahalanobis_p_value(cls_embedding, self._ood_stats)
         cosine_z = cosine_z_score(cls_embedding, self._ood_stats)
+        knn_dist = knn_mean_distance(
+            cls_embedding, self._ood_stats, pred_idx, k=Settings.OOD_KNN_NEIGHBORS
+        )
         maha_anomalous = maha_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
         cosine_anomalous = cosine_z > Settings.OOD_COSINE_THRESHOLD
-        out_of_distribution = maha_anomalous or cosine_anomalous
+        knn_anomalous = knn_dist > Settings.OOD_KNN_DISTANCE_THRESHOLD
+        out_of_distribution = maha_anomalous or cosine_anomalous or knn_anomalous
         return result.model_copy(
             update={
                 "mahalanobis_p_value": round(maha_p, 6),
                 "cosine_z": round(cosine_z, 4),
+                "knn_distance": round(knn_dist, 4),
                 "in_distribution": not out_of_distribution,
             }
         )
