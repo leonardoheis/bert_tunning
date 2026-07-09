@@ -47,6 +47,74 @@ PDF files
                      └── src/api/        →  expose POST /predict via FastAPI
 ```
 
+### Prediction flow (`predict` / `predict-folder` / `POST /predict`)
+
+Every entry point funnels into the same two calls:
+
+```
+predict_pdf(model_path, pdf_path)
+   │
+   ├─ extract_pdf_with_metadata(pdf_path)
+   │     tries MarkItDownExtractor first; falls back to OCRExtractor only if the
+   │     extracted text is shorter than MIN_TEXT_FOR_OCR. Returns ExtractionMetadata
+   │     (text, extractor_used, char_count) — text is None if nothing usable came out
+   │     of any extractor in the chain.
+   │
+   └─ BertTunningClassifier.predict_text(text)
+         │
+         ├─ tokenize → model forward pass → softmax → label + confidence + all_scores
+         │
+         └─ if the model directory has an ood_stats.npz (loaded once, at __init__):
+               compute three independent signals on the [CLS] embedding —
+               mahalanobis_p_value, cosine_z_score, knn_mean_distance — and
+               OR them together into in_distribution (see below for the math)
+         │
+         ▼
+   PredictResult (label, confidence, certain, all_scores, the three OOD fields,
+                  extracted_text, extractor_used)
+```
+
+If `ood_stats.npz` is missing, the OOD fields simply stay `None` — no error, prediction still works, just without the anomaly signal.
+
+### Training flow (`train`)
+
+```
+src/training/pipeline.py::run()
+   1. LabelEncoder fits the class labels → label_id / label2id / id2label
+   2. make_split(df, seed) — stratified 70/15/15 train/val/test
+        (falls back to a plain random split, still seeded, if a class is too
+        small to stratify — logs a warning rather than crashing)
+   3. compute_class_weight("balanced", classes=np.arange(num_labels), ...)
+        deliberately np.arange(num_labels), not np.unique(train_df) — guarantees
+        every class gets a weight even if one is entirely absent from the train split
+   4. Tokenize all three splits, load the base model fresh from the HF hub id
+   5. Pick precision automatically: bf16 → fp16 → fp32, whichever the GPU supports
+   6. WeightedTrainer.train() — the actual fine-tuning loop, with early stopping
+        on macro-F1
+   7. AFTER training completes, on the SAME model/tokenizer/device that was just
+      fine-tuned:
+          extract_embeddings(...) over the train split
+             → compute_class_stats(embeddings, labels, class_names)
+             → saved as ood_stats.npz right next to the model checkpoint
+        (this is why compute-ood-stats, the backfill command for older models,
+        has to reconstruct the exact same split via the same --seed — OOD stats
+        are always computed from a specific model's own training embeddings)
+   8. run_evaluation() on the held-out test split → macro F1 / accuracy
+   9. Model + tokenizer + ood_stats.npz all saved to <output_dir>/final/
+```
+
+### OOD scoring internals
+
+All three signals live in `src/ood.py` and share one PCA projection (`_project()`, `OOD_PCA_COMPONENTS` dimensions, fit once at training time):
+
+| Signal | What it measures | Anomalous when |
+|---|---|---|
+| `mahalanobis_p_value` | Squared Mahalanobis distance to the nearest class centroid, converted to a p-value via `chi2.sf(df=n_components)`. Uses **one shared covariance matrix** across all classes (not per-class), regularized before inverting so it doesn't blow up on near-singular data. | **LOW** p-value |
+| `cosine_z_score` | Cosine distance to the nearest centroid, z-scored against the training set's own distribution of that same metric. | **HIGH** z-score |
+| `knn_mean_distance` | Mean Euclidean distance (PCA space) to the `k` nearest training documents — filtered to only the **predicted class**, not the whole training set. Makes no assumption that a class has one coherent shape, which is what makes it useful for a broad, heterogeneous class like `otro`. Returns `NaN` (logged as a warning) if the predicted class has zero training points; treated as anomalous, fail-safe, rather than silently passing. | **HIGH** distance |
+
+The three are deliberately **not combined into one score** — `in_distribution=False` fires if *any* one of them crosses its threshold. This means a document can be `certain=True` (softmax is confident) and `in_distribution=False` (the embedding doesn't resemble anything trained on) at the same time — the exact failure mode this feature exists to catch, and a human reviewing predictions can always see which specific signal fired.
+
 ## Project structure
 
 ```
