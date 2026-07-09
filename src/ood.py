@@ -7,6 +7,7 @@ import numpy.typing as npt
 import torch
 from scipy.stats import chi2
 from sklearn.decomposition import PCA
+from sklearn.metrics.pairwise import cosine_distances
 from transformers import PreTrainedTokenizerBase
 
 from src.schema import ClassEmbeddingStats
@@ -50,10 +51,7 @@ def _mahalanobis_min_distance_raw(
 def _cosine_min_distance_raw(
     point: npt.NDArray[np.float64], centroids: npt.NDArray[np.float64]
 ) -> float:
-    point_norm = point / (np.linalg.norm(point) + 1e-9)
-    centroid_norms = centroids / (np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-9)
-    similarities = centroid_norms @ point_norm
-    return float(np.min(1.0 - similarities))
+    return float(cosine_distances(point.reshape(1, -1), centroids).min())
 
 
 def compute_class_stats(
