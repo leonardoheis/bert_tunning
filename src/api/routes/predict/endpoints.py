@@ -45,6 +45,7 @@ async def predict(
             confidence=Settings.PREDICT_CONFIDENCE,
             certain=False,
             error="empty/unreadable document",
+            review_route="human_review",
         )
 
     result = await asyncio.to_thread(clf.predict_text, extraction.text)
@@ -69,4 +70,5 @@ async def predict(
         in_distribution=data["in_distribution"],
         extracted_text=data["extracted_text"],
         extractor_used=data["extractor_used"],
+        review_route=data["review_route"],
     )

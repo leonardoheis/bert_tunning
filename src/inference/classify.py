@@ -13,6 +13,21 @@ from src.settings import Settings
 log = logging.getLogger(__name__)
 
 
+def decide_review_route(*, certain: bool, in_distribution: bool | None) -> str:
+    """Route a prediction to "accept", "llm_judge", or "human_review".
+
+    An OOD signal firing (in_distribution=False) always wins and routes to a human --
+    an LLM judge can't be trusted to catch what already fooled the classifier itself.
+    Otherwise the softmax confidence alone decides: confident predictions are accepted,
+    unsure ones get a cheap LLM-judge second opinion. `in_distribution=None` (no
+    ood_stats.npz loaded) is treated like True -- no OOD evidence against the prediction.
+    See "Review routing" in README.md for the full decision table and rationale.
+    """
+    if in_distribution is False:
+        return "human_review"
+    return "accept" if certain else "llm_judge"
+
+
 class BertTunningClassifier:
     def __init__(self, model_path: str, *, confidence_threshold: float = 0.70) -> None:
         log.info("Loading classifier from %s", model_path)
@@ -56,13 +71,15 @@ class BertTunningClassifier:
         confidence = float(probs[pred_idx])
         label = self.model.config.id2label[pred_idx]
 
+        certain = confidence >= self.threshold
         result = PredictResult(
             label=label,
             confidence=round(confidence, 4),
-            certain=confidence >= self.threshold,
+            certain=certain,
             all_scores={
                 self.model.config.id2label[i]: round(float(p), 4) for i, p in enumerate(probs)
             },
+            review_route=decide_review_route(certain=certain, in_distribution=None),
         )
 
         if self._ood_stats is None:
@@ -80,11 +97,15 @@ class BertTunningClassifier:
         # to False and never flag it.
         knn_anomalous = bool(np.isnan(knn_dist)) or knn_dist > Settings.OOD_KNN_DISTANCE_THRESHOLD
         out_of_distribution = maha_anomalous or cosine_anomalous or knn_anomalous
+        in_distribution = not out_of_distribution
         return result.model_copy(
             update={
                 "mahalanobis_p_value": round(maha_p, 6),
                 "cosine_z": round(cosine_z, 4),
                 "knn_distance": round(knn_dist, 4),
-                "in_distribution": not out_of_distribution,
+                "in_distribution": in_distribution,
+                "review_route": decide_review_route(
+                    certain=certain, in_distribution=in_distribution
+                ),
             }
         )

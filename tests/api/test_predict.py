@@ -89,3 +89,44 @@ def test_predict_endpoint_returns_knn_distance() -> None:
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()["knnDistance"] == expected_knn_distance
+
+
+def test_predict_endpoint_returns_review_route() -> None:
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.return_value = PredictResult(
+        label="decreto", confidence=0.9, certain=True, review_route="accept"
+    )
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["reviewRoute"] == "accept"
+
+
+def test_predict_endpoint_routes_unreadable_document_to_human_review() -> None:
+    app = create_app(model_path="fake/path")
+    app.state.clf = MagicMock()
+    fake_extraction = ExtractionMetadata(text=None, extractor_used=None, char_count=0)
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["reviewRoute"] == "human_review"

@@ -107,13 +107,29 @@ src/training/pipeline.py::run()
 
 All three signals live in `src/ood.py` and share one PCA projection (`_project()`, `OOD_PCA_COMPONENTS` dimensions, fit once at training time):
 
-| Signal | What it measures | Anomalous when |
-|---|---|---|
-| `mahalanobis_p_value` | Squared Mahalanobis distance to the nearest class centroid, converted to a p-value via `chi2.sf(df=n_components)`. Uses **one shared covariance matrix** across all classes (not per-class), regularized before inverting so it doesn't blow up on near-singular data. | **LOW** p-value |
-| `cosine_z_score` | Cosine distance to the nearest centroid, z-scored against the training set's own distribution of that same metric. | **HIGH** z-score |
-| `knn_mean_distance` | Mean Euclidean distance (PCA space) to the `k` nearest training documents — filtered to only the **predicted class**, not the whole training set. Makes no assumption that a class has one coherent shape, which is what makes it useful for a broad, heterogeneous class like `otro`. Returns `NaN` (logged as a warning) if the predicted class has zero training points; treated as anomalous, fail-safe, rather than silently passing. | **HIGH** distance |
+| Signal | What it measures | Anomalous when | How to read the value |
+|---|---|---|---|
+| `mahalanobis_p_value` | Squared Mahalanobis distance to the nearest class centroid, converted to a p-value via `chi2.sf(df=n_components)`. Uses **one shared covariance matrix** across all classes (not per-class), regularized before inverting so it doesn't blow up on near-singular data. | **LOW** p-value (< `OOD_MAHALANOBIS_P_THRESHOLD`, default `0.01`) | A genuine p-value, `0.0`–`1.0`. `0.5` means "about as far from its class as a typical in-distribution document"; `0.0001` means the document is far enough that a real member of that class would essentially never land there. Because it assumes one Gaussian shape per class, it can misfire on heterogeneous classes (e.g. a broad `otro` catch-all) — the reason two other signals exist alongside it. |
+| `cosine_z_score` | Cosine distance to the nearest centroid, z-scored against the training set's own distribution of that same metric. | **HIGH** z-score (> `OOD_COSINE_THRESHOLD`) | A standard z-score, so it **can be negative** — that's not an error, it just means this document's cosine distance to its centroid is *below* the training set's average distance (i.e. more typical than average, even more so than most training documents). Only large *positive* values are anomalous; `0` is average, negative is unremarkable. |
+| `knn_mean_distance` | Mean Euclidean distance (PCA space) to the `k` nearest training documents — filtered to only the **predicted class**, not the whole training set. Makes no assumption that a class has one coherent shape, which is what makes it useful for a broad, heterogeneous class like `otro`. Returns `NaN` (logged as a warning) if the predicted class has zero training points; treated as anomalous, fail-safe, rather than silently passing. | **HIGH** distance (> `OOD_KNN_DISTANCE_THRESHOLD`) | A raw distance in PCA-space units — there's no natural "average is 0" reference point like the other two, so read it only relative to its calibrated threshold, not as a standalone percentage or probability. Thresholds are calibrated per model (`evaluate-ood-calibration`); a value calibrated for one trained model has no meaning against another. |
 
 The three are deliberately **not combined into one score** — `in_distribution=False` fires if *any* one of them crosses its threshold. This means a document can be `certain=True` (softmax is confident) and `in_distribution=False` (the embedding doesn't resemble anything trained on) at the same time — the exact failure mode this feature exists to catch, and a human reviewing predictions can always see which specific signal fired.
+
+**Is a signal actually calibrated?** Run `evaluate-ood-calibration` (see "Out-of-distribution detection" below) against the model's own held-out test split — known in-distribution by construction. It reports each signal's *empirical false-positive rate*: the fraction of genuinely in-distribution test documents the current threshold would incorrectly flag. A signal is calibrated when that rate is close to the target (`--target-fp-rate`, default 1%). If it's far off (Mahalanobis routinely runs 20–30% on this corpus, due to the shared-covariance assumption breaking down on heterogeneous classes like `otro`), don't blindly adopt the tool's `suggested_*_threshold` — check first whether the suggestion is itself degenerate (e.g. a suggested Mahalanobis p-value threshold of `0.0`, which would just disable the signal). Only update `settings.py` when the suggested value is a real, usable threshold.
+
+### Review routing
+
+`PredictResult.review_route` turns the confidence (`certain`) and OOD (`in_distribution`) signals into one of three actionable lanes, so a human doesn't have to eyeball every field on every prediction to decide what to do with it:
+
+| `certain` | `in_distribution` | `review_route` | Rationale |
+|---|---|---|---|
+| — | `False` | `human_review` | An OOD signal fired — the document doesn't resemble anything the model trained on. An LLM judge can't be trusted to catch what already fooled the classifier, so this always routes to a human, regardless of how confident the softmax was. |
+| `True` | `True` or `None` (no `ood_stats.npz`) | `accept` | Confident, and no evidence the document is out of distribution. Auto-accept. |
+| `False` | `True` or `None` | `llm_judge` | The document looks like a known type, but the model itself is unsure which one — a cheap LLM second opinion is proportionate to the ambiguity. |
+
+`decide_review_route()` (`src/inference/classify.py`) implements this and is unit-tested directly. It's attached to every `PredictResult`, so it shows up in the `predict-folder` CSV, the single-`predict` CLI output, the `/predict` API response, and the W&B predictions table with no extra flags needed. An unreadable/unextractable document (empty text) always gets `human_review` — there's no prediction to be confident about.
+
+**This routing rule is intentionally coarse** (3 lanes from a boolean AND a boolean) — it doesn't distinguish "barely crossed one OOD threshold" from "every signal fired hard." If you need finer-grained triage within `human_review`, count how many of the three raw signals fired (0–3) as an ordinal severity score for queue ordering; that's not currently computed anywhere, so you'd read `mahalanobis_p_value`/`cosine_z`/`knn_distance` directly against their thresholds from the CSV/API output.
 
 ## Project structure
 

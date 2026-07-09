@@ -16,6 +16,7 @@ def _extraction_failed(filename: str) -> PredictResult:
         confidence=Settings.PREDICT_CONFIDENCE,
         certain=False,
         error="empty/unreadable document",
+        review_route="human_review",
     )
 
 

@@ -15,6 +15,7 @@ _PREDICTION_COLUMNS = [
     "cosine_z",
     "knn_distance",
     "in_distribution",
+    "review_route",
     "extractor_used",
     "error",
 ]
