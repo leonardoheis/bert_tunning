@@ -62,7 +62,7 @@ class _Settings(BaseSettings):
     PREDICT_CONFIDENCE: float = 0.0
     OOD_PCA_COMPONENTS: int = 64
     OOD_MAHALANOBIS_P_THRESHOLD: float = 0.01
-    OOD_COSINE_THRESHOLD: float = 2.5
+    OOD_COSINE_THRESHOLD: float = 13.7366
     OOD_KNN_NEIGHBORS: int = 10
     # Calibrated 2026-07-08 against BETO v2 (bert_tunning_model_beto_v2) via
     # evaluate-ood-calibration: the prior placeholder (5.0) gave a 21.88% empirical
