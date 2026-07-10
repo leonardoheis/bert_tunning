@@ -9,6 +9,7 @@ from src.inference.classify import (
     ConfidenceTier,
     OodEvidence,
     decide_review_route,
+    is_out_of_distribution,
 )
 from src.inference.pipeline import predict_pdf
 from src.ood import save_stats
@@ -120,6 +121,34 @@ def _make_mock_classifier() -> BertTunningClassifier:
         clf.max_length = 512
         clf._ood_stats = None  # noqa: SLF001
         return clf
+
+
+def test_is_out_of_distribution_false_when_all_signals_pass() -> None:
+    assert is_out_of_distribution(maha_p=0.5, cosine_z=0.0, knn_dist=1.0) is False
+
+
+def test_is_out_of_distribution_true_when_mahalanobis_fires() -> None:
+    assert is_out_of_distribution(maha_p=0.0001, cosine_z=0.0, knn_dist=1.0) is True
+
+
+def test_is_out_of_distribution_true_when_cosine_fires() -> None:
+    assert (
+        is_out_of_distribution(maha_p=0.5, cosine_z=Settings.OOD_COSINE_THRESHOLD + 1, knn_dist=1.0)
+        is True
+    )
+
+
+def test_is_out_of_distribution_true_when_knn_fires() -> None:
+    assert (
+        is_out_of_distribution(
+            maha_p=0.5, cosine_z=0.0, knn_dist=Settings.OOD_KNN_DISTANCE_THRESHOLD + 1
+        )
+        is True
+    )
+
+
+def test_is_out_of_distribution_true_when_knn_distance_is_nan() -> None:
+    assert is_out_of_distribution(maha_p=0.5, cosine_z=0.0, knn_dist=float("nan")) is True
 
 
 def test_confidence_tier_from_confidence_at_or_above_threshold_is_confident() -> None:

@@ -37,6 +37,18 @@ class OodEvidence(Enum):
         return cls.ANOMALOUS if in_distribution is False else cls.NOT_ANOMALOUS
 
 
+def is_out_of_distribution(*, maha_p: float, cosine_z: float, knn_dist: float) -> bool:
+    """Any one of the three OOD signals firing is enough -- a deliberate OR, not a
+    weighted blend (see README's "OOD scoring internals" for why). NaN in knn_dist means
+    the predicted class had zero training points to compare against; treated as
+    anomalous, fail-safe, since `nan > threshold` would otherwise silently pass.
+    """
+    maha_anomalous = maha_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    cosine_anomalous = cosine_z > Settings.OOD_COSINE_THRESHOLD
+    knn_anomalous = bool(np.isnan(knn_dist)) or knn_dist > Settings.OOD_KNN_DISTANCE_THRESHOLD
+    return maha_anomalous or cosine_anomalous or knn_anomalous
+
+
 def decide_review_route(*, confidence_tier: ConfidenceTier, ood_evidence: OodEvidence) -> str:
     """Route a prediction to "accept", "llm_judge", or "human_review".
 
@@ -94,8 +106,8 @@ class BertTunningClassifier:
         confidence = float(probs[pred_idx])
         label = self.model.config.id2label[pred_idx]
 
-        certain = confidence >= self.threshold
         confidence_tier = ConfidenceTier.from_confidence(confidence, self.threshold)
+        certain = confidence_tier is ConfidenceTier.CONFIDENT
         result = PredictResult(
             label=label,
             confidence=round(confidence, 4),
@@ -116,14 +128,9 @@ class BertTunningClassifier:
         knn_dist = knn_mean_distance(
             cls_embedding, self._ood_stats, pred_idx, k=Settings.OOD_KNN_NEIGHBORS
         )
-        maha_anomalous = maha_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
-        cosine_anomalous = cosine_z > Settings.OOD_COSINE_THRESHOLD
-        # NaN means the predicted class had zero training points to compare against — treat
-        # that as anomalous (fail safe) rather than let `nan > threshold` silently evaluate
-        # to False and never flag it.
-        knn_anomalous = bool(np.isnan(knn_dist)) or knn_dist > Settings.OOD_KNN_DISTANCE_THRESHOLD
-        out_of_distribution = maha_anomalous or cosine_anomalous or knn_anomalous
-        in_distribution = not out_of_distribution
+        in_distribution = not is_out_of_distribution(
+            maha_p=maha_p, cosine_z=cosine_z, knn_dist=knn_dist
+        )
         return result.model_copy(
             update={
                 "mahalanobis_p_value": round(maha_p, 6),
