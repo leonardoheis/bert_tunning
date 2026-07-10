@@ -8,6 +8,7 @@ from src.inference.classify import (
     BertTunningClassifier,
     ConfidenceTier,
     OodEvidence,
+    OodScores,
     decide_review_route,
     is_out_of_distribution,
 )
@@ -89,66 +90,51 @@ def _make_stats_with_no_knn_training_data_for_decreto() -> ClassEmbeddingStats:
 
 
 def _make_mock_classifier() -> BertTunningClassifier:
-    asc_path = "src.inference.classify.AutoModelForSequenceClassification.from_pretrained"
-    with (
-        patch("src.inference.classify.AutoTokenizer.from_pretrained") as mock_tok,
-        patch(asc_path) as mock_mdl,
-        patch("torch.cuda.is_available", return_value=False),
-    ):
-        tokenizer = MagicMock()
-        tokenizer.model_max_length = 512
-        tokenizer.return_value = MagicMock()
-        tokenizer.return_value.to.return_value = {
-            "input_ids": torch.zeros(1, 512, dtype=torch.long),
-            "attention_mask": torch.ones(1, 512, dtype=torch.long),
-        }
-        mock_tok.return_value = tokenizer
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    tokenizer.return_value = MagicMock()
+    tokenizer.return_value.to.return_value = {
+        "input_ids": torch.zeros(1, 512, dtype=torch.long),
+        "attention_mask": torch.ones(1, 512, dtype=torch.long),
+    }
 
-        model = MagicMock()
-        model.config.id2label = {0: "decreto", 1: "ordenanza"}
-        logits = torch.tensor([[2.0, 0.5]])
-        model.return_value.logits = logits
-        model.return_value.hidden_states = [torch.zeros(1, 512, 8)]
-        mock_mdl.return_value = model
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+    model.return_value.logits = torch.tensor([[2.0, 0.5]])
+    model.return_value.hidden_states = [torch.zeros(1, 512, 8)]
 
-        model.config.max_position_embeddings = 512
-
-        clf = BertTunningClassifier.__new__(BertTunningClassifier)
-        clf.tokenizer = tokenizer
-        clf.model = model
-        clf.threshold = 0.70
-        clf.device = "cpu"
-        clf.max_length = 512
-        clf._ood_stats = None  # noqa: SLF001
-        return clf
+    with patch("torch.cuda.is_available", return_value=False):
+        return BertTunningClassifier("fake/model/path", tokenizer=tokenizer, model=model)
 
 
 def test_is_out_of_distribution_false_when_all_signals_pass() -> None:
-    assert is_out_of_distribution(maha_p=0.5, cosine_z=0.0, knn_dist=1.0) is False
+    scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0)
+    assert is_out_of_distribution(scores) is False
 
 
 def test_is_out_of_distribution_true_when_mahalanobis_fires() -> None:
-    assert is_out_of_distribution(maha_p=0.0001, cosine_z=0.0, knn_dist=1.0) is True
+    scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
+    assert is_out_of_distribution(scores) is True
 
 
 def test_is_out_of_distribution_true_when_cosine_fires() -> None:
-    assert (
-        is_out_of_distribution(maha_p=0.5, cosine_z=Settings.OOD_COSINE_THRESHOLD + 1, knn_dist=1.0)
-        is True
+    scores = OodScores(
+        mahalanobis_p=0.5, cosine_z=Settings.OOD_COSINE_THRESHOLD + 1, knn_distance=1.0
     )
+    assert is_out_of_distribution(scores) is True
 
 
 def test_is_out_of_distribution_true_when_knn_fires() -> None:
-    assert (
-        is_out_of_distribution(
-            maha_p=0.5, cosine_z=0.0, knn_dist=Settings.OOD_KNN_DISTANCE_THRESHOLD + 1
-        )
-        is True
+    scores = OodScores(
+        mahalanobis_p=0.5, cosine_z=0.0, knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD + 1
     )
+    assert is_out_of_distribution(scores) is True
 
 
 def test_is_out_of_distribution_true_when_knn_distance_is_nan() -> None:
-    assert is_out_of_distribution(maha_p=0.5, cosine_z=0.0, knn_dist=float("nan")) is True
+    scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=float("nan"))
+    assert is_out_of_distribution(scores) is True
 
 
 def test_confidence_tier_from_confidence_at_or_above_threshold_is_confident() -> None:

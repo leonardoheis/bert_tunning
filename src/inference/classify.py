@@ -1,10 +1,11 @@
 import logging
 from enum import Enum
 from pathlib import Path
+from typing import Any, NamedTuple
 
 import numpy as np
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerBase
 
 from src.ingestion.extract import clean_text
 from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_p_value
@@ -37,15 +38,27 @@ class OodEvidence(Enum):
         return cls.ANOMALOUS if in_distribution is False else cls.NOT_ANOMALOUS
 
 
-def is_out_of_distribution(*, maha_p: float, cosine_z: float, knn_dist: float) -> bool:
+class OodScores(NamedTuple):
+    """The three OOD signals -- always computed together, passed together, never used
+    independently. Matches LoadedModel/_PcaReduction's convention in src/ood.py."""
+
+    mahalanobis_p: float
+    cosine_z: float
+    knn_distance: float
+
+
+def is_out_of_distribution(scores: OodScores) -> bool:
     """Any one of the three OOD signals firing is enough -- a deliberate OR, not a
-    weighted blend (see README's "OOD scoring internals" for why). NaN in knn_dist means
-    the predicted class had zero training points to compare against; treated as
+    weighted blend (see README's "OOD scoring internals" for why). NaN in knn_distance
+    means the predicted class had zero training points to compare against; treated as
     anomalous, fail-safe, since `nan > threshold` would otherwise silently pass.
     """
-    maha_anomalous = maha_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
-    cosine_anomalous = cosine_z > Settings.OOD_COSINE_THRESHOLD
-    knn_anomalous = bool(np.isnan(knn_dist)) or knn_dist > Settings.OOD_KNN_DISTANCE_THRESHOLD
+    maha_anomalous = scores.mahalanobis_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    cosine_anomalous = scores.cosine_z > Settings.OOD_COSINE_THRESHOLD
+    knn_anomalous = (
+        bool(np.isnan(scores.knn_distance))
+        or scores.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
+    )
     return maha_anomalous or cosine_anomalous or knn_anomalous
 
 
@@ -64,17 +77,24 @@ def decide_review_route(*, confidence_tier: ConfidenceTier, ood_evidence: OodEvi
 
 
 class BertTunningClassifier:
-    def __init__(self, model_path: str, *, confidence_threshold: float = 0.70) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        *,
+        confidence_threshold: float = 0.70,
+        tokenizer: PreTrainedTokenizerBase | None = None,
+        model: torch.nn.Module | None = None,
+    ) -> None:
         log.info("Loading classifier from %s", model_path)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
+        self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_path)
+        self.model: Any = model or AutoModelForSequenceClassification.from_pretrained(model_path)
         self.threshold = confidence_threshold
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.eval()
         self.model.to(self.device)
-        self.max_length = min(
+        self.max_length = min(  # type: ignore[type-var]
             self.tokenizer.model_max_length,
-            self.model.config.max_position_embeddings,
+            self.model.config.max_position_embeddings,  # type: ignore[union-attr]
         )
         self._ood_stats = self._load_ood_stats(model_path)
         log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
@@ -123,19 +143,19 @@ class BertTunningClassifier:
         if self._ood_stats is None:
             return result
 
-        maha_p = mahalanobis_p_value(cls_embedding, self._ood_stats)
-        cosine_z = cosine_z_score(cls_embedding, self._ood_stats)
-        knn_dist = knn_mean_distance(
-            cls_embedding, self._ood_stats, pred_idx, k=Settings.OOD_KNN_NEIGHBORS
+        scores = OodScores(
+            mahalanobis_p=mahalanobis_p_value(cls_embedding, self._ood_stats),
+            cosine_z=cosine_z_score(cls_embedding, self._ood_stats),
+            knn_distance=knn_mean_distance(
+                cls_embedding, self._ood_stats, pred_idx, k=Settings.OOD_KNN_NEIGHBORS
+            ),
         )
-        in_distribution = not is_out_of_distribution(
-            maha_p=maha_p, cosine_z=cosine_z, knn_dist=knn_dist
-        )
+        in_distribution = not is_out_of_distribution(scores)
         return result.model_copy(
             update={
-                "mahalanobis_p_value": round(maha_p, 6),
-                "cosine_z": round(cosine_z, 4),
-                "knn_distance": round(knn_dist, 4),
+                "mahalanobis_p_value": round(scores.mahalanobis_p, 6),
+                "cosine_z": round(scores.cosine_z, 4),
+                "knn_distance": round(scores.knn_distance, 4),
                 "in_distribution": in_distribution,
                 "review_route": decide_review_route(
                     confidence_tier=confidence_tier,
