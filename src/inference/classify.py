@@ -136,9 +136,10 @@ class BertTunningClassifier:
             probs = torch.softmax(outputs.logits, dim=-1)[0].cpu().numpy()
             cls_embedding = outputs.hidden_states[-1][:, 0, :][0].cpu().numpy().astype(np.float64)
 
+        id2label = self.model.config.id2label
         pred_idx = int(np.argmax(probs))
         confidence = float(probs[pred_idx])
-        label = self.model.config.id2label[pred_idx]
+        label = id2label[pred_idx]
 
         confidence_tier = ConfidenceTier.from_confidence(confidence, self.threshold)
         certain = confidence_tier is ConfidenceTier.CONFIDENT
@@ -146,9 +147,7 @@ class BertTunningClassifier:
             label=label,
             confidence=round(confidence, 4),
             certain=certain,
-            all_scores={
-                self.model.config.id2label[i]: round(float(p), 4) for i, p in enumerate(probs)
-            },
+            all_scores={id2label[i]: round(float(p), 4) for i, p in enumerate(probs)},
             review_route=decide_review_route(
                 confidence_tier=confidence_tier, ood_evidence=OodEvidence.NOT_ANOMALOUS
             ),
