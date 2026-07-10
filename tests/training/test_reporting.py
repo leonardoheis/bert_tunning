@@ -8,9 +8,12 @@ from src.training.reporting import (
 
 
 def _make_hyperparams() -> Hyperparams:
-    # alias_generator=to_camel without populate_by_name means only the camelCase alias
-    # is accepted at construction time (see CLAUDE.md's populate_by_name gotcha) --
-    # model_validate() sidesteps mypy's alias-blind synthesized __init__ signature.
+    # As of this test's authoring, Hyperparams has alias_generator=to_camel without
+    # populate_by_name=True, so only the camelCase alias is accepted at construction --
+    # NOT how src/training/pipeline.py actually constructs it (snake_case kwargs), which
+    # meant that call was itself broken (see task/47-fix-hyperparams-populate-by-name,
+    # filed after this test surfaced the gap). model_validate() here also sidesteps
+    # mypy's alias-blind synthesized __init__ signature for the camelCase dict below.
     return Hyperparams.model_validate(
         {
             "model": "beto",
