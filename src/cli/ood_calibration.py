@@ -4,25 +4,15 @@ from pathlib import Path
 import click
 import numpy as np
 import numpy.typing as npt
-import pandas as pd
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
-from sklearn.preprocessing import LabelEncoder
 
-from src.cli._ood_common import load_model_and_verify_classes
+from src.cli._ood_common import embed_texts, reconstruct_split_and_load_model
 from src.logger import setup_logging
-from src.ood import (
-    cosine_z_score,
-    extract_embeddings,
-    knn_mean_distance,
-    load_stats,
-    mahalanobis_p_value,
-)
+from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_p_value
 from src.schema import CalibrationReport
 from src.settings import Settings
 from src.training.models import get_model_config
-from src.training.split import make_split
-from src.training.tokenize import prepare_text
 from src.wandb import log_ood_calibration_results
 
 log = logging.getLogger(__name__)
@@ -73,32 +63,32 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
     log.info("Logging to %s", log_file)
 
-    model_cfg = get_model_config(opts.model_key)
-    df = pd.read_parquet(opts.cache_path)
-
-    le = LabelEncoder()
-    df["label_id"] = le.fit_transform(df["label"])
-
-    # Same split-reconstruction as Task 3b — the test split is known in-distribution
-    # by construction, since it's real training documents held out from the train split.
-    _train_df, _val_df, test_df = make_split(df, seed=opts.seed)
-    log.info("Reconstructed test split: %d docs (known in-distribution)", len(test_df))
-
+    # Checked before touching the model/split (both expensive) so a missing stats file
+    # fails fast, same as before this function's setup was consolidated.
     stats_path = Path(opts.model_path) / "ood_stats.npz"
     if not stats_path.exists():
         msg = f"No ood_stats.npz found at {stats_path} — run compute-ood-stats first"
         raise click.ClickException(msg)
     stats = load_stats(stats_path)
 
-    loaded = load_model_and_verify_classes(opts.model_path, set(le.classes_))
-    log.info("Extracting embeddings on %s", loaded.device)
-
-    texts = [prepare_text(t, loaded.tokenizer, opts.chunk_strategy) for t in test_df["text"]]
-    embeddings = extract_embeddings(loaded, texts, max_length=model_cfg.max_tokens)
+    model_cfg = get_model_config(opts.model_key)
+    # Same split-reconstruction as Task 3b — the test split is known in-distribution
+    # by construction, since it's real training documents held out from the train split.
+    split = reconstruct_split_and_load_model(
+        model_path=opts.model_path, cache_path=opts.cache_path, seed=opts.seed
+    )
+    log.info("Reconstructed test split: %d docs (known in-distribution)", len(split.test_df))
+    log.info("Extracting embeddings on %s", split.loaded.device)
+    embeddings = embed_texts(
+        split.loaded,
+        split.test_df,
+        chunk_strategy=opts.chunk_strategy,
+        max_tokens=model_cfg.max_tokens,
+    )
 
     p_values = np.array([mahalanobis_p_value(e, stats) for e in embeddings])
     z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
-    label_ids = test_df["label_id"].to_numpy()
+    label_ids = split.test_df["label_id"].to_numpy()
     knn_distances = np.array(
         [
             knn_mean_distance(e, stats, int(lbl), k=Settings.OOD_KNN_NEIGHBORS)

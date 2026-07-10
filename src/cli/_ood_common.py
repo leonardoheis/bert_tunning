@@ -1,8 +1,16 @@
+from typing import NamedTuple
+
 import click
+import numpy as np
+import numpy.typing as npt
+import pandas as pd
 import torch
+from sklearn.preprocessing import LabelEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.ood import LoadedModel
+from src.ood import LoadedModel, extract_embeddings
+from src.training.split import make_split
+from src.training.tokenize import prepare_text
 
 
 def load_model_and_verify_classes(model_path: str, cache_labels: set[str]) -> LoadedModel:
@@ -24,3 +32,33 @@ def load_model_and_verify_classes(model_path: str, cache_labels: set[str]) -> Lo
         raise click.ClickException(msg)
 
     return LoadedModel(model=model, tokenizer=tokenizer, device=device)
+
+
+class ReconstructedSplit(NamedTuple):
+    """The loaded model plus the exact train/val/test split reconstruction shared by
+    compute-ood-stats (uses train_df) and evaluate-ood-calibration (uses test_df) — one
+    place defining "the split" so both commands can't quietly diverge on what it means."""
+
+    loaded: LoadedModel
+    train_df: pd.DataFrame
+    val_df: pd.DataFrame
+    test_df: pd.DataFrame
+    classes: list[str]
+
+
+def reconstruct_split_and_load_model(
+    *, model_path: str, cache_path: str, seed: int
+) -> ReconstructedSplit:
+    df = pd.read_parquet(cache_path)
+    le = LabelEncoder()
+    df["label_id"] = le.fit_transform(df["label"])
+    train_df, val_df, test_df = make_split(df, seed=seed)
+    loaded = load_model_and_verify_classes(model_path, set(le.classes_))
+    return ReconstructedSplit(loaded, train_df, val_df, test_df, list(le.classes_))
+
+
+def embed_texts(
+    loaded: LoadedModel, df: pd.DataFrame, *, chunk_strategy: str, max_tokens: int
+) -> npt.NDArray[np.float64]:
+    texts = [prepare_text(t, loaded.tokenizer, chunk_strategy) for t in df["text"]]
+    return extract_embeddings(loaded, texts, max_length=max_tokens)
