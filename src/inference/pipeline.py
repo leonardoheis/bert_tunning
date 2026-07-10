@@ -3,13 +3,15 @@ from pathlib import Path
 
 from src.inference.classify import BertTunningClassifier
 from src.ingestion.extract import extract_pdf_with_metadata
-from src.schema import PredictResult
+from src.schema import ExtractionMetadata, PredictResult
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
 
-def _extraction_failed(filename: str) -> PredictResult:
+def extraction_failed(filename: str) -> PredictResult:
+    """The empty/unreadable-document result -- one place defining this rule, reused by
+    predict_pdf, predict_folder, and the /predict API route (src/api/routes/predict)."""
     return PredictResult(
         filename=filename,
         label=None,
@@ -17,6 +19,18 @@ def _extraction_failed(filename: str) -> PredictResult:
         certain=False,
         error="empty/unreadable document",
         review_route="human_review",
+    )
+
+
+def _attach_metadata(
+    result: PredictResult, filename: str, extraction: ExtractionMetadata
+) -> PredictResult:
+    return result.model_copy(
+        update={
+            "filename": filename,
+            "extracted_text": extraction.text,
+            "extractor_used": extraction.extractor_used or "",
+        }
     )
 
 
@@ -34,16 +48,10 @@ def predict_pdf(
 
     if not extraction.text:
         log.warning("Could not extract text from %s", name)
-        return _extraction_failed(name)
+        return extraction_failed(name)
 
     result = clf.predict_text(extraction.text)
-    result = result.model_copy(
-        update={
-            "filename": name,
-            "extracted_text": extraction.text,
-            "extractor_used": extraction.extractor_used or "",
-        }
-    )
+    result = _attach_metadata(result, name, extraction)
     log.info("%s → %s (%.2f%%)", name, result.label, result.confidence * 100)
     return result
 
@@ -63,16 +71,10 @@ def predict_folder(
     for pdf in pdfs:
         extraction = extract_pdf_with_metadata(str(pdf), use_ocr_fallback=use_ocr)
         if not extraction.text:
-            results.append(_extraction_failed(pdf.name))
+            results.append(extraction_failed(pdf.name))
             continue
         r = clf.predict_text(extraction.text)
-        r = r.model_copy(
-            update={
-                "filename": pdf.name,
-                "extracted_text": extraction.text,
-                "extractor_used": extraction.extractor_used or "",
-            }
-        )
+        r = _attach_metadata(r, pdf.name, extraction)
         results.append(r)
 
     log.info("Folder classification complete")

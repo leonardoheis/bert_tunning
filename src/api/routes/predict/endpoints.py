@@ -6,8 +6,9 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from src.inference.classify import BertTunningClassifier
+from src.inference.pipeline import extraction_failed
 from src.ingestion.extract import extract_pdf_with_metadata
-from src.settings import Settings
+from src.schema import PredictResult
 
 from .schemas import PredictResponse
 
@@ -16,6 +17,25 @@ router = APIRouter(tags=["Prediction"])
 
 def _get_clf(request: Request) -> BertTunningClassifier:
     return cast("BertTunningClassifier", request.app.state.clf)
+
+
+def _to_predict_response(result: PredictResult) -> PredictResponse:
+    data = result.model_dump()
+    return PredictResponse(
+        filename=data["filename"],
+        label=data["label"],
+        confidence=data["confidence"],
+        certain=data["certain"],
+        all_scores=data["all_scores"],
+        error=data["error"] or None,
+        mahalanobis_p_value=data["mahalanobis_p_value"],
+        cosine_z=data["cosine_z"],
+        knn_distance=data["knn_distance"],
+        in_distribution=data["in_distribution"],
+        extracted_text=data["extracted_text"],
+        extractor_used=data["extractor_used"],
+        review_route=data["review_route"],
+    )
 
 
 @router.post("/predict")
@@ -39,14 +59,7 @@ async def predict(
         await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
     if not extraction.text:
-        return PredictResponse(
-            filename=file.filename,
-            label=None,
-            confidence=Settings.PREDICT_CONFIDENCE,
-            certain=False,
-            error="empty/unreadable document",
-            review_route="human_review",
-        )
+        return _to_predict_response(extraction_failed(file.filename))
 
     result = await asyncio.to_thread(clf.predict_text, extraction.text)
     result = result.model_copy(
@@ -56,19 +69,4 @@ async def predict(
             "extractor_used": extraction.extractor_used or "",
         }
     )
-    data = result.model_dump()
-    return PredictResponse(
-        filename=data["filename"],
-        label=data["label"],
-        confidence=data["confidence"],
-        certain=data["certain"],
-        all_scores=data["all_scores"],
-        error=data["error"] or None,
-        mahalanobis_p_value=data["mahalanobis_p_value"],
-        cosine_z=data["cosine_z"],
-        knn_distance=data["knn_distance"],
-        in_distribution=data["in_distribution"],
-        extracted_text=data["extracted_text"],
-        extractor_used=data["extractor_used"],
-        review_route=data["review_route"],
-    )
+    return _to_predict_response(result)
