@@ -107,7 +107,13 @@ src/training/pipeline.py::run()
    4. Tokenize all three splits, load the base model fresh from the HF hub id
    5. Pick precision automatically: bf16 → fp16 → fp32, whichever the GPU supports
    6. WeightedTrainer.train() — the actual fine-tuning loop, with early stopping
-        on macro-F1
+        on macro-F1. WeightedTrainer.compute_loss() (src/training/trainer.py) is
+        torch.nn.CrossEntropyLoss(weight=class_weights) — the step-3 weights penalize
+        misclassifying rare classes (e.g. otro, 46 docs) more heavily than common ones
+        (e.g. boletines, 300 docs). This is weighted cross-entropy, not Focal Loss or
+        any other per-sample reweighting — the weight is fixed per class, computed
+        once from training-set frequency, not adjusted per-example by how confident
+        the model already is on it.
    7. AFTER training completes, on the SAME model/tokenizer/device that was just
       fine-tuned:
           extract_embeddings(...) over the train split
