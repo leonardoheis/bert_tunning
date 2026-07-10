@@ -2,18 +2,14 @@ import logging
 from pathlib import Path
 
 import click
-import pandas as pd
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
-from sklearn.preprocessing import LabelEncoder
 
-from src.cli._ood_common import load_model_and_verify_classes
+from src.cli._ood_common import embed_texts, reconstruct_split_and_load_model
 from src.logger import setup_logging
-from src.ood import compute_class_stats, extract_embeddings, save_stats
+from src.ood import compute_class_stats, save_stats
 from src.settings import Settings
 from src.training.models import get_model_config
-from src.training.split import make_split
-from src.training.tokenize import prepare_text
 
 log = logging.getLogger(__name__)
 
@@ -39,24 +35,23 @@ def _run_compute_ood_stats(opts: ComputeOodStatsOptions) -> None:
     log.info("Logging to %s", log_file)
 
     model_cfg = get_model_config(opts.model_key)
-    df = pd.read_parquet(opts.cache_path)
+    split = reconstruct_split_and_load_model(
+        model_path=opts.model_path, cache_path=opts.cache_path, seed=opts.seed
+    )
+    log.info("%d classes: %s", len(split.classes), split.classes)
+    log.info("Reconstructed train split: %d docs", len(split.train_df))
+    log.info("Extracting embeddings on %s", split.loaded.device)
 
-    le = LabelEncoder()
-    df["label_id"] = le.fit_transform(df["label"])
-    log.info("%d classes: %s", len(le.classes_), list(le.classes_))
-
-    train_df, _val_df, _test_df = make_split(df, seed=opts.seed)
-    log.info("Reconstructed train split: %d docs", len(train_df))
-
-    loaded = load_model_and_verify_classes(opts.model_path, set(le.classes_))
-    log.info("Extracting embeddings on %s", loaded.device)
-
-    texts = [prepare_text(t, loaded.tokenizer, opts.chunk_strategy) for t in train_df["text"]]
-    embeddings = extract_embeddings(loaded, texts, max_length=model_cfg.max_tokens)
+    embeddings = embed_texts(
+        split.loaded,
+        split.train_df,
+        chunk_strategy=opts.chunk_strategy,
+        max_tokens=model_cfg.max_tokens,
+    )
     stats = compute_class_stats(
         embeddings,
-        train_df["label_id"].tolist(),
-        list(le.classes_),
+        split.train_df["label_id"].tolist(),
+        split.classes,
         n_components=Settings.OOD_PCA_COMPONENTS,
     )
 

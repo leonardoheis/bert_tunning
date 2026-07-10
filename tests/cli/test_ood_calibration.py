@@ -179,7 +179,7 @@ def _run_successful_calibration(
             return_value=mock_model,
         ),
         patch("src.cli.ood_calibration.load_stats", return_value=_make_stats()),
-        patch("src.cli.ood_calibration.extract_embeddings", side_effect=_fake_extract_embeddings),
+        patch("src.cli._ood_common.extract_embeddings", side_effect=_fake_extract_embeddings),
         patch("torch.cuda.is_available", return_value=False),
         patch("src.cli.ood_calibration.log_ood_calibration_results") as mock_log,
     ):
@@ -261,7 +261,7 @@ def _run_calibration_with_stats(
             return_value=mock_model,
         ),
         patch("src.cli.ood_calibration.load_stats", return_value=stats),
-        patch("src.cli.ood_calibration.extract_embeddings", side_effect=_fake_extract_embeddings),
+        patch("src.cli._ood_common.extract_embeddings", side_effect=_fake_extract_embeddings),
         patch("torch.cuda.is_available", return_value=False),
         patch("src.cli.ood_calibration.log_ood_calibration_results") as mock_log,
     ):
