@@ -107,7 +107,12 @@ class ClassEmbeddingStats(BaseModel):
 
 
 class Hyperparams(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        frozen=True,
+        populate_by_name=True,
+    )
 
     model: str
     epochs: int
