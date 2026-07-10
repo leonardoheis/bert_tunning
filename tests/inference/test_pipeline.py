@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import torch
 
-from src.inference.classify import BertTunningClassifier, decide_review_route
+from src.inference.classify import (
+    BertTunningClassifier,
+    ConfidenceTier,
+    OodEvidence,
+    decide_review_route,
+)
 from src.inference.pipeline import predict_pdf
 from src.ood import save_stats
 from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
@@ -117,27 +122,54 @@ def _make_mock_classifier() -> BertTunningClassifier:
         return clf
 
 
-def test_decide_review_route_accept_when_certain_and_in_distribution() -> None:
-    assert decide_review_route(certain=True, in_distribution=True) == "accept"
+def test_confidence_tier_from_confidence_at_or_above_threshold_is_confident() -> None:
+    assert ConfidenceTier.from_confidence(0.70, 0.70) is ConfidenceTier.CONFIDENT
+    assert ConfidenceTier.from_confidence(0.90, 0.70) is ConfidenceTier.CONFIDENT
 
 
-def test_decide_review_route_accept_when_certain_and_no_ood_stats() -> None:
-    assert decide_review_route(certain=True, in_distribution=None) == "accept"
+def test_confidence_tier_from_confidence_below_threshold_is_uncertain() -> None:
+    assert ConfidenceTier.from_confidence(0.50, 0.70) is ConfidenceTier.UNCERTAIN
 
 
-def test_decide_review_route_llm_judge_when_uncertain_and_in_distribution() -> None:
-    assert decide_review_route(certain=False, in_distribution=True) == "llm_judge"
+def test_ood_evidence_from_in_distribution_true_is_not_anomalous() -> None:
+    assert OodEvidence.from_in_distribution(in_distribution=True) is OodEvidence.NOT_ANOMALOUS
 
 
-def test_decide_review_route_llm_judge_when_uncertain_and_no_ood_stats() -> None:
-    assert decide_review_route(certain=False, in_distribution=None) == "llm_judge"
+def test_ood_evidence_from_in_distribution_none_is_not_anomalous() -> None:
+    assert OodEvidence.from_in_distribution(in_distribution=None) is OodEvidence.NOT_ANOMALOUS
 
 
-def test_decide_review_route_human_review_when_out_of_distribution_regardless_of_certainty() -> (
-    None
-):
-    assert decide_review_route(certain=True, in_distribution=False) == "human_review"
-    assert decide_review_route(certain=False, in_distribution=False) == "human_review"
+def test_ood_evidence_from_in_distribution_false_is_anomalous() -> None:
+    assert OodEvidence.from_in_distribution(in_distribution=False) is OodEvidence.ANOMALOUS
+
+
+def test_decide_review_route_accept_when_confident_and_not_anomalous() -> None:
+    route = decide_review_route(
+        confidence_tier=ConfidenceTier.CONFIDENT, ood_evidence=OodEvidence.NOT_ANOMALOUS
+    )
+    assert route == "accept"
+
+
+def test_decide_review_route_llm_judge_when_uncertain_and_not_anomalous() -> None:
+    route = decide_review_route(
+        confidence_tier=ConfidenceTier.UNCERTAIN, ood_evidence=OodEvidence.NOT_ANOMALOUS
+    )
+    assert route == "llm_judge"
+
+
+def test_decide_review_route_human_review_when_anomalous_regardless_of_confidence() -> None:
+    assert (
+        decide_review_route(
+            confidence_tier=ConfidenceTier.CONFIDENT, ood_evidence=OodEvidence.ANOMALOUS
+        )
+        == "human_review"
+    )
+    assert (
+        decide_review_route(
+            confidence_tier=ConfidenceTier.UNCERTAIN, ood_evidence=OodEvidence.ANOMALOUS
+        )
+        == "human_review"
+    )
 
 
 def test_predict_text_returns_expected_keys() -> None:

@@ -1,4 +1,5 @@
 import logging
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
@@ -13,19 +14,41 @@ from src.settings import Settings
 log = logging.getLogger(__name__)
 
 
-def decide_review_route(*, certain: bool, in_distribution: bool | None) -> str:
+class ConfidenceTier(Enum):
+    """Named alternative to a bare `certain: bool` at the decide_review_route boundary."""
+
+    CONFIDENT = "confident"
+    UNCERTAIN = "uncertain"
+
+    @classmethod
+    def from_confidence(cls, confidence: float, threshold: float) -> "ConfidenceTier":
+        return cls.CONFIDENT if confidence >= threshold else cls.UNCERTAIN
+
+
+class OodEvidence(Enum):
+    """Named tri-state for `in_distribution`, so "no ood_stats.npz loaded" reads as an
+    explicit state rather than a bare `None` a caller has to know to interpret."""
+
+    NOT_ANOMALOUS = "not_anomalous"  # in_distribution=True, or no ood_stats.npz loaded
+    ANOMALOUS = "anomalous"  # in_distribution=False
+
+    @classmethod
+    def from_in_distribution(cls, *, in_distribution: bool | None) -> "OodEvidence":
+        return cls.ANOMALOUS if in_distribution is False else cls.NOT_ANOMALOUS
+
+
+def decide_review_route(*, confidence_tier: ConfidenceTier, ood_evidence: OodEvidence) -> str:
     """Route a prediction to "accept", "llm_judge", or "human_review".
 
-    An OOD signal firing (in_distribution=False) always wins and routes to a human --
-    an LLM judge can't be trusted to catch what already fooled the classifier itself.
-    Otherwise the softmax confidence alone decides: confident predictions are accepted,
-    unsure ones get a cheap LLM-judge second opinion. `in_distribution=None` (no
-    ood_stats.npz loaded) is treated like True -- no OOD evidence against the prediction.
-    See "Review routing" in README.md for the full decision table and rationale.
+    An OOD signal firing (ANOMALOUS) always wins and routes to a human -- an LLM judge
+    can't be trusted to catch what already fooled the classifier itself. Otherwise the
+    softmax confidence tier alone decides: confident predictions are accepted, uncertain
+    ones get a cheap LLM-judge second opinion. See "Review routing" in README.md for the
+    full decision table and rationale.
     """
-    if in_distribution is False:
+    if ood_evidence is OodEvidence.ANOMALOUS:
         return "human_review"
-    return "accept" if certain else "llm_judge"
+    return "accept" if confidence_tier is ConfidenceTier.CONFIDENT else "llm_judge"
 
 
 class BertTunningClassifier:
@@ -72,6 +95,7 @@ class BertTunningClassifier:
         label = self.model.config.id2label[pred_idx]
 
         certain = confidence >= self.threshold
+        confidence_tier = ConfidenceTier.from_confidence(confidence, self.threshold)
         result = PredictResult(
             label=label,
             confidence=round(confidence, 4),
@@ -79,7 +103,9 @@ class BertTunningClassifier:
             all_scores={
                 self.model.config.id2label[i]: round(float(p), 4) for i, p in enumerate(probs)
             },
-            review_route=decide_review_route(certain=certain, in_distribution=None),
+            review_route=decide_review_route(
+                confidence_tier=confidence_tier, ood_evidence=OodEvidence.NOT_ANOMALOUS
+            ),
         )
 
         if self._ood_stats is None:
@@ -105,7 +131,8 @@ class BertTunningClassifier:
                 "knn_distance": round(knn_dist, 4),
                 "in_distribution": in_distribution,
                 "review_route": decide_review_route(
-                    certain=certain, in_distribution=in_distribution
+                    confidence_tier=confidence_tier,
+                    ood_evidence=OodEvidence.from_in_distribution(in_distribution=in_distribution),
                 ),
             }
         )
