@@ -16,3 +16,4 @@ class PredictResponse(BaseSchema):
     in_distribution: bool | None = None
     extracted_text: str = ""
     extractor_used: str = ""
+    review_route: str = ""

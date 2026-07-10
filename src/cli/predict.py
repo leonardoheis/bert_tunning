@@ -62,6 +62,7 @@ def predict_cmd(
         click.echo(f"  Cosine Z     : {result.cosine_z:.4f}")
         click.echo(f"  k-NN dist    : {result.knn_distance:.4f}")
         click.echo(f"  In-Dist.     : {result.in_distribution}")
+    click.echo(f"  Review route : {result.review_route}")
     click.echo(f"  Extractor : {result.extractor_used or 'n/a'}")
     click.echo(f"  Extracted text (first 200 chars): {result.extracted_text[:200]!r}")
     click.echo("\n  All scores:")

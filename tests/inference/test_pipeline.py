@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import torch
 
-from src.inference.classify import BertTunningClassifier
+from src.inference.classify import BertTunningClassifier, decide_review_route
 from src.inference.pipeline import predict_pdf
 from src.ood import save_stats
 from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
@@ -30,7 +30,9 @@ def _make_tight_cosine_stats() -> ClassEmbeddingStats:
     # A tighter cosine_calibration_std than _make_stats() — models in practice cluster
     # tightly around their centroid's direction, so a modest directional deviation is
     # already many standard deviations away. Used to isolate a cosine-only anomaly
-    # without also tripping the Mahalanobis signal.
+    # without also tripping the Mahalanobis signal. std is small enough that the fixed
+    # raw cosine distance produced by the test embedding still exceeds
+    # Settings.OOD_COSINE_THRESHOLD after calibration.
     return ClassEmbeddingStats(
         class_names=["decreto", "ordenanza"],
         pca_mean=np.zeros(8),
@@ -38,7 +40,7 @@ def _make_tight_cosine_stats() -> ClassEmbeddingStats:
         centroids=np.array([[5.0] * 8, [-5.0] * 8]),
         covariance_inv=np.eye(8),
         cosine_calibration_mean=0.0,
-        cosine_calibration_std=0.005,
+        cosine_calibration_std=0.001,
         knn_train_embeddings=np.array([[5.0] * 8] * 5 + [[-5.0] * 8] * 5),
         knn_train_labels=[0] * 5 + [1] * 5,
     )
@@ -115,6 +117,29 @@ def _make_mock_classifier() -> BertTunningClassifier:
         return clf
 
 
+def test_decide_review_route_accept_when_certain_and_in_distribution() -> None:
+    assert decide_review_route(certain=True, in_distribution=True) == "accept"
+
+
+def test_decide_review_route_accept_when_certain_and_no_ood_stats() -> None:
+    assert decide_review_route(certain=True, in_distribution=None) == "accept"
+
+
+def test_decide_review_route_llm_judge_when_uncertain_and_in_distribution() -> None:
+    assert decide_review_route(certain=False, in_distribution=True) == "llm_judge"
+
+
+def test_decide_review_route_llm_judge_when_uncertain_and_no_ood_stats() -> None:
+    assert decide_review_route(certain=False, in_distribution=None) == "llm_judge"
+
+
+def test_decide_review_route_human_review_when_out_of_distribution_regardless_of_certainty() -> (
+    None
+):
+    assert decide_review_route(certain=True, in_distribution=False) == "human_review"
+    assert decide_review_route(certain=False, in_distribution=False) == "human_review"
+
+
 def test_predict_text_returns_expected_keys() -> None:
     clf = _make_mock_classifier()
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
@@ -165,6 +190,39 @@ def test_predict_text_in_distribution_when_matching_a_centroid_exactly() -> None
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.in_distribution is True
+    assert result.review_route == "accept"
+
+
+def test_predict_text_review_route_llm_judge_when_uncertain_and_in_distribution() -> None:
+    clf = _make_mock_classifier()
+    clf._ood_stats = _make_stats()  # noqa: SLF001
+    # softmax([0.55, 0.45]) ≈ [0.525, 0.475], below the 0.70 threshold -- uncertain -- but
+    # the [CLS] embedding (zeros, from the mock hidden_states) still matches the "decreto"
+    # centroid exactly, so in_distribution stays True.
+    clf.model.return_value.logits = torch.tensor([[0.55, 0.45]])
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.certain is False
+    assert result.in_distribution is True
+    assert result.review_route == "llm_judge"
+
+
+def test_predict_text_review_route_accept_without_ood_stats() -> None:
+    clf = _make_mock_classifier()
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.in_distribution is None
+    assert result.review_route == "accept"
+
+
+def test_predict_text_review_route_llm_judge_without_ood_stats_when_uncertain() -> None:
+    clf = _make_mock_classifier()
+    clf.model.return_value.logits = torch.tensor([[0.55, 0.45]])
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.certain is False
+    assert result.in_distribution is None
+    assert result.review_route == "llm_judge"
 
 
 def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
@@ -183,6 +241,7 @@ def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
     assert result.mahalanobis_p_value < Settings.OOD_MAHALANOBIS_P_THRESHOLD
     assert result.cosine_z <= Settings.OOD_COSINE_THRESHOLD
     assert result.in_distribution is False
+    assert result.review_route == "human_review"
 
 
 def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
@@ -202,6 +261,7 @@ def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
     assert result.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
     assert result.cosine_z > Settings.OOD_COSINE_THRESHOLD
     assert result.in_distribution is False
+    assert result.review_route == "human_review"
 
 
 def test_predict_text_flags_out_of_distribution_via_knn_only() -> None:
@@ -219,6 +279,7 @@ def test_predict_text_flags_out_of_distribution_via_knn_only() -> None:
     assert result.knn_distance is not None
     assert result.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
     assert result.in_distribution is False
+    assert result.review_route == "human_review"
 
 
 def test_predict_text_flags_out_of_distribution_when_knn_distance_is_nan() -> None:
@@ -233,6 +294,7 @@ def test_predict_text_flags_out_of_distribution_when_knn_distance_is_nan() -> No
     assert result.knn_distance is not None
     assert np.isnan(result.knn_distance)
     assert result.in_distribution is False
+    assert result.review_route == "human_review"
 
 
 def test_predict_pdf_attaches_extraction_metadata() -> None:
@@ -266,6 +328,7 @@ def test_predict_pdf_returns_extraction_failed_result_when_text_missing() -> Non
     assert result.error == "empty/unreadable document"
     assert result.extracted_text == ""
     assert result.extractor_used == ""
+    assert result.review_route == "human_review"
 
 
 def test_load_ood_stats_returns_none_when_file_missing(tmp_path: Path) -> None:

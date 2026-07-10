@@ -39,6 +39,7 @@ class PredictResult(BaseModel):
     in_distribution: bool | None = None
     extracted_text: str = ""
     extractor_used: str = ""
+    review_route: str = ""
 
 
 class CalibrationReport(BaseModel):
