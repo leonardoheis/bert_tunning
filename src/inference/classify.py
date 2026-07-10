@@ -59,6 +59,20 @@ def is_out_of_distribution(scores: OodScores) -> bool:
         bool(np.isnan(scores.knn_distance))
         or scores.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
     )
+    log.debug(
+        "OOD signals: mahalanobis_p=%.6f (threshold=%.6f, anomalous=%s), "
+        "cosine_z=%.4f (threshold=%.4f, anomalous=%s), "
+        "knn_distance=%.4f (threshold=%.4f, anomalous=%s)",
+        scores.mahalanobis_p,
+        Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        maha_anomalous,
+        scores.cosine_z,
+        Settings.OOD_COSINE_THRESHOLD,
+        cosine_anomalous,
+        scores.knn_distance,
+        Settings.OOD_KNN_DISTANCE_THRESHOLD,
+        knn_anomalous,
+    )
     return maha_anomalous or cosine_anomalous or knn_anomalous
 
 
