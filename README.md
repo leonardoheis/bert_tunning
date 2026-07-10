@@ -37,6 +37,23 @@ All runs used effective batch size 64, bf16 precision, early stopping on macro-F
 | `bert_tunning_cache_300.parquet` | 1,874 | 300 | 8 |
 | `bert_tunning_cache_con_otro_300.parquet` | 1,920 | 300 | 9 |
 
+Per-class breakdown of `bert_tunning_cache_con_otro_300.parquet` (the cache BETO v2 — the default model — was trained on), alongside the full source corpus (`downloadsdocs/downloads`, `convenios` excluded per `EXCLUDE_LABELS`):
+
+| ID | Label | #Docs trained | #Docs in full corpus |
+|---:|---|---:|---:|
+| 1 | boletines | 300 | 4,974 |
+| 2 | decreto_ordenanza | 300 | 341 |
+| 3 | decreto | 300 | 5,387 |
+| 4 | decretos_concejo_municipal | 300 | 6,581 |
+| 5 | ordenanza | 300 | 5,257 |
+| 6 | resolucion | 170 | 170 |
+| 7 | resolucion_concejo_municipal | 167 | 167 |
+| 8 | otro | 46 | 46 |
+| 9 | declaracion_concejo_municipal | 37 | 37 |
+| | **Total (excl. convenios)** | **1,920** | **22,960** |
+
+The five largest classes are capped at `--max-docs-per-class 300`, so their trained counts are a small, uniform sample of a much larger available corpus (e.g. `decretos_concejo_municipal` alone has 6,581 source documents, 300 used). `resolucion`, `resolucion_concejo_municipal`, `otro`, and `declaracion_concejo_municipal` have fewer source documents available than the cap, so every available document for those classes was used — the source of the class imbalance discussed above (`otro`'s 46 documents, high content variability). `convenios` (8 source PDFs) is excluded entirely via `EXCLUDE_LABELS` and never trained on.
+
 ## How it works
 
 ```
