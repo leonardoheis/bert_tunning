@@ -11,7 +11,7 @@ def _stub_extractor(name: str, *, text: str = "", raises: bool = False) -> objec
     (a plain reusable stub class would need to mutate its own __class__.__name__, which
     corrupts every other instance/reference to that same class)."""
 
-    def extract(self: object, pdf_path: str) -> str:  # noqa: ARG001
+    def extract(_self: object, _pdf_path: str) -> str:
         if raises:
             msg = f"{name} failed"
             raise BertTunningError(msg)
