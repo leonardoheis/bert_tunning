@@ -39,6 +39,7 @@ def setup_logging(level: int = logging.INFO) -> Path:
         "httpcore",
         "huggingface_hub",
         "huggingface_hub.utils._http",
+        "pdfminer",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
