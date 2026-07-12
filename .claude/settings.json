@@ -5,7 +5,8 @@
       "Bash(uv:*)",
       "Bash(pre-commit:*)",
       "Bash(git:*)",
-      "mcp__codegraph__*"
+      "mcp__codegraph__*",
+      "mcp__codegraph__codegraph_explore"
     ]
   },
   "hooks": {
