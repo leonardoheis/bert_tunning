@@ -141,6 +141,36 @@ The three are deliberately **not combined into one score** — `in_distribution=
 
 **Is a signal actually calibrated?** Run `evaluate-ood-calibration` (see "Out-of-distribution detection" below) against the model's own held-out test split — known in-distribution by construction. It reports each signal's *empirical false-positive rate*: the fraction of genuinely in-distribution test documents the current threshold would incorrectly flag. A signal is calibrated when that rate is close to the target (`--target-fp-rate`, default 1%). If it's far off (Mahalanobis routinely runs 20–30% on this corpus, due to the shared-covariance assumption breaking down on heterogeneous classes like `otro`), don't blindly adopt the tool's `suggested_*_threshold` — check first whether the suggestion is itself degenerate (e.g. a suggested Mahalanobis p-value threshold of `0.0`, which would just disable the signal). Only update `settings.py` when the suggested value is a real, usable threshold.
 
+#### Why the thresholds are calibrated, not theory-derived
+
+None of the three thresholds in `settings.py` are picked from first principles. `mahalanobis_p_value_theoretical` is the one field with a genuine theoretical basis (a chi-squared p-value assuming multivariate-Gaussian, shared-covariance class embeddings) — and that assumption turned out to be badly wrong for this corpus, which is why it's demoted to an informational field instead of driving the decision. Cosine and k-NN never had a theoretical distribution to begin with — there's no natural "this z-score/distance is anomalous" cutoff independent of the actual training data. So every threshold below is instead **fit empirically**: run `evaluate-ood-calibration` against a model's own held-out test split (documents the model has never trained on, but are known in-distribution by construction), and pick the value that gives roughly `--target-fp-rate` (default 1%) false positives on that split. Skip calibration and you get one of two failure modes: a threshold too loose to ever fire (silently disables the signal — this happened to `OOD_MAHALANOBIS_P_THRESHOLD` during development, see below), or one so tight that in-distribution documents are routinely misflagged, drowning out genuine anomalies in noise.
+
+**Current calibrated values (BETO v2, the production default as of 2026-07):**
+
+| Setting | Value | Empirical FP rate at this value | Target FP rate |
+|---|---|---|---|
+| `OOD_MAHALANOBIS_P_THRESHOLD` | `0.001` | 5.90% | 1% (unreachable at this corpus size — see caveat below) |
+| `OOD_COSINE_THRESHOLD` | `13.7366` | 1.04% | 1% |
+| `OOD_KNN_DISTANCE_THRESHOLD` | `26.125` | 1.04% | 1% |
+
+These are specific to BETO v2's training corpus and embeddings — re-run `evaluate-ood-calibration` and update `settings.py` whenever the training corpus changes materially, or when calibrating a different model (XLM-RoBERTa, MiniLM). A threshold calibrated for one trained model has no meaning against another.
+
+**Mahalanobis' 1% target is currently unreachable, not just "off."** `mahalanobis_p_value` is rank-based: its smallest possible value is `1 / (N_train + 1)`, where `N_train` is the number of training documents in `ood_stats.npz` (1,344 for BETO v2). That floor is `≈0.0007435` — and 5.90% of BETO v2's held-out test documents tie *exactly* at that floor, meaning no threshold between the floor and the next achievable rank value can land below ~5.9% FP rate without the signal going completely inert (0% FP rate, i.e. it can never fire, no matter how anomalous a document is). `0.001` is the practical minimum this training-set size can resolve; hitting the nominal 1% target would require a substantially larger training corpus so the rank resolution (`1/(N_train+1)`) is fine enough to distinguish "1% anomalous" from "in-distribution" at all. `evaluate-ood-calibration`'s raw log output rounds the suggested threshold to 6 decimal places — that rounding can itself land *below* the true resolution floor (this happened once during development: `0.000743` looked reasonable but was actually below the floor, silently disabling the signal). Sanity-check any new suggested Mahalanobis threshold against `1 / (N_train + 1)` before adopting it.
+
+**Threshold tradeoff curves** (BETO v2, 288-document held-out test split) — useful for picking a stricter or looser threshold than the calibrated default, e.g. to trade detection sensitivity against false-alarm rate for a specific deployment:
+
+| `OOD_MAHALANOBIS_P_THRESHOLD` | Empirical FP rate |     | `OOD_COSINE_THRESHOLD` | Empirical FP rate |     | `OOD_KNN_DISTANCE_THRESHOLD` | Empirical FP rate |
+|---|---|---|---|---|---|---|---|
+| `0.01` | 9.38% |  | `2.5` | 13.19% |  | `5.0` | 21.88% |
+| `0.005` | 6.94% |  | `5.0` | 6.25% |  | `8.0` | 11.81% |
+| `0.003` | 6.60% |  | `8.0` | 4.17% |  | `10.0` | 8.68% |
+| `0.0015` | 6.25% |  | `10.0` | 3.12% |  | `12.0` | 6.60% |
+| `0.001` (current) | 5.90% |  | `13.7366` (current) | 1.04% |  | `15.0` | 5.21% |
+| `0.0007435` (resolution floor — inert) | 0.00% |  | `16.0` | 0.69% |  | `20.0` | 2.78% |
+| | |  | | |  | `26.125` (current) | 1.04% |
+
+Lower Mahalanobis/higher cosine/higher k-NN thresholds are stricter (fewer false positives, but also fewer true anomalies caught for cosine/k-NN — the direction is reversed for Mahalanobis since a *lower* threshold is stricter there). Regenerate this table with the debug snippet in `evaluate-ood-calibration`'s history, or by re-running calibration and sweeping candidate thresholds against `report`'s underlying `p_values`/`z_scores`/`knn_distances` arrays directly.
+
 ### Review routing
 
 `PredictResult.review_route` turns the confidence (`certain`) and OOD (`in_distribution`) signals into one of three actionable lanes, so a human doesn't have to eyeball every field on every prediction to decide what to do with it:
@@ -361,7 +391,7 @@ include four extra fields:
 `mahalanobisPValue`/`cosineZ`/`knnDistance` are reported separately rather
 than combined into one score — note `mahalanobisPValue` points in the
 **opposite direction** from the other two: a LOW `mahalanobisPValue` (below
-`OOD_MAHALANOBIS_P_THRESHOLD`, default `0.01`) is anomalous, while a HIGH
+`OOD_MAHALANOBIS_P_THRESHOLD`, default `0.001` — see "OOD scoring internals" above for why this is calibrated per-model, not a fixed constant) is anomalous, while a HIGH
 `cosineZ` (above `OOD_COSINE_THRESHOLD`) or a HIGH `knnDistance` (above
 `OOD_KNN_DISTANCE_THRESHOLD`) is anomalous. Any one of the three alone is
 enough to set `inDistribution: false`. This means `inDistribution: false`
