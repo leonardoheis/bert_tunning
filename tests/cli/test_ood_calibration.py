@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from src.cli.ood_calibration import build_calibration_report, evaluate_ood_calibration_cmd
-from src.ood import LoadedModel
+from src.ood import LoadedModel, load_stats, save_stats
 from src.ood import knn_mean_distance as real_knn_mean_distance
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
@@ -169,8 +169,8 @@ def _run_successful_calibration(
     ).to_parquet(cache_path)
 
     model_path = tmp_path / "fake-model"
-    model_path.mkdir()
-    (model_path / "ood_stats.npz").touch()
+    model_path.mkdir(exist_ok=True)
+    save_stats(_make_stats(), model_path / "ood_stats.npz")
 
     mock_model = MagicMock()
     mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
@@ -202,6 +202,106 @@ def _run_successful_calibration(
             ],
         )
     return result, mock_log
+
+
+def _run_calibration_with_stats_write_thresholds(
+    tmp_path: Path, stats: ClassEmbeddingStats
+) -> tuple[Result, MagicMock]:
+    cache_path = tmp_path / "cache.parquet"
+    pd.DataFrame(
+        {
+            "text": [f"decreto {i}" for i in range(20)] + [f"ordenanza {i}" for i in range(20)],
+            "label": ["decreto"] * 20 + ["ordenanza"] * 20,
+        }
+    ).to_parquet(cache_path)
+
+    model_path = tmp_path / "fake-model"
+    model_path.mkdir()
+    save_stats(stats, model_path / "ood_stats.npz")
+
+    mock_model = MagicMock()
+    mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
+
+    with (
+        patch("src.cli._ood_common.AutoTokenizer.from_pretrained"),
+        patch(
+            "src.cli._ood_common.AutoModelForSequenceClassification.from_pretrained",
+            return_value=mock_model,
+        ),
+        patch("src.cli.ood_calibration.load_stats", return_value=stats),
+        patch(
+            "src.cli._ood_common.extract_embeddings_and_predictions",
+            side_effect=_fake_extract_embeddings_and_predictions,
+        ),
+        patch("torch.cuda.is_available", return_value=False),
+        patch("src.cli.ood_calibration.log_ood_calibration_results"),
+    ):
+        result = CliRunner().invoke(
+            evaluate_ood_calibration_cmd,
+            [
+                "--model-path",
+                str(model_path),
+                "--model",
+                "beto",
+                "--cache-path",
+                str(cache_path),
+                "--write-thresholds",
+            ],
+        )
+    return result, MagicMock()
+
+
+def test_evaluate_ood_calibration_cmd_write_thresholds_persists_to_stats_file(
+    tmp_path: Path,
+) -> None:
+    stats_path = tmp_path / "fake-model" / "ood_stats.npz"
+    result, _ = _run_successful_calibration(tmp_path, extra_args=["--write-thresholds"])
+    assert result.exit_code == 0
+    written = load_stats(stats_path)
+    assert written.cosine_threshold is not None
+    assert written.knn_distance_threshold is not None
+
+
+def test_evaluate_ood_calibration_cmd_without_flag_does_not_write(tmp_path: Path) -> None:
+    # save_stats() needs the parent dir to already exist -- _run_successful_calibration's
+    # own mkdir is exist_ok=True precisely so it can share this pre-created model_path.
+    model_path = tmp_path / "fake-model"
+    model_path.mkdir()
+    stats_path = model_path / "ood_stats.npz"
+    save_stats(_make_stats(), stats_path)
+    before = stats_path.read_bytes()
+    result, _ = _run_successful_calibration(tmp_path, extra_args=[])
+    assert result.exit_code == 0
+    assert stats_path.read_bytes() == before
+
+
+def test_evaluate_ood_calibration_cmd_write_thresholds_refuses_degenerate_maha_threshold(
+    tmp_path: Path,
+) -> None:
+    # Only 4 reference points -- 1/(4+1) = 0.2, comfortably above any target-FP-rate
+    # percentile this test's p_values could produce, so the suggested Mahalanobis threshold
+    # is guaranteed to be at/below the floor. cosine/knn thresholds should still get written.
+    # Centroids are shifted off the origin (unlike _make_stats()'s [0]*8/[5]*8) because the
+    # fake extractor always returns the zero vector: with a centroid sitting exactly at
+    # zero, the query would coincide with it (distance 0, the least-anomalous case possible)
+    # and could never rank as extreme. Reference points are placed exactly on their own
+    # class's centroid (distance 0) so every query -- always farther away -- ranks more
+    # extreme than all of them, landing precisely on the floor.
+    tiny_stats = _make_stats().model_copy(
+        update={
+            "centroids": np.array([[3.0] * 8, [8.0] * 8]),
+            "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
+            "knn_train_labels": [0, 0, 1, 1],
+        }
+    )
+    result, _ = _run_calibration_with_stats_write_thresholds(tmp_path, tiny_stats)
+    assert result.exit_code == 0
+    assert "Refusing to write" in result.output
+    stats_path = tmp_path / "fake-model" / "ood_stats.npz"
+    written = load_stats(stats_path)
+    assert written.mahalanobis_p_threshold is None  # unchanged -- tiny_stats had no prior value
+    assert written.cosine_threshold is not None
+    assert written.knn_distance_threshold is not None
 
 
 def test_evaluate_ood_calibration_cmd_logs_to_wandb_when_flag_set(tmp_path: Path) -> None:
