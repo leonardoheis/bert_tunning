@@ -18,6 +18,7 @@ from src.ood import (
     knn_mean_distance,
     load_stats,
     mahalanobis_chi2_p_value,
+    mahalanobis_chi2_p_value_from_distance,
     mahalanobis_empirical_p_value,
     mahalanobis_min_distance,
     save_stats,
@@ -87,6 +88,19 @@ def test_mahalanobis_chi2_p_value_is_bounded_between_zero_and_one() -> None:
     for point in (known_point, far_point):
         p_value = mahalanobis_chi2_p_value(point, stats)
         assert 0.0 <= p_value <= 1.0
+
+
+def test_mahalanobis_chi2_p_value_from_distance_matches_embedding_based_call() -> None:
+    # Feeding the from_distance variant a pre-computed distance must give the identical
+    # result as the original embedding-based function -- the refactor that split the
+    # distance computation out must not change the result.
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    far_point = np.full(16, 100.0)
+    squared_distance = mahalanobis_min_distance(far_point, stats)
+    assert mahalanobis_chi2_p_value_from_distance(squared_distance, stats) == pytest.approx(
+        mahalanobis_chi2_p_value(far_point, stats)
+    )
 
 
 def test_empirical_survival_p_value_matches_hand_computed_rank() -> None:

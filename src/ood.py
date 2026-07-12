@@ -101,6 +101,17 @@ def cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddin
     return _cosine_min_distance_raw(point, stats.centroids)
 
 
+def mahalanobis_chi2_p_value_from_distance(
+    squared_distance: float, stats: ClassEmbeddingStats
+) -> float:
+    """Same as mahalanobis_chi2_p_value, but takes an already-computed squared distance --
+    for callers (e.g. BertTunningClassifier.predict_text) that also need
+    mahalanobis_empirical_p_value's distance and would otherwise recompute
+    mahalanobis_min_distance (a PCA projection + centroid search) twice per call."""
+    degrees_of_freedom = stats.centroids.shape[1]
+    return float(chi2.sf(squared_distance, df=degrees_of_freedom))
+
+
 def mahalanobis_chi2_p_value(
     embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
 ) -> float:
@@ -114,8 +125,7 @@ def mahalanobis_chi2_p_value(
     and is the one that actually drives the anomaly decision. A LOW value here still
     means "far from centroid," it just isn't a trustworthy probability."""
     squared_distance = mahalanobis_min_distance(embedding, stats)
-    degrees_of_freedom = stats.centroids.shape[1]
-    return float(chi2.sf(squared_distance, df=degrees_of_freedom))
+    return mahalanobis_chi2_p_value_from_distance(squared_distance, stats)
 
 
 def empirical_survival_p_value(distance: float, reference: npt.NDArray[np.float64]) -> float:

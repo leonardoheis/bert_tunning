@@ -226,6 +226,31 @@ def test_predict_text_without_stats_leaves_ood_fields_none() -> None:
     assert result.in_distribution is None
 
 
+def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
+    # ood_stats.npz with populated centroids but empty knn_train_embeddings/labels (e.g. a
+    # hand-edited or partially-corrupted stats file) -- OOD scoring must be skipped entirely,
+    # the same as when _ood_stats is None, not raise ValueError from downstream ranking code.
+    clf = _make_mock_classifier()
+    clf._ood_stats = ClassEmbeddingStats(  # noqa: SLF001
+        class_names=["decreto", "ordenanza"],
+        pca_mean=np.zeros(8),
+        pca_components=np.eye(8),
+        centroids=np.array([[0.0] * 8, [5.0] * 8]),
+        covariance_inv=np.eye(8),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.zeros((0, 8)),
+        knn_train_labels=[],
+    )
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.mahalanobis_p_value is None
+    assert result.mahalanobis_p_value_theoretical is None
+    assert result.cosine_z is None
+    assert result.knn_distance is None
+    assert result.in_distribution is None
+
+
 def test_predict_text_with_stats_populates_ood_fields() -> None:
     clf = _make_mock_classifier()
     clf._ood_stats = _make_stats()  # noqa: SLF001

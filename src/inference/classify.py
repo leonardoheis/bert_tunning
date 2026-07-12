@@ -13,10 +13,11 @@ from src.ingestion.extract import clean_text
 from src.ood import (
     compute_train_mahalanobis_distances,
     cosine_z_score,
+    empirical_survival_p_value,
     knn_mean_distance,
     load_stats,
-    mahalanobis_chi2_p_value,
-    mahalanobis_empirical_p_value,
+    mahalanobis_chi2_p_value_from_distance,
+    mahalanobis_min_distance,
 )
 from src.schema import ClassEmbeddingStats, PredictResult
 from src.settings import Settings
@@ -179,16 +180,24 @@ class BertTunningClassifier:
 
         train_distances = self._train_mahalanobis_distances
         assert train_distances is not None
+        if len(train_distances) == 0:
+            log.warning(
+                "ood_stats.npz has no k-NN training data (empty knn_train_embeddings) — "
+                "OOD scoring disabled for this prediction"
+            )
+            return result
+
+        squared_distance = mahalanobis_min_distance(cls_embedding, self._ood_stats)
         scores = OodScores(
-            mahalanobis_p=mahalanobis_empirical_p_value(
-                cls_embedding, self._ood_stats, train_distances
-            ),
+            mahalanobis_p=empirical_survival_p_value(squared_distance, train_distances),
             cosine_z=cosine_z_score(cls_embedding, self._ood_stats),
             knn_distance=knn_mean_distance(
                 cls_embedding, self._ood_stats, pred_idx, k=Settings.OOD_KNN_NEIGHBORS
             ),
         )
-        maha_p_theoretical = mahalanobis_chi2_p_value(cls_embedding, self._ood_stats)
+        maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(
+            squared_distance, self._ood_stats
+        )
         in_distribution = not is_out_of_distribution(scores)
         return result.model_copy(
             update={
