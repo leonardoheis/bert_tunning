@@ -8,7 +8,7 @@ import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerBase
 
 from src.ingestion.extract import clean_text
-from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_p_value
+from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_chi2_p_value
 from src.schema import ClassEmbeddingStats, PredictResult
 from src.settings import Settings
 
@@ -157,7 +157,7 @@ class BertTunningClassifier:
             return result
 
         scores = OodScores(
-            mahalanobis_p=mahalanobis_p_value(cls_embedding, self._ood_stats),
+            mahalanobis_p=mahalanobis_chi2_p_value(cls_embedding, self._ood_stats),
             cosine_z=cosine_z_score(cls_embedding, self._ood_stats),
             knn_distance=knn_mean_distance(
                 cls_embedding, self._ood_stats, pred_idx, k=Settings.OOD_KNN_NEIGHBORS

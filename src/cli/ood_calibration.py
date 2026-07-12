@@ -9,7 +9,7 @@ from pydantic.alias_generators import to_camel
 
 from src.cli._ood_common import embed_texts, reconstruct_split_and_load_model
 from src.logger import setup_logging
-from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_p_value
+from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_chi2_p_value
 from src.schema import CalibrationReport
 from src.settings import Settings
 from src.training.models import get_model_config
@@ -86,7 +86,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         max_tokens=model_cfg.max_tokens,
     )
 
-    p_values = np.array([mahalanobis_p_value(e, stats) for e in embeddings])
+    p_values = np.array([mahalanobis_chi2_p_value(e, stats) for e in embeddings])
     z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
     label_ids = split.test_df["label_id"].to_numpy()
     knn_distances = np.array(
