@@ -10,11 +10,13 @@ from pydantic.alias_generators import to_camel
 from src.cli._ood_common import embed_texts_and_predict, reconstruct_split_and_load_model
 from src.logger import setup_logging
 from src.ood import (
+    OodThresholds,
     compute_train_mahalanobis_distances,
     cosine_z_score,
     knn_mean_distance,
     load_stats,
     mahalanobis_empirical_p_value,
+    resolve_ood_thresholds,
     save_stats,
 )
 from src.schema import CalibrationReport, ClassEmbeddingStats
@@ -30,6 +32,7 @@ def build_calibration_report(
     z_scores: npt.NDArray[np.float64],
     knn_distances: npt.NDArray[np.float64],
     target_fp_rate: float,
+    thresholds: OodThresholds,
 ) -> CalibrationReport:
     """Pure calibration math, isolated from model/IO for direct unit testing.
 
@@ -37,11 +40,17 @@ def build_calibration_report(
     rate is the `target_fp_rate`-th percentile of in-distribution p-values. Cosine and
     k-NN mean distance: HIGH value = anomalous, so their thresholds are the
     `(1 - target_fp_rate)`-th percentile.
+
+    `thresholds` must come from resolve_ood_thresholds(stats) at the call site, not
+    Settings.OOD_* directly -- otherwise re-running this command on a model that already
+    has --write-thresholds-persisted per-model thresholds reports the empirical
+    false-positive rate of thresholds production isn't even using, silently defeating the
+    per-model calibration this module exists to support.
     """
     return CalibrationReport(
-        fp_rate_maha=float(np.mean(p_values < Settings.OOD_MAHALANOBIS_P_THRESHOLD)),
-        fp_rate_cosine=float(np.mean(z_scores > Settings.OOD_COSINE_THRESHOLD)),
-        fp_rate_knn=float(np.mean(knn_distances > Settings.OOD_KNN_DISTANCE_THRESHOLD)),
+        fp_rate_maha=float(np.mean(p_values < thresholds.mahalanobis_p)),
+        fp_rate_cosine=float(np.mean(z_scores > thresholds.cosine_z)),
+        fp_rate_knn=float(np.mean(knn_distances > thresholds.knn_distance)),
         suggested_maha_threshold=float(np.percentile(p_values, target_fp_rate * 100)),
         suggested_cosine_threshold=float(np.percentile(z_scores, (1 - target_fp_rate) * 100)),
         suggested_knn_threshold=float(np.percentile(knn_distances, (1 - target_fp_rate) * 100)),
@@ -172,8 +181,14 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     if not knn_valid.any():
         msg = "No test documents have same-class training points — cannot calibrate k-NN"
         raise click.ClickException(msg)
+    # The model's actually-deployed thresholds -- per-model calibrated values from `stats`
+    # if evaluate-ood-calibration --write-thresholds already ran for this model, falling
+    # back to Settings.OOD_* otherwise. Reading Settings.OOD_* unconditionally here would
+    # report the empirical false-positive rate of thresholds production isn't even using
+    # once a model has its own per-model thresholds persisted.
+    current_thresholds = resolve_ood_thresholds(stats)
     report = build_calibration_report(
-        p_values, z_scores, knn_distances[knn_valid], opts.target_fp_rate
+        p_values, z_scores, knn_distances[knn_valid], opts.target_fp_rate, current_thresholds
     )
     if opts.write_thresholds:
         _write_calibrated_thresholds(stats, stats_path, report, len(train_distances))
@@ -183,7 +198,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     log.info("=" * 60)
     log.info(
         "Mahalanobis — current threshold=%.4f, empirical false-positive rate=%.2f%%",
-        Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        current_thresholds.mahalanobis_p,
         report.fp_rate_maha * 100,
     )
     log.info(
@@ -193,7 +208,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     )
     log.info(
         "Cosine — current threshold=%.4f, empirical false-positive rate=%.2f%%",
-        Settings.OOD_COSINE_THRESHOLD,
+        current_thresholds.cosine_z,
         report.fp_rate_cosine * 100,
     )
     log.info(
@@ -203,7 +218,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     )
     log.info(
         "k-NN — current threshold=%.4f, empirical false-positive rate=%.2f%%",
-        Settings.OOD_KNN_DISTANCE_THRESHOLD,
+        current_thresholds.knn_distance,
         report.fp_rate_knn * 100,
     )
     log.info(

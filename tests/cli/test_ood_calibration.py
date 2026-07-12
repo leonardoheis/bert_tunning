@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from src.cli.ood_calibration import build_calibration_report, evaluate_ood_calibration_cmd
-from src.ood import LoadedModel, load_stats, save_stats
+from src.ood import LoadedModel, OodThresholds, load_stats, save_stats
 from src.ood import knn_mean_distance as real_knn_mean_distance
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
@@ -44,8 +44,11 @@ def test_build_calibration_report_percentile_direction() -> None:
     # is the value above which 25% of in-distribution z-scores fall — the 75th percentile.
     z_scores = np.array([1.0, 2.0, 3.0, 4.0])
     knn_distances = np.array([1.0, 2.0, 3.0, 4.0])
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
 
-    report = build_calibration_report(p_values, z_scores, knn_distances, target_fp_rate=0.25)
+    report = build_calibration_report(
+        p_values, z_scores, knn_distances, target_fp_rate=0.25, thresholds=thresholds
+    )
 
     assert report.suggested_maha_threshold == pytest.approx(np.percentile(p_values, 25))
     assert report.suggested_cosine_threshold == pytest.approx(np.percentile(z_scores, 75))
@@ -61,8 +64,11 @@ def test_build_calibration_report_knn_percentile_direction() -> None:
     p_values = np.array([0.1, 0.2, 0.3, 0.4])
     z_scores = np.array([1.0, 2.0, 3.0, 4.0])
     knn_distances = np.array([1.0, 2.0, 3.0, 4.0])
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
 
-    report = build_calibration_report(p_values, z_scores, knn_distances, target_fp_rate=0.25)
+    report = build_calibration_report(
+        p_values, z_scores, knn_distances, target_fp_rate=0.25, thresholds=thresholds
+    )
 
     assert report.suggested_knn_threshold == pytest.approx(np.percentile(knn_distances, 75))
     assert report.suggested_knn_threshold > np.median(knn_distances)
@@ -83,7 +89,14 @@ def test_build_calibration_report_fp_rates() -> None:
     knn_above = Settings.OOD_KNN_DISTANCE_THRESHOLD + 1.0
     knn_distances = np.array([knn_below, knn_above, knn_above, knn_below])
 
-    report = build_calibration_report(p_values, z_scores, knn_distances, target_fp_rate=0.01)
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    report = build_calibration_report(
+        p_values, z_scores, knn_distances, target_fp_rate=0.01, thresholds=thresholds
+    )
 
     assert report.fp_rate_maha == pytest.approx(0.5)
     assert report.fp_rate_cosine == pytest.approx(0.5)
