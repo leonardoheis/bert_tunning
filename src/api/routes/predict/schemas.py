@@ -11,6 +11,7 @@ class PredictResponse(BaseSchema):
     all_scores: dict[str, float] = Field(default_factory=dict)
     error: str | None = None
     mahalanobis_p_value: float | None = None
+    mahalanobis_p_value_theoretical: float | None = None
     cosine_z: float | None = None
     knn_distance: float | None = None
     in_distribution: bool | None = None

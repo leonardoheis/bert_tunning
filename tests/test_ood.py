@@ -10,15 +10,20 @@ import torch
 from src.ood import (
     LoadedModel,
     compute_class_stats,
+    compute_train_mahalanobis_distances,
     cosine_min_distance,
     cosine_z_score,
+    empirical_survival_p_value,
     extract_embeddings,
     knn_mean_distance,
     load_stats,
+    mahalanobis_chi2_p_value,
+    mahalanobis_chi2_p_value_from_distance,
+    mahalanobis_empirical_p_value,
     mahalanobis_min_distance,
-    mahalanobis_p_value,
     save_stats,
 )
+from src.schema import ClassEmbeddingStats
 
 
 def _synthetic_embeddings() -> tuple[npt.NDArray[np.float64], list[int], list[str]]:
@@ -63,24 +68,107 @@ def test_in_distribution_point_has_lower_cosine_distance_than_far_point() -> Non
     assert far_distance > known_distance
 
 
-def test_mahalanobis_p_value_is_lower_for_far_point() -> None:
+def test_mahalanobis_chi2_p_value_is_lower_for_far_point() -> None:
     # A low p-value means "unlikely to be in-distribution" — the far point should
     # score LOWER (more anomalous), not higher, unlike a distance/z-score metric.
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
-    assert mahalanobis_p_value(far_point, stats) < mahalanobis_p_value(known_point, stats)
+    maha_p_far = mahalanobis_chi2_p_value(far_point, stats)
+    maha_p_known = mahalanobis_chi2_p_value(known_point, stats)
+    assert maha_p_far < maha_p_known
 
 
-def test_mahalanobis_p_value_is_bounded_between_zero_and_one() -> None:
+def test_mahalanobis_chi2_p_value_is_bounded_between_zero_and_one() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
     for point in (known_point, far_point):
-        p_value = mahalanobis_p_value(point, stats)
+        p_value = mahalanobis_chi2_p_value(point, stats)
         assert 0.0 <= p_value <= 1.0
+
+
+def test_mahalanobis_chi2_p_value_from_distance_matches_embedding_based_call() -> None:
+    # Feeding the from_distance variant a pre-computed distance must give the identical
+    # result as the original embedding-based function -- the refactor that split the
+    # distance computation out must not change the result.
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    far_point = np.full(16, 100.0)
+    squared_distance = mahalanobis_min_distance(far_point, stats)
+    assert mahalanobis_chi2_p_value_from_distance(squared_distance, stats) == pytest.approx(
+        mahalanobis_chi2_p_value(far_point, stats)
+    )
+
+
+def test_empirical_survival_p_value_matches_hand_computed_rank() -> None:
+    reference = np.array([1.0, 3.0, 5.0, 9.0])
+    # 2 of 4 reference values are >= 5.0, so p = (2 + 1) / (4 + 1) = 0.6.
+    assert empirical_survival_p_value(5.0, reference) == pytest.approx(0.6)
+
+
+def test_empirical_survival_p_value_raises_on_empty_reference() -> None:
+    # Silently returning 1.0 ("maximally normal") for no reference data would be a
+    # fail-open bug — exactly backwards for an anomaly-detection signal.
+    with pytest.raises(ValueError, match="empty"):
+        empirical_survival_p_value(5.0, np.array([]))
+
+
+def test_compute_train_mahalanobis_distances_returns_one_value_per_training_doc() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    distances = compute_train_mahalanobis_distances(stats)
+    assert distances.shape == (len(embeddings),)
+    assert np.all(distances >= 0.0)
+
+
+def test_compute_train_mahalanobis_distances_uses_true_label_not_nearest_centroid() -> None:
+    # A training point labeled class_a but physically much closer to class_b's centroid --
+    # its distance must be measured against its TRUE centroid (class_a, far -> large
+    # distance), not whichever centroid is nearest (class_b, close -> small distance).
+    # This mirrors compute_class_stats()'s own covariance estimation
+    # (centered = reduced - centroids[labels_arr]), which uses true labels too.
+    stats = ClassEmbeddingStats(
+        class_names=["class_a", "class_b"],
+        pca_mean=np.zeros(2),
+        pca_components=np.eye(2),
+        centroids=np.array([[0.0, 0.0], [10.0, 0.0]]),
+        covariance_inv=np.eye(2),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        # labeled class_a (centroid [0,0]) but sits right next to class_b's centroid [10,0].
+        knn_train_embeddings=np.array([[9.0, 0.0]]),
+        knn_train_labels=[0],
+    )
+    distances = compute_train_mahalanobis_distances(stats)
+    # True-label (class_a) squared distance: 9^2 = 81. Nearest-centroid (class_b) would
+    # have been 1^2 = 1 -- if this assertion sees 1.0 instead of 81.0, the implementation
+    # is using nearest-centroid instead of true-label distance.
+    assert distances[0] == pytest.approx(81.0)
+
+
+def test_mahalanobis_empirical_p_value_is_lower_for_far_point() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    train_distances = compute_train_mahalanobis_distances(stats)
+    known_point = embeddings[0]
+    far_point = np.full(16, 100.0)
+    p_far = mahalanobis_empirical_p_value(far_point, stats, train_distances)
+    p_known = mahalanobis_empirical_p_value(known_point, stats, train_distances)
+    assert p_far < p_known
+
+
+def test_mahalanobis_empirical_p_value_is_bounded_between_zero_and_one() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    train_distances = compute_train_mahalanobis_distances(stats)
+    known_point = embeddings[0]
+    far_point = np.full(16, 100.0)
+    for point in (known_point, far_point):
+        p_value = mahalanobis_empirical_p_value(point, stats, train_distances)
+        assert 0.0 < p_value <= 1.0
 
 
 def test_cosine_z_score_is_higher_for_far_point() -> None:

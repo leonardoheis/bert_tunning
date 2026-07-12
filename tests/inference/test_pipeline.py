@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 import torch
 
 from src.inference.classify import (
@@ -19,6 +20,11 @@ from src.settings import Settings
 
 
 def _make_stats() -> ClassEmbeddingStats:
+    # 700 points/class, not 5 -- the empirical Mahalanobis p-value's minimum possible
+    # value is 1/(N+1). OOD_MAHALANOBIS_P_THRESHOLD was recalibrated to 0.001
+    # (2026-07-12, BETO v2), so N must exceed ~999 for a query point to ever be able
+    # to drop below it regardless of how far away it actually is.
+    n_per_class = 700
     return ClassEmbeddingStats(
         class_names=["decreto", "ordenanza"],
         pca_mean=np.zeros(8),
@@ -27,9 +33,10 @@ def _make_stats() -> ClassEmbeddingStats:
         covariance_inv=np.eye(8),
         cosine_calibration_mean=0.0,
         cosine_calibration_std=1.0,
-        # A handful of training points tightly clustered around each centroid, for k-NN.
-        knn_train_embeddings=np.array([[0.0] * 8] * 5 + [[5.0] * 8] * 5),
-        knn_train_labels=[0] * 5 + [1] * 5,
+        # All points sit exactly on their own class's centroid (distance 0) -- degenerate
+        # but sufficient here, since these tests only need "near" vs. "far" distinguishable.
+        knn_train_embeddings=np.array([[0.0] * 8] * n_per_class + [[5.0] * 8] * n_per_class),
+        knn_train_labels=[0] * n_per_class + [1] * n_per_class,
     )
 
 
@@ -219,14 +226,51 @@ def test_predict_text_without_stats_leaves_ood_fields_none() -> None:
     assert result.in_distribution is None
 
 
+def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
+    # ood_stats.npz with populated centroids but empty knn_train_embeddings/labels (e.g. a
+    # hand-edited or partially-corrupted stats file) -- OOD scoring must be skipped entirely,
+    # the same as when _ood_stats is None, not raise ValueError from downstream ranking code.
+    clf = _make_mock_classifier()
+    clf._ood_stats = ClassEmbeddingStats(  # noqa: SLF001
+        class_names=["decreto", "ordenanza"],
+        pca_mean=np.zeros(8),
+        pca_components=np.eye(8),
+        centroids=np.array([[0.0] * 8, [5.0] * 8]),
+        covariance_inv=np.eye(8),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.zeros((0, 8)),
+        knn_train_labels=[],
+    )
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.mahalanobis_p_value is None
+    assert result.mahalanobis_p_value_theoretical is None
+    assert result.cosine_z is None
+    assert result.knn_distance is None
+    assert result.in_distribution is None
+
+
 def test_predict_text_with_stats_populates_ood_fields() -> None:
     clf = _make_mock_classifier()
     clf._ood_stats = _make_stats()  # noqa: SLF001
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert isinstance(result.mahalanobis_p_value, float)
+    assert isinstance(result.mahalanobis_p_value_theoretical, float)
     assert isinstance(result.cosine_z, float)
     assert isinstance(result.in_distribution, bool)
+
+
+def test_predict_text_mahalanobis_p_value_is_empirical() -> None:
+    clf = _make_mock_classifier()
+    clf._ood_stats = _make_stats()  # noqa: SLF001
+    # [CLS] embedding is all zeros (mock hidden_states), exactly centroid A -- distance 0,
+    # so the empirical p-value must be exactly 1.0 (all 1400 reference points have
+    # distance >= 0).
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.mahalanobis_p_value == pytest.approx(1.0)
 
 
 def test_predict_text_in_distribution_when_matching_a_centroid_exactly() -> None:
@@ -275,10 +319,11 @@ def test_predict_text_review_route_llm_judge_without_ood_stats_when_uncertain() 
 def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
     clf = _make_mock_classifier()
     clf._ood_stats = _make_stats()  # noqa: SLF001
-    # A point far from both centroids in Euclidean/Mahalanobis terms (squared distance to
-    # the nearest centroid [5]*8 is 8*95**2, vastly over the chi-squared critical value for
-    # df=8), but pointing in the exact same direction as that centroid — cosine distance to
-    # it is ~0 — so only the Mahalanobis signal should fire.
+    # A point far from both centroids: with all 1400 reference (training) distances equal
+    # to 0, the empirical p-value for any nonzero-distance query collapses to
+    # 1 / (1400 + 1) ≈ 0.000714, safely below OOD_MAHALANOBIS_P_THRESHOLD (0.001) -- but
+    # pointing in the exact same direction as centroid B, so cosine distance is ~0 and
+    # only the Mahalanobis signal should fire.
     far_embedding = torch.full((1, 512, 8), 100.0)
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         clf.model.return_value.hidden_states = [far_embedding]

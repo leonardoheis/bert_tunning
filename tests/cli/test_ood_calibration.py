@@ -282,11 +282,12 @@ def test_evaluate_ood_calibration_cmd_skips_docs_with_nan_knn_distance(tmp_path:
     assert "Skipping" in result.output or "skipping" in result.output.lower()
 
 
-def test_evaluate_ood_calibration_cmd_fails_when_every_doc_has_nan_knn_distance(
+def test_evaluate_ood_calibration_cmd_fails_when_no_training_data(
     tmp_path: Path,
 ) -> None:
-    # Both classes missing k-NN training data — every test doc is NaN, nothing left to
-    # calibrate against.
+    # Both classes missing k-NN training data means compute_train_mahalanobis_distances()
+    # (which pools every class's points into one combined reference set) is empty too --
+    # the command must fail on that guard before ever reaching k-NN calibration.
     stats = ClassEmbeddingStats(
         class_names=["decreto", "ordenanza"],
         pca_mean=np.zeros(8),
@@ -302,4 +303,43 @@ def test_evaluate_ood_calibration_cmd_fails_when_every_doc_has_nan_knn_distance(
     result, _ = _run_calibration_with_stats(tmp_path, stats)
 
     assert result.exit_code != 0
-    assert "cannot calibrate" in str(result.output).lower()
+    assert "no training data" in str(result.output).lower()
+    assert "cannot calibrate mahalanobis" in str(result.output).lower()
+
+
+def _make_stats_third_class_has_knn_points() -> ClassEmbeddingStats:
+    """decreto (0) and ordenanza (1) -- the only classes that appear in the test corpus --
+    both have zero stored k-NN training points, so every test doc gets a NaN knn_distance.
+    A third class ('otro', label 2, never present in the cache) has points, purely so
+    compute_train_mahalanobis_distances() -- which pools every class's points into one
+    combined reference set -- is non-empty. This isolates the k-NN NaN-exhaustion path
+    from the separate no-training-data guard tested above."""
+    return ClassEmbeddingStats(
+        class_names=["decreto", "ordenanza", "otro"],
+        pca_mean=np.zeros(8),
+        pca_components=np.eye(8),
+        centroids=np.array([[0.0] * 8, [5.0] * 8, [10.0] * 8]),
+        covariance_inv=np.eye(8),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.array([[10.0] * 8] * 5),
+        knn_train_labels=[2] * 5,
+    )
+
+
+def test_evaluate_ood_calibration_cmd_fails_when_every_doc_has_nan_knn_distance(
+    tmp_path: Path,
+) -> None:
+    result, _ = _run_calibration_with_stats(tmp_path, _make_stats_third_class_has_knn_points())
+
+    assert result.exit_code != 0
+    assert "cannot calibrate k-nn" in str(result.output).lower()
+
+
+def test_evaluate_ood_calibration_cmd_uses_empirical_not_chi2_p_value(tmp_path: Path) -> None:
+    with patch(
+        "src.cli.ood_calibration.mahalanobis_empirical_p_value", return_value=0.5
+    ) as mock_empirical:
+        result, _ = _run_successful_calibration(tmp_path, extra_args=[])
+    assert result.exit_code == 0
+    mock_empirical.assert_called()

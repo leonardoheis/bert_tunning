@@ -101,15 +101,85 @@ def cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddin
     return _cosine_min_distance_raw(point, stats.centroids)
 
 
-def mahalanobis_p_value(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
-    """Probability a genuinely in-distribution point would be at least this far from its
-    nearest class centroid, under the standard assumption (the same one Mahalanobis distance
-    itself relies on) that class-conditional embeddings are multivariate Gaussian: the squared
-    Mahalanobis distance of such a point follows a chi-squared distribution with `df` equal to
-    the embedding dimensionality. A LOW p-value means the document is anomalous."""
-    squared_distance = mahalanobis_min_distance(embedding, stats)
+def mahalanobis_chi2_p_value_from_distance(
+    squared_distance: float, stats: ClassEmbeddingStats
+) -> float:
+    """Same as mahalanobis_chi2_p_value, but takes an already-computed squared distance --
+    for callers (e.g. BertTunningClassifier.predict_text) that also need
+    mahalanobis_empirical_p_value's distance and would otherwise recompute
+    mahalanobis_min_distance (a PCA projection + centroid search) twice per call."""
     degrees_of_freedom = stats.centroids.shape[1]
     return float(chi2.sf(squared_distance, df=degrees_of_freedom))
+
+
+def mahalanobis_chi2_p_value(
+    embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
+) -> float:
+    """Theoretical p-value under the assumption that class-conditional embeddings are
+    multivariate Gaussian with one shared covariance matrix: the squared Mahalanobis
+    distance of such a point follows a chi-squared distribution with `df` equal to the
+    embedding dimensionality. Kept as a transparent, purely informational value --
+    NOT used to decide in_distribution. A QQ-plot check (see the playground notebook)
+    showed this assumption is badly violated for this corpus (observed distances run
+    ~5x larger than chi2 predicts), which is why mahalanobis_empirical_p_value exists
+    and is the one that actually drives the anomaly decision. A LOW value here still
+    means "far from centroid," it just isn't a trustworthy probability."""
+    squared_distance = mahalanobis_min_distance(embedding, stats)
+    return mahalanobis_chi2_p_value_from_distance(squared_distance, stats)
+
+
+def empirical_survival_p_value(distance: float, reference: npt.NDArray[np.float64]) -> float:
+    """The standard permutation-test empirical p-value: the fraction of `reference` values
+    at least as extreme as `distance`, with the usual +1/+1 correction so the result is
+    never exactly 0. Raises if `reference` is empty -- silently returning 1.0 ("maximally
+    normal") for no reference data would be a fail-open bug, backwards for an
+    anomaly-detection signal."""
+    if len(reference) == 0:
+        msg = "empirical_survival_p_value: reference array is empty, cannot rank against it"
+        raise ValueError(msg)
+    exceed_count = int(np.sum(reference >= distance))
+    return (exceed_count + 1) / (len(reference) + 1)
+
+
+def compute_train_mahalanobis_distances(stats: ClassEmbeddingStats) -> npt.NDArray[np.float64]:
+    """Squared Mahalanobis distance from every training document (stats.knn_train_embeddings,
+    already PCA-reduced) to its OWN TRUE class centroid (via stats.knn_train_labels) -- not
+    the nearest centroid. This intentionally mirrors compute_class_stats()'s own covariance
+    estimation (`centered = reduced - centroids[labels_arr]`), built from each point's
+    deviation from its labeled class, not whichever centroid happens to be closest. Using
+    nearest-centroid distance here would let ambiguous/boundary training points look
+    artificially unremarkable (nearest distance <= true-label distance, always), corrupting
+    the reference distribution's tail -- exactly where "how extreme is extreme" matters most.
+    mahalanobis_empirical_p_value() below still scores a QUERY point's distance via
+    mahalanobis_min_distance() (nearest centroid) -- inference has no true label to measure
+    against, and nearest-centroid is that function's existing, unchanged, preserved
+    behavior (NOT a distance to some "predicted-class centroid" -- no such per-class
+    distance is computed at inference time). This asymmetry (reference: true-label
+    distance; query: nearest-centroid distance) is intentional -- see "Global Constraints"
+    in this plan."""
+    labels_arr = np.asarray(stats.knn_train_labels)
+    distances = np.empty(len(stats.knn_train_embeddings), dtype=np.float64)
+    for i, point in enumerate(stats.knn_train_embeddings):
+        centroid = stats.centroids[labels_arr[i]]
+        diff = centroid - point
+        distances[i] = float(diff @ stats.covariance_inv @ diff)
+    return distances
+
+
+def mahalanobis_empirical_p_value(
+    embedding: npt.NDArray[np.float64],
+    stats: ClassEmbeddingStats,
+    train_distances: npt.NDArray[np.float64],
+) -> float:
+    """Empirical (rank-based) p-value for a query embedding: ranks its Mahalanobis distance
+    to the nearest class centroid (mahalanobis_min_distance) against train_distances (each
+    training document's distance to its own TRUE class centroid -- see
+    compute_train_mahalanobis_distances). Makes no distributional assumption, unlike
+    mahalanobis_chi2_p_value -- this is the value that drives is_out_of_distribution(). A LOW
+    p-value means the document is anomalous, same comparison direction as the chi2 version
+    it replaces."""
+    distance = mahalanobis_min_distance(embedding, stats)
+    return empirical_survival_p_value(distance, train_distances)
 
 
 def cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:

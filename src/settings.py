@@ -61,7 +61,22 @@ class _Settings(BaseSettings):
     PREDICT_THRESHOLD: float = 0.70
     PREDICT_CONFIDENCE: float = 0.0
     OOD_PCA_COMPONENTS: int = 64
-    OOD_MAHALANOBIS_P_THRESHOLD: float = 0.01
+    # Calibrated 2026-07-12 against BETO v2 (bert_tunning_model_beto_v2) via
+    # evaluate-ood-calibration, after switching to the empirical (rank-based)
+    # p-value: the prior placeholder (0.01) gave a 9.38% empirical false-positive
+    # rate. The naive 1%-target suggestion (0.000743) turned out to be exactly the
+    # empirical p-value's own resolution floor for this model — 1/(N_train+1) with
+    # N_train=1344 — so that threshold is mathematically unreachable and the signal
+    # would never fire (0.00% empirical FP rate, i.e. permanently inert). Achievable
+    # p-values are quantized in steps of 1/(N_train+1) ≈ 0.0007435; 17/288 (5.90%) of
+    # the held-out test set ties exactly at the floor, so any threshold above the
+    # floor and at/below the next step (2/(N_train+1) ≈ 0.001487) captures that same
+    # 5.90% — the practical minimum FP rate this training-set size can resolve, well
+    # above the original 1% target. 0.001 sits in that window. Re-run
+    # evaluate-ood-calibration (and re-derive this quantization math) if the training
+    # corpus changes materially — a larger corpus lowers the floor and may support a
+    # tighter target again.
+    OOD_MAHALANOBIS_P_THRESHOLD: float = 0.001
     OOD_COSINE_THRESHOLD: float = 13.7366
     OOD_KNN_NEIGHBORS: int = 10
     # Calibrated 2026-07-08 against BETO v2 (bert_tunning_model_beto_v2) via

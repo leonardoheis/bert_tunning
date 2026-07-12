@@ -130,3 +130,31 @@ def test_predict_endpoint_routes_unreadable_document_to_human_review() -> None:
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()["reviewRoute"] == "human_review"
+
+
+def test_predict_endpoint_returns_theoretical_mahalanobis_p_value() -> None:
+    expected_theoretical_p = 0.1708
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.return_value = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        mahalanobis_p_value_theoretical=expected_theoretical_p,
+    )
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["mahalanobisPValueTheoretical"] == expected_theoretical_p

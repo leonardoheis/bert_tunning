@@ -1,14 +1,24 @@
 import logging
 from enum import Enum
+from functools import cached_property
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerBase
 
 from src.ingestion.extract import clean_text
-from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_p_value
+from src.ood import (
+    compute_train_mahalanobis_distances,
+    cosine_z_score,
+    empirical_survival_p_value,
+    knn_mean_distance,
+    load_stats,
+    mahalanobis_chi2_p_value_from_distance,
+    mahalanobis_min_distance,
+)
 from src.schema import ClassEmbeddingStats, PredictResult
 from src.settings import Settings
 
@@ -40,7 +50,10 @@ class OodEvidence(Enum):
 
 class OodScores(NamedTuple):
     """The three OOD signals -- always computed together, passed together, never used
-    independently. Matches LoadedModel/_PcaReduction's convention in src/ood.py."""
+    independently. Matches LoadedModel/_PcaReduction's convention in src/ood.py.
+    mahalanobis_p is the empirical (rank-based) p-value, not the chi2 one -- see
+    BertTunningClassifier.predict_text for where the chi2 value is separately attached
+    to PredictResult.mahalanobis_p_value_theoretical, informational only."""
 
     mahalanobis_p: float
     cosine_z: float
@@ -122,6 +135,15 @@ class BertTunningClassifier:
         log.info("Loaded OOD stats from %s", stats_path)
         return load_stats(stats_path)
 
+    @cached_property
+    def _train_mahalanobis_distances(self) -> npt.NDArray[np.float64] | None:
+        """Computed lazily on first access (not in __init__), cached for the process
+        lifetime -- avoids recomputing 1300+ training-point distances on every single
+        predict_text() call. None when there's no ood_stats.npz to compute it from."""
+        if self._ood_stats is None:
+            return None
+        return compute_train_mahalanobis_distances(self._ood_stats)
+
     def predict_text(self, text: str) -> PredictResult:
         inputs = self.tokenizer(
             clean_text(text),
@@ -156,17 +178,31 @@ class BertTunningClassifier:
         if self._ood_stats is None:
             return result
 
+        train_distances = self._train_mahalanobis_distances
+        assert train_distances is not None
+        if len(train_distances) == 0:
+            log.warning(
+                "ood_stats.npz has no k-NN training data (empty knn_train_embeddings) — "
+                "OOD scoring disabled for this prediction"
+            )
+            return result
+
+        squared_distance = mahalanobis_min_distance(cls_embedding, self._ood_stats)
         scores = OodScores(
-            mahalanobis_p=mahalanobis_p_value(cls_embedding, self._ood_stats),
+            mahalanobis_p=empirical_survival_p_value(squared_distance, train_distances),
             cosine_z=cosine_z_score(cls_embedding, self._ood_stats),
             knn_distance=knn_mean_distance(
                 cls_embedding, self._ood_stats, pred_idx, k=Settings.OOD_KNN_NEIGHBORS
             ),
         )
+        maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(
+            squared_distance, self._ood_stats
+        )
         in_distribution = not is_out_of_distribution(scores)
         return result.model_copy(
             update={
                 "mahalanobis_p_value": round(scores.mahalanobis_p, 6),
+                "mahalanobis_p_value_theoretical": round(maha_p_theoretical, 6),
                 "cosine_z": round(scores.cosine_z, 4),
                 "knn_distance": round(scores.knn_distance, 4),
                 "in_distribution": in_distribution,

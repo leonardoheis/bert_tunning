@@ -59,6 +59,9 @@ def predict_cmd(
     click.echo(f"  Certain   : {result.certain}")
     if result.mahalanobis_p_value is not None:
         click.echo(f"  Mahalanobis p: {result.mahalanobis_p_value:.6f}")
+        theoretical = result.mahalanobis_p_value_theoretical
+        theoretical_str = f"{theoretical:.6f}" if theoretical is not None else "n/a"
+        click.echo(f"  Mahalanobis p (chi2, theoretical): {theoretical_str}")
         click.echo(f"  Cosine Z     : {result.cosine_z:.4f}")
         click.echo(f"  k-NN dist    : {result.knn_distance:.4f}")
         click.echo(f"  In-Dist.     : {result.in_distribution}")
