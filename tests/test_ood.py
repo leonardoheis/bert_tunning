@@ -251,3 +251,64 @@ def test_extract_embeddings_returns_correct_shape() -> None:
     loaded = LoadedModel(model=model, tokenizer=tokenizer, device="cpu")
     embeddings = extract_embeddings(loaded, ["doc one", "doc two"], max_length=8, batch_size=2)
     assert embeddings.shape == (2, 16)
+
+
+def test_save_and_load_stats_roundtrip_includes_thresholds() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+        update={
+            "mahalanobis_p_threshold": 0.001,
+            "cosine_threshold": 13.7366,
+            "knn_distance_threshold": 26.125,
+        }
+    )
+    path = Path("test_stats_thresholds.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_p_threshold == pytest.approx(0.001)
+        assert loaded.cosine_threshold == pytest.approx(13.7366)
+        assert loaded.knn_distance_threshold == pytest.approx(26.125)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_thresholds_default_to_none() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_no_thresholds.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_p_threshold is None
+        assert loaded.cosine_threshold is None
+        assert loaded.knn_distance_threshold is None
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_stats_handles_legacy_file_without_threshold_fields() -> None:
+    # A pre-this-change ood_stats.npz has no threshold keys at all (not even as NaN) --
+    # load_stats must not KeyError, and must resolve all three to None.
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_legacy.npz")
+    try:
+        np.savez(
+            str(path),
+            class_names=np.array(stats.class_names),
+            pca_mean=stats.pca_mean,
+            pca_components=stats.pca_components,
+            centroids=stats.centroids,
+            covariance_inv=stats.covariance_inv,
+            cosine_calibration_mean=stats.cosine_calibration_mean,
+            cosine_calibration_std=stats.cosine_calibration_std,
+            knn_train_embeddings=stats.knn_train_embeddings,
+            knn_train_labels=np.array(stats.knn_train_labels),
+        )
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_p_threshold is None
+        assert loaded.cosine_threshold is None
+        assert loaded.knn_distance_threshold is None
+    finally:
+        path.unlink(missing_ok=True)

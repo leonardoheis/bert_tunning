@@ -221,6 +221,14 @@ def knn_mean_distance(
 
 
 def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
+    # npz has no native "missing key" for a single scalar the way a dict does, and no None --
+    # NaN is the serialization sentinel for "not yet calibrated," round-tripped back to None
+    # by load_stats's _optional_threshold.
+    maha_threshold = (
+        np.nan if stats.mahalanobis_p_threshold is None else stats.mahalanobis_p_threshold
+    )
+    cosine_thresh = np.nan if stats.cosine_threshold is None else stats.cosine_threshold
+    knn_thresh = np.nan if stats.knn_distance_threshold is None else stats.knn_distance_threshold
     np.savez(
         str(path),
         class_names=np.array(stats.class_names),
@@ -232,7 +240,15 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
         cosine_calibration_std=stats.cosine_calibration_std,
         knn_train_embeddings=stats.knn_train_embeddings,
         knn_train_labels=np.array(stats.knn_train_labels),
+        mahalanobis_p_threshold=maha_threshold,
+        cosine_threshold=cosine_thresh,
+        knn_distance_threshold=knn_thresh,
     )
+
+
+def _optional_threshold(data: npt.NDArray[np.float64]) -> float | None:
+    value = float(data)
+    return None if np.isnan(value) else value
 
 
 def load_stats(path: Path) -> ClassEmbeddingStats:
@@ -247,6 +263,18 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         cosine_calibration_std=float(data["cosine_calibration_std"]),
         knn_train_embeddings=data["knn_train_embeddings"],
         knn_train_labels=data["knn_train_labels"].tolist(),
+        # "in data.files" -- not data.get() (npz's NpzFile has no .get) -- lets a
+        # pre-this-change ood_stats.npz (missing these keys entirely, not just NaN) still
+        # load instead of KeyError-ing every predict/serve call until it's regenerated.
+        mahalanobis_p_threshold=_optional_threshold(data["mahalanobis_p_threshold"])
+        if "mahalanobis_p_threshold" in data.files
+        else None,
+        cosine_threshold=_optional_threshold(data["cosine_threshold"])
+        if "cosine_threshold" in data.files
+        else None,
+        knn_distance_threshold=_optional_threshold(data["knn_distance_threshold"])
+        if "knn_distance_threshold" in data.files
+        else None,
     )
 
 

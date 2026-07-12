@@ -105,6 +105,14 @@ class ClassEmbeddingStats(BaseModel):
     cosine_calibration_std: float
     knn_train_embeddings: Float64Array  # (n_train_docs, n_components), PCA-reduced
     knn_train_labels: list[int]  # length n_train_docs, parallel to knn_train_embeddings
+    # Per-model calibrated thresholds -- written by `evaluate-ood-calibration --write-thresholds`
+    # (src/cli/ood_calibration.py), read via resolve_ood_thresholds() (src/ood.py). None means
+    # "not yet calibrated for this specific model" -- resolve_ood_thresholds() falls back to
+    # Settings.OOD_* in that case. Fixes thresholds calibrated for one model (e.g. BETO v2)
+    # being silently applied to a different model's differently-scaled embedding space.
+    mahalanobis_p_threshold: float | None = None
+    cosine_threshold: float | None = None
+    knn_distance_threshold: float | None = None
 
 
 class Hyperparams(BaseModel):
