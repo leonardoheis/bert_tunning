@@ -10,6 +10,7 @@ from src.inference.classify import (
     ConfidenceTier,
     OodEvidence,
     OodScores,
+    OodThresholds,
     decide_review_route,
     is_out_of_distribution,
 )
@@ -117,31 +118,56 @@ def _make_mock_classifier() -> BertTunningClassifier:
 
 def test_is_out_of_distribution_false_when_all_signals_pass() -> None:
     scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0)
-    assert is_out_of_distribution(scores) is False
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is False
 
 
 def test_is_out_of_distribution_true_when_mahalanobis_fires() -> None:
     scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
-    assert is_out_of_distribution(scores) is True
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
 
 
 def test_is_out_of_distribution_true_when_cosine_fires() -> None:
     scores = OodScores(
         mahalanobis_p=0.5, cosine_z=Settings.OOD_COSINE_THRESHOLD + 1, knn_distance=1.0
     )
-    assert is_out_of_distribution(scores) is True
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
 
 
 def test_is_out_of_distribution_true_when_knn_fires() -> None:
     scores = OodScores(
         mahalanobis_p=0.5, cosine_z=0.0, knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD + 1
     )
-    assert is_out_of_distribution(scores) is True
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
 
 
 def test_is_out_of_distribution_true_when_knn_distance_is_nan() -> None:
     scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=float("nan"))
-    assert is_out_of_distribution(scores) is True
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
 
 
 def test_confidence_tier_from_confidence_at_or_above_threshold_is_confident() -> None:

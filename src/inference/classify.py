@@ -11,6 +11,10 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreT
 
 from src.ingestion.extract import clean_text
 from src.ood import (
+    OodThresholds as OodThresholds,  # noqa: PLC0414 -- explicit re-export: mypy strict's
+)
+from src.ood import (
+    # no_implicit_reexport otherwise blocks tests from importing OodThresholds via this module
     compute_train_mahalanobis_distances,
     cosine_z_score,
     empirical_survival_p_value,
@@ -18,6 +22,7 @@ from src.ood import (
     load_stats,
     mahalanobis_chi2_p_value_from_distance,
     mahalanobis_min_distance,
+    resolve_ood_thresholds,
 )
 from src.schema import ClassEmbeddingStats, PredictResult
 from src.settings import Settings
@@ -60,30 +65,33 @@ class OodScores(NamedTuple):
     knn_distance: float
 
 
-def is_out_of_distribution(scores: OodScores) -> bool:
+def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool:
     """Any one of the three OOD signals firing is enough -- a deliberate OR, not a
     weighted blend (see README's "OOD scoring internals" for why). NaN in knn_distance
     means the predicted class had zero training points to compare against; treated as
     anomalous, fail-safe, since `nan > threshold` would otherwise silently pass.
+    `thresholds` comes from resolve_ood_thresholds(stats) -- per-model calibrated values
+    when available, Settings.OOD_* fallback otherwise. Never reads Settings directly here,
+    or a model's decisions silently use whichever thresholds happen to be configured for a
+    completely different model.
     """
-    maha_anomalous = scores.mahalanobis_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
-    cosine_anomalous = scores.cosine_z > Settings.OOD_COSINE_THRESHOLD
+    maha_anomalous = scores.mahalanobis_p < thresholds.mahalanobis_p
+    cosine_anomalous = scores.cosine_z > thresholds.cosine_z
     knn_anomalous = (
-        bool(np.isnan(scores.knn_distance))
-        or scores.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
+        bool(np.isnan(scores.knn_distance)) or scores.knn_distance > thresholds.knn_distance
     )
     log.debug(
         "OOD signals: mahalanobis_p=%.6f (threshold=%.6f, anomalous=%s), "
         "cosine_z=%.4f (threshold=%.4f, anomalous=%s), "
         "knn_distance=%.4f (threshold=%.4f, anomalous=%s)",
         scores.mahalanobis_p,
-        Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        thresholds.mahalanobis_p,
         maha_anomalous,
         scores.cosine_z,
-        Settings.OOD_COSINE_THRESHOLD,
+        thresholds.cosine_z,
         cosine_anomalous,
         scores.knn_distance,
-        Settings.OOD_KNN_DISTANCE_THRESHOLD,
+        thresholds.knn_distance,
         knn_anomalous,
     )
     return maha_anomalous or cosine_anomalous or knn_anomalous
@@ -198,7 +206,8 @@ class BertTunningClassifier:
         maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(
             squared_distance, self._ood_stats
         )
-        in_distribution = not is_out_of_distribution(scores)
+        thresholds = resolve_ood_thresholds(self._ood_stats)
+        in_distribution = not is_out_of_distribution(scores, thresholds)
         return result.model_copy(
             update={
                 "mahalanobis_p_value": round(scores.mahalanobis_p, 6),

@@ -11,6 +11,7 @@ from sklearn.metrics.pairwise import cosine_distances
 from transformers import PreTrainedTokenizerBase
 
 from src.schema import ClassEmbeddingStats
+from src.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -218,6 +219,36 @@ def knn_mean_distance(
     distances = np.linalg.norm(class_points - point, axis=1)
     nearest = np.partition(distances, k_eff - 1)[:k_eff]
     return float(nearest.mean())
+
+
+class OodThresholds(NamedTuple):
+    """Resolved OOD decision thresholds for one specific model -- either the values
+    evaluate-ood-calibration wrote into that model's own ood_stats.npz (via
+    --write-thresholds), or Settings.OOD_* as a fallback for stats files that predate
+    per-model calibration. is_out_of_distribution() must never read Settings.OOD_* directly
+    again -- always go through resolve_ood_thresholds(), or a freshly trained model silently
+    inherits whichever model's thresholds happen to be in Settings."""
+
+    mahalanobis_p: float
+    cosine_z: float
+    knn_distance: float
+
+
+def resolve_ood_thresholds(stats: ClassEmbeddingStats) -> OodThresholds:
+    """Falls back to Settings.OOD_* per-field, only for whichever threshold
+    evaluate-ood-calibration hasn't written yet (None) -- a stats file with all three set
+    never touches Settings at all."""
+    return OodThresholds(
+        mahalanobis_p=stats.mahalanobis_p_threshold
+        if stats.mahalanobis_p_threshold is not None
+        else Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=stats.cosine_threshold
+        if stats.cosine_threshold is not None
+        else Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=stats.knn_distance_threshold
+        if stats.knn_distance_threshold is not None
+        else Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
 
 
 def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:

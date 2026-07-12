@@ -21,9 +21,11 @@ from src.ood import (
     mahalanobis_chi2_p_value_from_distance,
     mahalanobis_empirical_p_value,
     mahalanobis_min_distance,
+    resolve_ood_thresholds,
     save_stats,
 )
 from src.schema import ClassEmbeddingStats
+from src.settings import Settings
 
 
 def _synthetic_embeddings() -> tuple[npt.NDArray[np.float64], list[int], list[str]]:
@@ -312,3 +314,27 @@ def test_load_stats_handles_legacy_file_without_threshold_fields() -> None:
         assert loaded.knn_distance_threshold is None
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_resolve_ood_thresholds_falls_back_to_settings_when_stats_thresholds_none() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    thresholds = resolve_ood_thresholds(stats)
+    assert thresholds.mahalanobis_p == Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    assert thresholds.cosine_z == Settings.OOD_COSINE_THRESHOLD
+    assert thresholds.knn_distance == Settings.OOD_KNN_DISTANCE_THRESHOLD
+
+
+def test_resolve_ood_thresholds_uses_stats_values_when_present() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+        update={
+            "mahalanobis_p_threshold": 0.002,
+            "cosine_threshold": 5.0,
+            "knn_distance_threshold": 10.0,
+        }
+    )
+    thresholds = resolve_ood_thresholds(stats)
+    assert thresholds.mahalanobis_p == pytest.approx(0.002)
+    assert thresholds.cosine_z == pytest.approx(5.0)
+    assert thresholds.knn_distance == pytest.approx(10.0)
