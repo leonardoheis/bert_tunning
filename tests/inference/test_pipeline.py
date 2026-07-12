@@ -21,8 +21,8 @@ from src.settings import Settings
 
 def _make_stats() -> ClassEmbeddingStats:
     # 700 points/class, not 5 -- the empirical Mahalanobis p-value's minimum possible
-    # value is 1/(N+1). OOD_MAHALANOBIS_P_THRESHOLD was recalibrated to 0.000743
-    # (2026-07-12, BETO v2), so N must exceed ~1345 for a query point to ever be able
+    # value is 1/(N+1). OOD_MAHALANOBIS_P_THRESHOLD was recalibrated to 0.001
+    # (2026-07-12, BETO v2), so N must exceed ~999 for a query point to ever be able
     # to drop below it regardless of how far away it actually is.
     n_per_class = 700
     return ClassEmbeddingStats(
@@ -296,7 +296,7 @@ def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
     clf._ood_stats = _make_stats()  # noqa: SLF001
     # A point far from both centroids: with all 1400 reference (training) distances equal
     # to 0, the empirical p-value for any nonzero-distance query collapses to
-    # 1 / (1400 + 1) ≈ 0.000714, safely below OOD_MAHALANOBIS_P_THRESHOLD (0.000743) -- but
+    # 1 / (1400 + 1) ≈ 0.000714, safely below OOD_MAHALANOBIS_P_THRESHOLD (0.001) -- but
     # pointing in the exact same direction as centroid B, so cosine distance is ~0 and
     # only the Mahalanobis signal should fire.
     far_embedding = torch.full((1, 512, 8), 100.0)
