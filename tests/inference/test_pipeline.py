@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import torch
 
+from src.exceptions import BertTunningError
 from src.inference.classify import (
     BertTunningClassifier,
     ConfidenceTier,
@@ -458,3 +459,49 @@ def test_load_ood_stats_returns_stats_when_file_present(tmp_path: Path) -> None:
     loaded = BertTunningClassifier._load_ood_stats(str(tmp_path))  # noqa: SLF001
     assert loaded is not None
     assert loaded.class_names == ["decreto", "ordenanza"]
+
+
+def test_classifier_raises_when_ood_stats_class_names_mismatch_model_id2label(
+    tmp_path: Path,
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    stats = _make_stats()  # class_names=["decreto", "ordenanza"] -- swap the order below
+    mismatched_stats = stats.model_copy(update={"class_names": ["ordenanza", "decreto"]})
+    save_stats(mismatched_stats, tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        pytest.raises(BertTunningError, match="do not match"),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+
+def test_classifier_loads_fine_when_ood_stats_class_names_match(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    save_stats(_make_stats(), tmp_path / "ood_stats.npz")  # class_names already match order
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._ood_stats is not None  # noqa: SLF001
+
+
+def test_classifier_skips_validation_when_no_ood_stats(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._ood_stats is None  # noqa: SLF001

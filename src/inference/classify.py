@@ -9,6 +9,7 @@ import numpy.typing as npt
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerBase
 
+from src.exceptions import BertTunningError
 from src.ingestion.extract import clean_text
 from src.ood import (
     OodThresholds as OodThresholds,  # noqa: PLC0414 -- explicit re-export: mypy strict's
@@ -132,6 +133,7 @@ class BertTunningClassifier:
             self.model.config.max_position_embeddings,  # type: ignore[union-attr]
         )
         self._ood_stats = self._load_ood_stats(model_path)
+        self._validate_ood_stats_class_mapping()
         log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
 
     @staticmethod
@@ -142,6 +144,27 @@ class BertTunningClassifier:
             return None
         log.info("Loaded OOD stats from %s", stats_path)
         return load_stats(stats_path)
+
+    def _validate_ood_stats_class_mapping(self) -> None:
+        """ood_stats.npz's class_names must match this model's id2label -- by count AND by
+        ordered index, since knn_mean_distance() indexes stats.knn_train_labels directly by
+        the model's own predicted label id (see predict_text). A silently mismatched or
+        stale ood_stats.npz would score every prediction's k-NN signal against the wrong
+        class's neighbors with no error. Fails fast here, once, at classifier construction
+        (server startup or CLI invocation) -- not per-request, so a bad artifact can't reach
+        production traffic at all rather than corrupting scores silently."""
+        if self._ood_stats is None:
+            return
+        id2label: dict[int, str] = self.model.config.id2label
+        expected = [id2label[i] for i in range(len(id2label))]
+        if self._ood_stats.class_names != expected:
+            msg = (
+                f"ood_stats.npz class_names {self._ood_stats.class_names} do not match "
+                f"this model's id2label {expected} (order matters, not just the set) -- "
+                "OOD scoring would silently score against the wrong classes. Regenerate "
+                "ood_stats.npz for this exact model with compute-ood-stats."
+            )
+            raise BertTunningError(msg)
 
     @cached_property
     def _train_mahalanobis_distances(self) -> npt.NDArray[np.float64] | None:
