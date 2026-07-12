@@ -29,6 +29,7 @@ def _to_predict_response(result: PredictResult) -> PredictResponse:
         all_scores=data["all_scores"],
         error=data["error"] or None,
         mahalanobis_p_value=data["mahalanobis_p_value"],
+        mahalanobis_p_value_theoretical=data["mahalanobis_p_value_theoretical"],
         cosine_z=data["cosine_z"],
         knn_distance=data["knn_distance"],
         in_distribution=data["in_distribution"],

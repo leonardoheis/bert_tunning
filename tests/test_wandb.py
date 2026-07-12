@@ -80,6 +80,30 @@ def test_log_predict_folder_results_table_includes_review_route_column() -> None
     assert _logged_row(mock_table_cls, mock_table)["review_route"] == "accept"
 
 
+def test_log_predict_folder_results_table_includes_theoretical_mahalanobis_column() -> None:
+    expected_theoretical_p = 0.1708
+    results = [
+        PredictResult(
+            filename="a.pdf",
+            label="decreto",
+            confidence=0.9,
+            certain=True,
+            mahalanobis_p_value_theoretical=expected_theoretical_p,
+        ),
+    ]
+    mock_table = MagicMock()
+    with (
+        patch("src.wandb.wandb.init"),
+        patch("src.wandb.wandb.Table", return_value=mock_table) as mock_table_cls,
+        patch("src.wandb.wandb.log"),
+        patch("src.wandb.wandb.finish"),
+    ):
+        log_predict_folder_results(results, model_path="fake/model", folder_path="fake/folder")
+
+    row = _logged_row(mock_table_cls, mock_table)
+    assert row["mahalanobis_p_value_theoretical"] == expected_theoretical_p
+
+
 def test_log_ood_calibration_results_logs_summary_metrics() -> None:
     report = CalibrationReport(
         fp_rate_maha=0.2951,

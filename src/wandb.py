@@ -12,6 +12,7 @@ _PREDICTION_COLUMNS = [
     "confidence",
     "certain",
     "mahalanobis_p_value",
+    "mahalanobis_p_value_theoretical",
     "cosine_z",
     "knn_distance",
     "in_distribution",
