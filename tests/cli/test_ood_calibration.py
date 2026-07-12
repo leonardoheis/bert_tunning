@@ -303,3 +303,12 @@ def test_evaluate_ood_calibration_cmd_fails_when_every_doc_has_nan_knn_distance(
 
     assert result.exit_code != 0
     assert "cannot calibrate" in str(result.output).lower()
+
+
+def test_evaluate_ood_calibration_cmd_uses_empirical_not_chi2_p_value(tmp_path: Path) -> None:
+    with patch(
+        "src.cli.ood_calibration.mahalanobis_empirical_p_value", return_value=0.5
+    ) as mock_empirical:
+        result, _ = _run_successful_calibration(tmp_path, extra_args=[])
+    assert result.exit_code == 0
+    mock_empirical.assert_called()

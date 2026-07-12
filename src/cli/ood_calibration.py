@@ -9,7 +9,13 @@ from pydantic.alias_generators import to_camel
 
 from src.cli._ood_common import embed_texts, reconstruct_split_and_load_model
 from src.logger import setup_logging
-from src.ood import cosine_z_score, knn_mean_distance, load_stats, mahalanobis_chi2_p_value
+from src.ood import (
+    compute_train_mahalanobis_distances,
+    cosine_z_score,
+    knn_mean_distance,
+    load_stats,
+    mahalanobis_empirical_p_value,
+)
 from src.schema import CalibrationReport
 from src.settings import Settings
 from src.training.models import get_model_config
@@ -77,6 +83,11 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     split = reconstruct_split_and_load_model(
         model_path=opts.model_path, cache_path=opts.cache_path, seed=opts.seed
     )
+
+    train_distances = compute_train_mahalanobis_distances(stats)
+    if len(train_distances) == 0:
+        msg = "No training data — cannot calibrate Mahalanobis"
+        raise click.ClickException(msg)
     log.info("Reconstructed test split: %d docs (known in-distribution)", len(split.test_df))
     log.info("Extracting embeddings on %s", split.loaded.device)
     embeddings = embed_texts(
@@ -86,7 +97,9 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         max_tokens=model_cfg.max_tokens,
     )
 
-    p_values = np.array([mahalanobis_chi2_p_value(e, stats) for e in embeddings])
+    p_values = np.array(
+        [mahalanobis_empirical_p_value(e, stats, train_distances) for e in embeddings]
+    )
     z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
     label_ids = split.test_df["label_id"].to_numpy()
     knn_distances = np.array(
