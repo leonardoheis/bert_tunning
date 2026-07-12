@@ -15,6 +15,7 @@ from src.ood import (
     cosine_z_score,
     empirical_survival_p_value,
     extract_embeddings,
+    extract_embeddings_and_predictions,
     knn_mean_distance,
     load_stats,
     mahalanobis_chi2_p_value,
@@ -338,3 +339,21 @@ def test_resolve_ood_thresholds_uses_stats_values_when_present() -> None:
     assert thresholds.mahalanobis_p == pytest.approx(0.002)
     assert thresholds.cosine_z == pytest.approx(5.0)
     assert thresholds.knn_distance == pytest.approx(10.0)
+
+
+def test_extract_embeddings_and_predictions_returns_matching_lengths() -> None:
+    tokenizer = MagicMock()
+    tokenizer.return_value.to.return_value = {
+        "input_ids": torch.zeros(2, 8, dtype=torch.long),
+        "attention_mask": torch.ones(2, 8, dtype=torch.long),
+    }
+    model = MagicMock()
+    model.return_value.hidden_states = [torch.zeros(2, 8, 4)]
+    model.return_value.logits = torch.tensor([[2.0, 0.5], [0.1, 3.0]])
+
+    loaded = LoadedModel(model=model, tokenizer=tokenizer, device="cpu")
+    embeddings, predicted_ids = extract_embeddings_and_predictions(
+        loaded, ["doc one", "doc two"], max_length=8
+    )
+    assert embeddings.shape == (2, 4)
+    assert predicted_ids == [0, 1]  # argmax of each row above

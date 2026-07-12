@@ -7,7 +7,7 @@ import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from src.cli._ood_common import embed_texts, reconstruct_split_and_load_model
+from src.cli._ood_common import embed_texts_and_predict, reconstruct_split_and_load_model
 from src.logger import setup_logging
 from src.ood import (
     compute_train_mahalanobis_distances,
@@ -90,7 +90,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         raise click.ClickException(msg)
     log.info("Reconstructed test split: %d docs (known in-distribution)", len(split.test_df))
     log.info("Extracting embeddings on %s", split.loaded.device)
-    embeddings = embed_texts(
+    embeddings, predicted_ids = embed_texts_and_predict(
         split.loaded,
         split.test_df,
         chunk_strategy=opts.chunk_strategy,
@@ -101,11 +101,15 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         [mahalanobis_empirical_p_value(e, stats, train_distances) for e in embeddings]
     )
     z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
-    label_ids = split.test_df["label_id"].to_numpy()
+    # Predicted label, not the document's true label -- predict_text() in production always
+    # scores knn_mean_distance against the model's own prediction, so calibration must
+    # reproduce exactly that, including the k-NN penalty a misclassified in-distribution
+    # document actually gets in production when it's scored against the wrong class's
+    # neighbors. Using the true label here would understate the real false-positive rate.
     knn_distances = np.array(
         [
-            knn_mean_distance(e, stats, int(lbl), k=Settings.OOD_KNN_NEIGHBORS)
-            for e, lbl in zip(embeddings, label_ids, strict=True)
+            knn_mean_distance(e, stats, pred_id, k=Settings.OOD_KNN_NEIGHBORS)
+            for e, pred_id in zip(embeddings, predicted_ids, strict=True)
         ]
     )
     # knn_mean_distance returns NaN when a document's class has zero training points in

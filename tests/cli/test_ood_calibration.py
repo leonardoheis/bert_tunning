@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,8 +10,15 @@ from click.testing import CliRunner, Result
 
 from src.cli.ood_calibration import build_calibration_report, evaluate_ood_calibration_cmd
 from src.ood import LoadedModel
+from src.ood import knn_mean_distance as real_knn_mean_distance
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
+
+
+def _fake_extract_embeddings_and_predictions(
+    _loaded: LoadedModel, texts: list[str], **_kwargs: int | str
+) -> tuple[npt.NDArray[np.float64], list[int]]:
+    return np.zeros((len(texts), 8), dtype=np.float64), [0] * len(texts)
 
 
 def _make_stats() -> ClassEmbeddingStats:
@@ -167,11 +175,6 @@ def _run_successful_calibration(
     mock_model = MagicMock()
     mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
 
-    def _fake_extract_embeddings(
-        _loaded: LoadedModel, texts: list[str], **_kwargs: int | str
-    ) -> npt.NDArray[np.float64]:
-        return np.zeros((len(texts), 8), dtype=np.float64)
-
     with (
         patch("src.cli._ood_common.AutoTokenizer.from_pretrained"),
         patch(
@@ -179,7 +182,10 @@ def _run_successful_calibration(
             return_value=mock_model,
         ),
         patch("src.cli.ood_calibration.load_stats", return_value=_make_stats()),
-        patch("src.cli._ood_common.extract_embeddings", side_effect=_fake_extract_embeddings),
+        patch(
+            "src.cli._ood_common.extract_embeddings_and_predictions",
+            side_effect=_fake_extract_embeddings_and_predictions,
+        ),
         patch("torch.cuda.is_available", return_value=False),
         patch("src.cli.ood_calibration.log_ood_calibration_results") as mock_log,
     ):
@@ -230,8 +236,26 @@ def _make_stats_missing_class(missing_label_id: int) -> ClassEmbeddingStats:
     )
 
 
+def _fake_predict_matching_text_label(
+    _loaded: LoadedModel, texts: list[str], **_kwargs: int | str
+) -> tuple[npt.NDArray[np.float64], list[int]]:
+    """Predicts 0 ("decreto") or 1 ("ordenanza") based on which word appears in each text --
+    unlike the constant-0 shared fake, this lets a single stats object exercise BOTH a
+    present and a missing class within the same test run, which the NaN/skip test below
+    needs (a fake that always predicts the same class can't produce a partial skip)."""
+    return (
+        np.zeros((len(texts), 8), dtype=np.float64),
+        [0 if "decreto" in t else 1 for t in texts],
+    )
+
+
 def _run_calibration_with_stats(
-    tmp_path: Path, stats: ClassEmbeddingStats
+    tmp_path: Path,
+    stats: ClassEmbeddingStats,
+    *,
+    predict_fn: Callable[..., tuple[npt.NDArray[np.float64], list[int]]] = (
+        _fake_extract_embeddings_and_predictions
+    ),
 ) -> tuple[Result, MagicMock]:
     # 20 docs/class so the stratified test split reliably contains both classes.
     cache_path = tmp_path / "cache.parquet"
@@ -249,11 +273,6 @@ def _run_calibration_with_stats(
     mock_model = MagicMock()
     mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
 
-    def _fake_extract_embeddings(
-        _loaded: LoadedModel, texts: list[str], **_kwargs: int | str
-    ) -> npt.NDArray[np.float64]:
-        return np.zeros((len(texts), 8), dtype=np.float64)
-
     with (
         patch("src.cli._ood_common.AutoTokenizer.from_pretrained"),
         patch(
@@ -261,7 +280,10 @@ def _run_calibration_with_stats(
             return_value=mock_model,
         ),
         patch("src.cli.ood_calibration.load_stats", return_value=stats),
-        patch("src.cli._ood_common.extract_embeddings", side_effect=_fake_extract_embeddings),
+        patch(
+            "src.cli._ood_common.extract_embeddings_and_predictions",
+            side_effect=predict_fn,
+        ),
         patch("torch.cuda.is_available", return_value=False),
         patch("src.cli.ood_calibration.log_ood_calibration_results") as mock_log,
     ):
@@ -276,7 +298,11 @@ def test_evaluate_ood_calibration_cmd_skips_docs_with_nan_knn_distance(tmp_path:
     # "decreto" (label 0) has no stored k-NN training points, so every decreto test doc
     # gets a NaN knn_distance — the command should skip those and still succeed using the
     # remaining (ordenanza) docs, rather than letting NaN corrupt the whole report.
-    result, _ = _run_calibration_with_stats(tmp_path, _make_stats_missing_class(0))
+    # Needs predicted labels that actually vary per doc (the shared constant-0 fake would
+    # make every doc predict the same class, collapsing this into all-NaN or no-NaN).
+    result, _ = _run_calibration_with_stats(
+        tmp_path, _make_stats_missing_class(0), predict_fn=_fake_predict_matching_text_label
+    )
 
     assert result.exit_code == 0
     assert "Skipping" in result.output or "skipping" in result.output.lower()
@@ -343,3 +369,71 @@ def test_evaluate_ood_calibration_cmd_uses_empirical_not_chi2_p_value(tmp_path: 
         result, _ = _run_successful_calibration(tmp_path, extra_args=[])
     assert result.exit_code == 0
     mock_empirical.assert_called()
+
+
+def test_evaluate_ood_calibration_cmd_uses_predicted_label_for_knn_not_true_label(
+    tmp_path: Path,
+) -> None:
+    # 20 "decreto" (label 0) + 20 "ordenanza" (label 1) docs, but every document's forward
+    # pass predicts label 1 regardless of its true label -- if the command still scores
+    # k-NN using the true label, the "decreto" test docs would be scored against class 0's
+    # neighbors (5 points); if it correctly uses the predicted label, every doc scores
+    # against class 1's neighbors instead. knn_mean_distance is spied on to assert the
+    # label id it actually received.
+    cache_path = tmp_path / "cache.parquet"
+    pd.DataFrame(
+        {
+            "text": [f"decreto {i}" for i in range(20)] + [f"ordenanza {i}" for i in range(20)],
+            "label": ["decreto"] * 20 + ["ordenanza"] * 20,
+        }
+    ).to_parquet(cache_path)
+
+    model_path = tmp_path / "fake-model"
+    model_path.mkdir()
+    (model_path / "ood_stats.npz").touch()
+
+    mock_model = MagicMock()
+    mock_model.config.id2label = {0: "decreto", 1: "ordenanza"}
+
+    def _always_predicts_ordenanza(
+        _loaded: LoadedModel, texts: list[str], **_kwargs: int | str
+    ) -> tuple[npt.NDArray[np.float64], list[int]]:
+        return np.zeros((len(texts), 8), dtype=np.float64), [1] * len(texts)
+
+    seen_label_ids: list[int] = []
+
+    def _spy_knn_mean_distance(
+        embedding: npt.NDArray[np.float64],
+        stats: ClassEmbeddingStats,
+        predicted_label_id: int,
+        *,
+        k: int,
+    ) -> float:
+        seen_label_ids.append(predicted_label_id)
+        return real_knn_mean_distance(embedding, stats, predicted_label_id, k=k)
+
+    with (
+        patch("src.cli._ood_common.AutoTokenizer.from_pretrained"),
+        patch(
+            "src.cli._ood_common.AutoModelForSequenceClassification.from_pretrained",
+            return_value=mock_model,
+        ),
+        patch("src.cli.ood_calibration.load_stats", return_value=_make_stats()),
+        patch(
+            "src.cli._ood_common.extract_embeddings_and_predictions",
+            side_effect=_always_predicts_ordenanza,
+        ),
+        patch("src.cli.ood_calibration.knn_mean_distance", side_effect=_spy_knn_mean_distance),
+        patch("torch.cuda.is_available", return_value=False),
+        patch("src.cli.ood_calibration.log_ood_calibration_results"),
+    ):
+        result = CliRunner().invoke(
+            evaluate_ood_calibration_cmd,
+            ["--model-path", str(model_path), "--model", "beto", "--cache-path", str(cache_path)],
+        )
+
+    assert result.exit_code == 0
+    # Every seen label id must be 1 (the mocked prediction) -- never 0, even for the
+    # "decreto" (true label 0) test documents.
+    assert seen_label_ids
+    assert set(seen_label_ids) == {1}
