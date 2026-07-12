@@ -241,7 +241,7 @@ def test_predict_text_mahalanobis_p_value_is_empirical() -> None:
     clf = _make_mock_classifier()
     clf._ood_stats = _make_stats()  # noqa: SLF001
     # [CLS] embedding is all zeros (mock hidden_states), exactly centroid A -- distance 0,
-    # so the empirical p-value must be exactly 1.0 (all 200 reference points have
+    # so the empirical p-value must be exactly 1.0 (all 1400 reference points have
     # distance >= 0).
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")

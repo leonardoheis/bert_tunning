@@ -182,7 +182,7 @@ All settings live in `_Settings(BaseSettings)` and are overridable via `.env`:
 | `PREDICT_CONFIDENCE` | `0.0` | Confidence value reported for unreadable/empty documents |
 | `MAX_DOCS_PER_CLASS` | `10` | Minimum allowed value for `--max-docs-per-class` — also the ingestion default when unset |
 | `OOD_PCA_COMPONENTS` | `64` | Dimensionality the `[CLS]` embedding is reduced to before Mahalanobis/cosine scoring |
-| `OOD_MAHALANOBIS_P_THRESHOLD` | `0.01` | Mahalanobis chi-squared p-value below which a document is flagged `in_distribution=False` (low p-value = anomalous) |
+| `OOD_MAHALANOBIS_P_THRESHOLD` | `0.000743` | Empirical (rank-based) Mahalanobis p-value below which a document is flagged `in_distribution=False` (low p-value = anomalous) — see the empirical p-value decision below for why this isn't a chi-squared p-value |
 | `OOD_COSINE_THRESHOLD` | `2.5` | Cosine z-score above which a document is flagged `in_distribution=False` — uncalibrated, see the OOD detection note below |
 | `OOD_KNN_NEIGHBORS` | `10` | Number of same-predicted-class training documents used for the k-NN distance signal |
 | `OOD_KNN_DISTANCE_THRESHOLD` | `26.125` | Mean k-NN distance (PCA space) above which a document is flagged `in_distribution=False` — calibrated against BETO v2, see the k-NN detection note below |
