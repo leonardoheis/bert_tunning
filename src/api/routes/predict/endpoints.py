@@ -9,10 +9,34 @@ from src.inference.classify import BertTunningClassifier
 from src.inference.pipeline import extraction_failed
 from src.ingestion.extract import extract_pdf_with_metadata
 from src.schema import PredictResult
+from src.settings import Settings
 
 from .schemas import PredictResponse
 
 router = APIRouter(tags=["Prediction"])
+
+
+_UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+
+async def _read_upload_bounded(file: UploadFile, max_bytes: int) -> bytes:
+    """Reads file in bounded chunks instead of one unconditional await file.read() -- an
+    unbounded read loads the entire upload into worker memory before any size check ever
+    runs, so a sufficiently large upload can exhaust memory regardless of what happens
+    afterward. FastAPI/uvicorn impose no default request-body limit on their own."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413, detail=f"File exceeds the {max_bytes} byte upload limit"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _get_clf(request: Request) -> BertTunningClassifier:
@@ -47,7 +71,7 @@ async def predict(
     if not file.filename or not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
-    contents = await file.read()
+    contents = await _read_upload_bounded(file, Settings.MAX_UPLOAD_SIZE_BYTES)
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name

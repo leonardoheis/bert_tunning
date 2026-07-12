@@ -11,6 +11,11 @@ class _Settings(BaseSettings):
     # ── Server ────────────────────────────────────────────────────────────────
     API_PORT: int = 8000
     HOST: str = "127.0.0.1"
+    # 25 MB -- municipal decree/ordinance PDFs in this corpus are small (a few hundred KB
+    # typical); this is generous headroom, not a tight budget. Enforced by
+    # src/api/routes/predict/endpoints.py's chunked read, not by FastAPI/uvicorn, which
+    # impose no default body-size limit on their own.
+    MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024
     THRESHOLD: float = 0.70
     HF_HOME: str = str(_PROJECT_ROOT / "models")
 
