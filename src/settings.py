@@ -61,7 +61,13 @@ class _Settings(BaseSettings):
     PREDICT_THRESHOLD: float = 0.70
     PREDICT_CONFIDENCE: float = 0.0
     OOD_PCA_COMPONENTS: int = 64
-    OOD_MAHALANOBIS_P_THRESHOLD: float = 0.01
+    # Calibrated 2026-07-12 against BETO v2 (bert_tunning_model_beto_v2) via
+    # evaluate-ood-calibration, after switching to the empirical (rank-based)
+    # p-value: the prior placeholder (0.01) gave a 9.38% empirical false-positive
+    # rate vs. the 1% target; 0.000743 is the suggested threshold for a 1% target
+    # FP rate on that run. Same caveat as OOD_COSINE_THRESHOLD — re-run
+    # evaluate-ood-calibration if the training corpus changes materially.
+    OOD_MAHALANOBIS_P_THRESHOLD: float = 0.000743
     OOD_COSINE_THRESHOLD: float = 13.7366
     OOD_KNN_NEIGHBORS: int = 10
     # Calibrated 2026-07-08 against BETO v2 (bert_tunning_model_beto_v2) via
