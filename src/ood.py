@@ -38,16 +38,6 @@ def _project(
     return (embedding - stats.pca_mean) @ stats.pca_components.T
 
 
-def _mahalanobis_min_distance_raw(
-    point: npt.NDArray[np.float64],
-    centroids: npt.NDArray[np.float64],
-    covariance_inv: npt.NDArray[np.float64],
-) -> float:
-    diffs = centroids - point
-    distances = np.einsum("kd,de,ke->k", diffs, covariance_inv, diffs)
-    return float(np.min(distances))
-
-
 def _cosine_min_distance_raw(
     point: npt.NDArray[np.float64], centroids: npt.NDArray[np.float64]
 ) -> float:
@@ -100,7 +90,9 @@ def mahalanobis_min_distance(
     embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
 ) -> float:
     point = _project(embedding, stats)
-    return _mahalanobis_min_distance_raw(point, stats.centroids, stats.covariance_inv)
+    diffs = stats.centroids - point
+    distances = np.einsum("kd,de,ke->k", diffs, stats.covariance_inv, diffs)
+    return float(np.min(distances))
 
 
 def cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
