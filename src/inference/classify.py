@@ -221,7 +221,10 @@ class BertTunningClassifier:
             log.warning(
                 "ood_stats.npz has no per-model value for %s -- falling back to Settings.OOD_* "
                 "(calibrated for a specific model, not necessarily this one). Run "
-                "evaluate-ood-calibration --write-thresholds for this model to silence this.",
+                "evaluate-ood-calibration --write-thresholds for this model to attempt to "
+                "silence this -- note the degenerate-threshold guard can legitimately refuse "
+                "to write a value (e.g. Mahalanobis for a small training corpus), in which "
+                "case this warning is expected and will keep firing on every startup.",
                 ", ".join(uncalibrated),
             )
 
