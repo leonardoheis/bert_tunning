@@ -603,6 +603,7 @@ def test_classifier_does_not_warn_when_thresholds_are_fully_calibrated(
     stats = _make_stats().model_copy(
         update={
             "mahalanobis_p_threshold": 0.001,
+            "mahalanobis_threshold_status": "calibrated",
             "cosine_threshold": 13.7366,
             "knn_distance_threshold": 16.7908,
         }
@@ -616,6 +617,40 @@ def test_classifier_does_not_warn_when_thresholds_are_fully_calibrated(
         BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
 
     assert not any("falling back to Settings.OOD_*" in record.message for record in caplog.records)
+
+
+def test_classifier_logs_info_not_warning_when_mahalanobis_threshold_refused_degenerate(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    stats = _make_stats().model_copy(
+        update={
+            "mahalanobis_threshold_status": "refused_degenerate",
+            "cosine_threshold": 13.7366,
+            "knn_distance_threshold": 16.7908,
+        }
+    )
+    save_stats(stats, tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        caplog.at_level(logging.INFO),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+    assert not any(
+        record.levelno == logging.WARNING and "mahalanobis" in record.message.lower()
+        for record in caplog.records
+    )
+    assert any(
+        record.levelno == logging.INFO and "refused" in record.message.lower()
+        for record in caplog.records
+    )
 
 
 def test_classifier_does_not_warn_when_no_ood_stats(

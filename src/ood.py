@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -8,6 +8,7 @@ from scipy.stats import chi2
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_distances
 
+from src.exceptions import BertTunningError
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
 
@@ -297,6 +298,7 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
                 knn_distance_threshold=knn_thresh,
                 model_type=model_type,
                 model_hidden_size=model_hidden_size,
+                mahalanobis_threshold_status=stats.mahalanobis_threshold_status,
             )
         load_stats(tmp_path)  # fail fast on a corrupt/incomplete write, before touching `path`
         tmp_path.replace(path)
@@ -317,6 +319,18 @@ def _optional_str(data: npt.NDArray[np.str_]) -> str | None:
 def _optional_int(data: npt.NDArray[np.int_]) -> int | None:
     value = int(data)
     return None if value == -1 else value
+
+
+def _threshold_status(
+    data: npt.NDArray[np.str_],
+) -> Literal["not_calibrated", "calibrated", "refused_degenerate"]:
+    value = str(data)
+    match value:
+        case "not_calibrated" | "calibrated" | "refused_degenerate":
+            return value
+        case _:
+            msg = f"ood_stats.npz has an unrecognized mahalanobis_threshold_status: {value!r}"
+            raise BertTunningError(msg)
 
 
 def load_stats(path: Path) -> ClassEmbeddingStats:
@@ -347,4 +361,7 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         model_hidden_size=_optional_int(data["model_hidden_size"])
         if "model_hidden_size" in data.files
         else None,
+        mahalanobis_threshold_status=_threshold_status(data["mahalanobis_threshold_status"])
+        if "mahalanobis_threshold_status" in data.files
+        else "not_calibrated",
     )

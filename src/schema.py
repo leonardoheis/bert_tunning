@@ -1,6 +1,6 @@
 """Shared Pydantic model definitions used across the Bert Tunning pipeline."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -121,6 +121,17 @@ class ClassEmbeddingStats(BaseModel):
     # the identity check is skipped entirely, not enforced as absent.
     model_type: str | None = None
     model_hidden_size: int | None = None
+    # Distinguishes *why* mahalanobis_p_threshold is None -- "not_calibrated" (nobody has run
+    # evaluate-ood-calibration --write-thresholds yet, an operator should) from
+    # "refused_degenerate" (it WAS run, but the degenerate-threshold guard in
+    # cli/ood_calibration.py correctly refused to persist a floor-adjacent value -- expected,
+    # no action needed, will keep recurring). Without this, both states collapse to the same
+    # None and BertTunningClassifier's startup warning can't tell them apart -- see
+    # _warn_on_uncalibrated_thresholds. cosine_threshold/knn_distance_threshold don't need an
+    # equivalent field: the degenerate guard only ever applies to the Mahalanobis threshold.
+    mahalanobis_threshold_status: Literal["not_calibrated", "calibrated", "refused_degenerate"] = (
+        "not_calibrated"
+    )
 
 
 class Hyperparams(BaseModel):

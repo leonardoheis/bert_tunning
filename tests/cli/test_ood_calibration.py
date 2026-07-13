@@ -318,6 +318,56 @@ def test_evaluate_ood_calibration_cmd_write_thresholds_refuses_degenerate_maha_t
     assert written.knn_distance_threshold is not None
 
 
+def test_evaluate_ood_calibration_cmd_write_thresholds_persists_calibrated_status(
+    tmp_path: Path,
+) -> None:
+    stats_path = tmp_path / "fake-model" / "ood_stats.npz"
+    result, _ = _run_successful_calibration(tmp_path, extra_args=["--write-thresholds"])
+    assert result.exit_code == 0
+    written = load_stats(stats_path)
+    assert written.mahalanobis_threshold_status == "calibrated"
+
+
+def test_evaluate_ood_calibration_cmd_write_thresholds_refused_status_when_degenerate(
+    tmp_path: Path,
+) -> None:
+    tiny_stats = _make_stats().model_copy(
+        update={
+            "centroids": np.array([[3.0] * 8, [8.0] * 8]),
+            "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
+            "knn_train_labels": [0, 0, 1, 1],
+        }
+    )
+    result, _ = _run_calibration_with_stats_write_thresholds(tmp_path, tiny_stats)
+    assert result.exit_code == 0
+    stats_path = tmp_path / "fake-model" / "ood_stats.npz"
+    written = load_stats(stats_path)
+    assert written.mahalanobis_threshold_status == "refused_degenerate"
+
+
+def test_evaluate_ood_calibration_cmd_write_thresholds_keeps_calibrated_status_on_refusal(
+    tmp_path: Path,
+) -> None:
+    # Guard refuses the new suggestion but a real value from a PRIOR successful calibration
+    # already exists -- status must stay "calibrated", not flip to "refused_degenerate",
+    # since nothing about the currently-persisted value actually changed or became invalid.
+    tiny_stats = _make_stats().model_copy(
+        update={
+            "centroids": np.array([[3.0] * 8, [8.0] * 8]),
+            "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
+            "knn_train_labels": [0, 0, 1, 1],
+            "mahalanobis_p_threshold": 0.0005,
+            "mahalanobis_threshold_status": "calibrated",
+        }
+    )
+    result, _ = _run_calibration_with_stats_write_thresholds(tmp_path, tiny_stats)
+    assert result.exit_code == 0
+    stats_path = tmp_path / "fake-model" / "ood_stats.npz"
+    written = load_stats(stats_path)
+    assert written.mahalanobis_p_threshold == pytest.approx(0.0005)
+    assert written.mahalanobis_threshold_status == "calibrated"
+
+
 def test_evaluate_ood_calibration_cmd_logs_to_wandb_when_flag_set(tmp_path: Path) -> None:
     result, mock_log = _run_successful_calibration(tmp_path, extra_args=["--log-wandb"])
 

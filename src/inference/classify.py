@@ -200,32 +200,40 @@ class BertTunningClassifier:
     def _warn_on_uncalibrated_thresholds(self) -> None:
         """resolve_ood_thresholds()'s silent Settings.OOD_* fallback is intentional backward
         compatibility, not something to hide from whoever operates this service -- a model
-        that's never been through `evaluate-ood-calibration --write-thresholds` (or, like
-        BETO v2's Mahalanobis threshold, had a write correctly refused by the
-        degenerate-threshold guard) silently inherits whichever model Settings.OOD_* happens
-        to be calibrated for. This does not fail startup -- an uncalibrated model is still
-        usable, just with potentially miscalibrated OOD decisions -- but it must not be
-        silent either. Runs once at construction, not per-request."""
+        that's never been through `evaluate-ood-calibration --write-thresholds` silently
+        inherits whichever model Settings.OOD_* happens to be calibrated for. This does not
+        fail startup -- an uncalibrated model is still usable, just with potentially
+        miscalibrated OOD decisions -- but it must not be silent either. Runs once at
+        construction, not per-request. mahalanobis_threshold_status distinguishes "never
+        calibrated" (this WARNING) from "calibration ran, degenerate-threshold guard
+        correctly refused to persist a value" (a separate, non-actionable INFO line below) --
+        collapsing both into one message here is exactly the ambiguity that field exists to
+        remove."""
         if self._ood_stats is None:
             return
         uncalibrated = [
             name
             for name, value in (
-                ("mahalanobis_p_threshold", self._ood_stats.mahalanobis_p_threshold),
                 ("cosine_threshold", self._ood_stats.cosine_threshold),
                 ("knn_distance_threshold", self._ood_stats.knn_distance_threshold),
             )
             if value is None
         ]
+        if self._ood_stats.mahalanobis_threshold_status == "not_calibrated":
+            uncalibrated.append("mahalanobis_p_threshold")
         if uncalibrated:
             log.warning(
                 "ood_stats.npz has no per-model value for %s -- falling back to Settings.OOD_* "
                 "(calibrated for a specific model, not necessarily this one). Run "
-                "evaluate-ood-calibration --write-thresholds for this model to attempt to "
-                "silence this -- note the degenerate-threshold guard can legitimately refuse "
-                "to write a value (e.g. Mahalanobis for a small training corpus), in which "
-                "case this warning is expected and will keep firing on every startup.",
+                "evaluate-ood-calibration --write-thresholds for this model to silence this.",
                 ", ".join(uncalibrated),
+            )
+        if self._ood_stats.mahalanobis_threshold_status == "refused_degenerate":
+            log.info(
+                "mahalanobis_p_threshold falls back to Settings.OOD_MAHALANOBIS_P_THRESHOLD "
+                "because evaluate-ood-calibration's degenerate-threshold guard correctly "
+                "refused to persist a floor-adjacent value for this model -- expected, no "
+                "action needed."
             )
 
     @cached_property

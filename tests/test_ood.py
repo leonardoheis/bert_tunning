@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from src.embeddings import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
+from src.exceptions import BertTunningError
 from src.ood import (
     compute_class_stats,
     compute_train_mahalanobis_distances,
@@ -284,6 +285,81 @@ def test_save_and_load_stats_roundtrip_thresholds_default_to_none() -> None:
         assert loaded.mahalanobis_p_threshold is None
         assert loaded.cosine_threshold is None
         assert loaded.knn_distance_threshold is None
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_includes_threshold_status() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+        update={"mahalanobis_threshold_status": "refused_degenerate"}
+    )
+    path = Path("test_stats_threshold_status.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_threshold_status == "refused_degenerate"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_threshold_status_defaults_to_not_calibrated() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_threshold_status_default.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_threshold_status == "not_calibrated"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_stats_handles_legacy_file_without_threshold_status_field() -> None:
+    # A pre-this-change ood_stats.npz has no mahalanobis_threshold_status key at all --
+    # load_stats must not KeyError, and must default to "not_calibrated".
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_legacy_threshold_status.npz")
+    try:
+        np.savez(
+            str(path),
+            class_names=np.array(stats.class_names),
+            pca_mean=stats.pca_mean,
+            pca_components=stats.pca_components,
+            centroids=stats.centroids,
+            covariance_inv=stats.covariance_inv,
+            cosine_calibration_mean=stats.cosine_calibration_mean,
+            cosine_calibration_std=stats.cosine_calibration_std,
+            knn_train_embeddings=stats.knn_train_embeddings,
+            knn_train_labels=np.array(stats.knn_train_labels),
+        )
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_threshold_status == "not_calibrated"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_stats_rejects_unknown_threshold_status() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_bad_threshold_status.npz")
+    try:
+        np.savez(
+            str(path),
+            class_names=np.array(stats.class_names),
+            pca_mean=stats.pca_mean,
+            pca_components=stats.pca_components,
+            centroids=stats.centroids,
+            covariance_inv=stats.covariance_inv,
+            cosine_calibration_mean=stats.cosine_calibration_mean,
+            cosine_calibration_std=stats.cosine_calibration_std,
+            knn_train_embeddings=stats.knn_train_embeddings,
+            knn_train_labels=np.array(stats.knn_train_labels),
+            mahalanobis_threshold_status="not_a_real_status",
+        )
+        with pytest.raises(BertTunningError, match="mahalanobis_threshold_status"):
+            load_stats(path)
     finally:
         path.unlink(missing_ok=True)
 

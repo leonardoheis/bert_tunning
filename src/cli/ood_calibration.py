@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Literal
 
 import click
 import numpy as np
@@ -73,6 +74,7 @@ def _write_calibrated_thresholds(
     floor = 1 / (n_train + 1)
     suggested_maha_threshold = report.suggested_maha_threshold
     maha_threshold: float | None = suggested_maha_threshold
+    maha_status: Literal["calibrated", "refused_degenerate"] = "calibrated"
     if suggested_maha_threshold <= floor:
         log.warning(
             "Refusing to write suggested Mahalanobis threshold %.6f: at or below this "
@@ -84,10 +86,14 @@ def _write_calibrated_thresholds(
             stats.mahalanobis_p_threshold,
         )
         maha_threshold = stats.mahalanobis_p_threshold
+        # A kept prior value is still "calibrated" -- only truly unset (never calibrated
+        # before, and now also refused) becomes "refused_degenerate".
+        maha_status = "calibrated" if maha_threshold is not None else "refused_degenerate"
 
     updated = stats.model_copy(
         update={
             "mahalanobis_p_threshold": maha_threshold,
+            "mahalanobis_threshold_status": maha_status,
             "cosine_threshold": report.suggested_cosine_threshold,
             "knn_distance_threshold": report.suggested_knn_threshold,
         }
