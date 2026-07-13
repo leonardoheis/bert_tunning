@@ -1,6 +1,6 @@
 """Shared Pydantic model definitions used across the Bert Tunning pipeline."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -105,6 +105,33 @@ class ClassEmbeddingStats(BaseModel):
     cosine_calibration_std: float
     knn_train_embeddings: Float64Array  # (n_train_docs, n_components), PCA-reduced
     knn_train_labels: list[int]  # length n_train_docs, parallel to knn_train_embeddings
+    # Per-model calibrated thresholds -- written by `evaluate-ood-calibration --write-thresholds`
+    # (src/cli/ood_calibration.py), read via resolve_ood_thresholds() (src/ood.py). None means
+    # "not yet calibrated for this specific model" -- resolve_ood_thresholds() falls back to
+    # Settings.OOD_* in that case. Fixes thresholds calibrated for one model (e.g. BETO v2)
+    # being silently applied to a different model's differently-scaled embedding space.
+    mahalanobis_p_threshold: float | None = None
+    cosine_threshold: float | None = None
+    knn_distance_threshold: float | None = None
+    # Coarse per-model identity fingerprint -- written by compute_class_stats() from the
+    # model that produced the embeddings, validated at classifier construction in
+    # BertTunningClassifier._validate_ood_stats_model_identity(). class_names alone can't
+    # distinguish two different model architectures trained on the same corpus/label set
+    # (true for every model in this project's registry). None means "predates this field" --
+    # the identity check is skipped entirely, not enforced as absent.
+    model_type: str | None = None
+    model_hidden_size: int | None = None
+    # Distinguishes *why* mahalanobis_p_threshold is None -- "not_calibrated" (nobody has run
+    # evaluate-ood-calibration --write-thresholds yet, an operator should) from
+    # "refused_degenerate" (it WAS run, but the degenerate-threshold guard in
+    # cli/ood_calibration.py correctly refused to persist a floor-adjacent value -- expected,
+    # no action needed, will keep recurring). Without this, both states collapse to the same
+    # None and BertTunningClassifier's startup warning can't tell them apart -- see
+    # _warn_on_uncalibrated_thresholds. cosine_threshold/knn_distance_threshold don't need an
+    # equivalent field: the degenerate guard only ever applies to the Mahalanobis threshold.
+    mahalanobis_threshold_status: Literal["not_calibrated", "calibrated", "refused_degenerate"] = (
+        "not_calibrated"
+    )
 
 
 class Hyperparams(BaseModel):

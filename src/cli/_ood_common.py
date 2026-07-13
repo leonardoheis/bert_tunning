@@ -8,7 +8,7 @@ import torch
 from sklearn.preprocessing import LabelEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.ood import LoadedModel, extract_embeddings
+from src.embeddings import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
 from src.training.split import make_split
 from src.training.tokenize import prepare_text
 
@@ -62,3 +62,13 @@ def embed_texts(
 ) -> npt.NDArray[np.float64]:
     texts = [prepare_text(t, loaded.tokenizer, chunk_strategy) for t in df["text"]]
     return extract_embeddings(loaded, texts, max_length=max_tokens)
+
+
+def embed_texts_and_predict(
+    loaded: LoadedModel, df: pd.DataFrame, *, chunk_strategy: str, max_tokens: int
+) -> tuple[npt.NDArray[np.float64], list[int]]:
+    """Sibling to embed_texts() for callers that also need each document's predicted label
+    -- currently only evaluate-ood-calibration, for reproducing predict_text()'s exact k-NN
+    scoring input (the model's own prediction, not the document's true label)."""
+    texts = [prepare_text(t, loaded.tokenizer, chunk_strategy) for t in df["text"]]
+    return extract_embeddings_and_predictions(loaded, texts, max_length=max_tokens)

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -5,11 +6,13 @@ import numpy as np
 import pytest
 import torch
 
+from src.exceptions import BertTunningError
 from src.inference.classify import (
     BertTunningClassifier,
     ConfidenceTier,
     OodEvidence,
     OodScores,
+    OodThresholds,
     decide_review_route,
     is_out_of_distribution,
 )
@@ -117,31 +120,56 @@ def _make_mock_classifier() -> BertTunningClassifier:
 
 def test_is_out_of_distribution_false_when_all_signals_pass() -> None:
     scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0)
-    assert is_out_of_distribution(scores) is False
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is False
 
 
 def test_is_out_of_distribution_true_when_mahalanobis_fires() -> None:
     scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
-    assert is_out_of_distribution(scores) is True
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
 
 
 def test_is_out_of_distribution_true_when_cosine_fires() -> None:
     scores = OodScores(
         mahalanobis_p=0.5, cosine_z=Settings.OOD_COSINE_THRESHOLD + 1, knn_distance=1.0
     )
-    assert is_out_of_distribution(scores) is True
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
 
 
 def test_is_out_of_distribution_true_when_knn_fires() -> None:
     scores = OodScores(
         mahalanobis_p=0.5, cosine_z=0.0, knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD + 1
     )
-    assert is_out_of_distribution(scores) is True
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
 
 
 def test_is_out_of_distribution_true_when_knn_distance_is_nan() -> None:
     scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=float("nan"))
-    assert is_out_of_distribution(scores) is True
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
 
 
 def test_confidence_tier_from_confidence_at_or_above_threshold_is_confident() -> None:
@@ -432,3 +460,212 @@ def test_load_ood_stats_returns_stats_when_file_present(tmp_path: Path) -> None:
     loaded = BertTunningClassifier._load_ood_stats(str(tmp_path))  # noqa: SLF001
     assert loaded is not None
     assert loaded.class_names == ["decreto", "ordenanza"]
+
+
+def test_classifier_raises_when_ood_stats_class_names_mismatch_model_id2label(
+    tmp_path: Path,
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    stats = _make_stats()  # class_names=["decreto", "ordenanza"] -- swap the order below
+    mismatched_stats = stats.model_copy(update={"class_names": ["ordenanza", "decreto"]})
+    save_stats(mismatched_stats, tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        pytest.raises(BertTunningError, match="do not match"),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+
+def test_classifier_loads_fine_when_ood_stats_class_names_match(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    save_stats(_make_stats(), tmp_path / "ood_stats.npz")  # class_names already match order
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._ood_stats is not None  # noqa: SLF001
+
+
+def test_classifier_raises_when_ood_stats_model_identity_mismatches(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+    model.config.model_type = "xlm-roberta"
+    model.config.hidden_size = 768
+
+    # Same class_names/order as the loaded model (passes the existing class-mapping check),
+    # but computed from a different model_type -- this is the exact gap the class-name-only
+    # check can't catch.
+    stats = _make_stats().model_copy(update={"model_type": "bert", "model_hidden_size": 768})
+    save_stats(stats, tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        pytest.raises(BertTunningError, match="different model architecture"),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+
+def test_classifier_loads_fine_when_ood_stats_model_identity_matches(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+    model.config.model_type = "xlm-roberta"
+    model.config.hidden_size = 768
+
+    stats = _make_stats().model_copy(update={"model_type": "xlm-roberta", "model_hidden_size": 768})
+    save_stats(stats, tmp_path / "ood_stats.npz")
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._ood_stats is not None  # noqa: SLF001
+
+
+def test_classifier_skips_model_identity_check_when_stats_predate_the_field(
+    tmp_path: Path,
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+    model.config.model_type = "xlm-roberta"
+    model.config.hidden_size = 768
+
+    # _make_stats() doesn't set model_type/model_hidden_size -- both default to None,
+    # simulating an ood_stats.npz written before this field existed. No raise expected.
+    save_stats(_make_stats(), tmp_path / "ood_stats.npz")
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._ood_stats is not None  # noqa: SLF001
+
+
+def test_classifier_skips_validation_when_no_ood_stats(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._ood_stats is None  # noqa: SLF001
+
+
+def test_classifier_warns_when_thresholds_fall_back_to_settings(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    # _make_stats() leaves all three thresholds at their None default -- fully uncalibrated.
+    save_stats(_make_stats(), tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        caplog.at_level(logging.WARNING),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+    assert any("falling back to Settings.OOD_*" in record.message for record in caplog.records)
+    assert any("mahalanobis_p_threshold" in record.message for record in caplog.records)
+    assert any("cosine_threshold" in record.message for record in caplog.records)
+    assert any("knn_distance_threshold" in record.message for record in caplog.records)
+
+
+def test_classifier_does_not_warn_when_thresholds_are_fully_calibrated(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    stats = _make_stats().model_copy(
+        update={
+            "mahalanobis_p_threshold": 0.001,
+            "mahalanobis_threshold_status": "calibrated",
+            "cosine_threshold": 13.7366,
+            "knn_distance_threshold": 16.7908,
+        }
+    )
+    save_stats(stats, tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        caplog.at_level(logging.WARNING),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+    assert not any("falling back to Settings.OOD_*" in record.message for record in caplog.records)
+
+
+def test_classifier_logs_info_not_warning_when_mahalanobis_threshold_refused_degenerate(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    stats = _make_stats().model_copy(
+        update={
+            "mahalanobis_threshold_status": "refused_degenerate",
+            "cosine_threshold": 13.7366,
+            "knn_distance_threshold": 16.7908,
+        }
+    )
+    save_stats(stats, tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        caplog.at_level(logging.INFO),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+    assert not any(
+        record.levelno == logging.WARNING and "mahalanobis" in record.message.lower()
+        for record in caplog.records
+    )
+    assert any(
+        record.levelno == logging.INFO and "refused" in record.message.lower()
+        for record in caplog.records
+    )
+
+
+def test_classifier_does_not_warn_when_no_ood_stats(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        caplog.at_level(logging.WARNING),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+    assert not any("falling back to Settings.OOD_*" in record.message for record in caplog.records)

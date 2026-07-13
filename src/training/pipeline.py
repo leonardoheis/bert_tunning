@@ -15,7 +15,8 @@ from transformers import (
     TrainingArguments,
 )
 
-from src.ood import LoadedModel, compute_class_stats, extract_embeddings, save_stats
+from src.embeddings import LoadedModel, extract_embeddings
+from src.ood import compute_class_stats, save_stats
 from src.schema import Hyperparams
 from src.settings import Settings
 from src.training.evaluate import run_evaluation
@@ -162,6 +163,8 @@ def run(
         train_df["label_id"].tolist(),
         list(le.classes_),
         n_components=Settings.OOD_PCA_COMPONENTS,
+        model_type=model.config.model_type,
+        model_hidden_size=model.config.hidden_size,
     )
     log.info("Computed OOD stats from %d training embeddings", train_embeddings.shape[0])
 

@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Literal
 
 import click
 import numpy as np
@@ -7,16 +8,19 @@ import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from src.cli._ood_common import embed_texts, reconstruct_split_and_load_model
+from src.cli._ood_common import embed_texts_and_predict, reconstruct_split_and_load_model
 from src.logger import setup_logging
 from src.ood import (
+    OodThresholds,
     compute_train_mahalanobis_distances,
     cosine_z_score,
     knn_mean_distance,
     load_stats,
     mahalanobis_empirical_p_value,
+    resolve_ood_thresholds,
+    save_stats,
 )
-from src.schema import CalibrationReport
+from src.schema import CalibrationReport, ClassEmbeddingStats
 from src.settings import Settings
 from src.training.models import get_model_config
 from src.wandb import log_ood_calibration_results
@@ -29,6 +33,7 @@ def build_calibration_report(
     z_scores: npt.NDArray[np.float64],
     knn_distances: npt.NDArray[np.float64],
     target_fp_rate: float,
+    thresholds: OodThresholds,
 ) -> CalibrationReport:
     """Pure calibration math, isolated from model/IO for direct unit testing.
 
@@ -36,14 +41,70 @@ def build_calibration_report(
     rate is the `target_fp_rate`-th percentile of in-distribution p-values. Cosine and
     k-NN mean distance: HIGH value = anomalous, so their thresholds are the
     `(1 - target_fp_rate)`-th percentile.
+
+    `thresholds` must come from resolve_ood_thresholds(stats) at the call site, not
+    Settings.OOD_* directly -- otherwise re-running this command on a model that already
+    has --write-thresholds-persisted per-model thresholds reports the empirical
+    false-positive rate of thresholds production isn't even using, silently defeating the
+    per-model calibration this module exists to support.
     """
     return CalibrationReport(
-        fp_rate_maha=float(np.mean(p_values < Settings.OOD_MAHALANOBIS_P_THRESHOLD)),
-        fp_rate_cosine=float(np.mean(z_scores > Settings.OOD_COSINE_THRESHOLD)),
-        fp_rate_knn=float(np.mean(knn_distances > Settings.OOD_KNN_DISTANCE_THRESHOLD)),
+        fp_rate_maha=float(np.mean(p_values < thresholds.mahalanobis_p)),
+        fp_rate_cosine=float(np.mean(z_scores > thresholds.cosine_z)),
+        fp_rate_knn=float(np.mean(knn_distances > thresholds.knn_distance)),
         suggested_maha_threshold=float(np.percentile(p_values, target_fp_rate * 100)),
         suggested_cosine_threshold=float(np.percentile(z_scores, (1 - target_fp_rate) * 100)),
         suggested_knn_threshold=float(np.percentile(knn_distances, (1 - target_fp_rate) * 100)),
+    )
+
+
+def _write_calibrated_thresholds(
+    stats: ClassEmbeddingStats,
+    stats_path: Path,
+    report: CalibrationReport,
+    n_train: int,
+) -> None:
+    """Writes evaluate-ood-calibration's suggested thresholds back into this model's own
+    ood_stats.npz, so resolve_ood_thresholds() uses per-model calibrated values instead of
+    falling back to Settings.OOD_* -- the fix for thresholds calibrated against one model
+    being silently applied to every other model. Refuses to write a Mahalanobis threshold at
+    or below the empirical p-value's own resolution floor (1/(n_train+1)) -- that threshold
+    would be mathematically unreachable (the signal could never fire), the exact bug this
+    project hit once already with an unchecked suggested value."""
+    floor = 1 / (n_train + 1)
+    suggested_maha_threshold = report.suggested_maha_threshold
+    maha_threshold: float | None = suggested_maha_threshold
+    maha_status: Literal["calibrated", "refused_degenerate"] = "calibrated"
+    if suggested_maha_threshold <= floor:
+        log.warning(
+            "Refusing to write suggested Mahalanobis threshold %.6f: at or below this "
+            "model's empirical resolution floor %.6f (n_train=%d). The signal would never "
+            "fire. Keeping the existing value (%s).",
+            suggested_maha_threshold,
+            floor,
+            n_train,
+            stats.mahalanobis_p_threshold,
+        )
+        maha_threshold = stats.mahalanobis_p_threshold
+        # A kept prior value is still "calibrated" -- only truly unset (never calibrated
+        # before, and now also refused) becomes "refused_degenerate".
+        maha_status = "calibrated" if maha_threshold is not None else "refused_degenerate"
+
+    updated = stats.model_copy(
+        update={
+            "mahalanobis_p_threshold": maha_threshold,
+            "mahalanobis_threshold_status": maha_status,
+            "cosine_threshold": report.suggested_cosine_threshold,
+            "knn_distance_threshold": report.suggested_knn_threshold,
+        }
+    )
+    save_stats(updated, stats_path)
+    log.info(
+        "Wrote calibrated thresholds to %s: mahalanobis_p=%s, cosine=%.4f, knn_distance=%.4f",
+        stats_path,
+        maha_threshold,
+        report.suggested_cosine_threshold,
+        report.suggested_knn_threshold,
     )
 
 
@@ -61,6 +122,7 @@ class OodCalibrationOptions(BaseModel):
     chunk_strategy: str = Settings.CHUNK_STRATEGY
     seed: int = Settings.SEED
     target_fp_rate: float = Settings.TARGET_FP_RATE
+    write_thresholds: bool = False
     log_wandb: bool = False
     debug: bool = False
 
@@ -90,7 +152,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         raise click.ClickException(msg)
     log.info("Reconstructed test split: %d docs (known in-distribution)", len(split.test_df))
     log.info("Extracting embeddings on %s", split.loaded.device)
-    embeddings = embed_texts(
+    embeddings, predicted_ids = embed_texts_and_predict(
         split.loaded,
         split.test_df,
         chunk_strategy=opts.chunk_strategy,
@@ -101,11 +163,15 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         [mahalanobis_empirical_p_value(e, stats, train_distances) for e in embeddings]
     )
     z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
-    label_ids = split.test_df["label_id"].to_numpy()
+    # Predicted label, not the document's true label -- predict_text() in production always
+    # scores knn_mean_distance against the model's own prediction, so calibration must
+    # reproduce exactly that, including the k-NN penalty a misclassified in-distribution
+    # document actually gets in production when it's scored against the wrong class's
+    # neighbors. Using the true label here would understate the real false-positive rate.
     knn_distances = np.array(
         [
-            knn_mean_distance(e, stats, int(lbl), k=Settings.OOD_KNN_NEIGHBORS)
-            for e, lbl in zip(embeddings, label_ids, strict=True)
+            knn_mean_distance(e, stats, pred_id, k=Settings.OOD_KNN_NEIGHBORS)
+            for e, pred_id in zip(embeddings, predicted_ids, strict=True)
         ]
     )
     # knn_mean_distance returns NaN when a document's class has zero training points in
@@ -121,16 +187,24 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     if not knn_valid.any():
         msg = "No test documents have same-class training points — cannot calibrate k-NN"
         raise click.ClickException(msg)
+    # The model's actually-deployed thresholds -- per-model calibrated values from `stats`
+    # if evaluate-ood-calibration --write-thresholds already ran for this model, falling
+    # back to Settings.OOD_* otherwise. Reading Settings.OOD_* unconditionally here would
+    # report the empirical false-positive rate of thresholds production isn't even using
+    # once a model has its own per-model thresholds persisted.
+    current_thresholds = resolve_ood_thresholds(stats)
     report = build_calibration_report(
-        p_values, z_scores, knn_distances[knn_valid], opts.target_fp_rate
+        p_values, z_scores, knn_distances[knn_valid], opts.target_fp_rate, current_thresholds
     )
+    if opts.write_thresholds:
+        _write_calibrated_thresholds(stats, stats_path, report, len(train_distances))
 
     log.info("=" * 60)
     log.info("OOD threshold calibration — %s", opts.model_path)
     log.info("=" * 60)
     log.info(
         "Mahalanobis — current threshold=%.4f, empirical false-positive rate=%.2f%%",
-        Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        current_thresholds.mahalanobis_p,
         report.fp_rate_maha * 100,
     )
     log.info(
@@ -140,7 +214,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     )
     log.info(
         "Cosine — current threshold=%.4f, empirical false-positive rate=%.2f%%",
-        Settings.OOD_COSINE_THRESHOLD,
+        current_thresholds.cosine_z,
         report.fp_rate_cosine * 100,
     )
     log.info(
@@ -150,7 +224,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     )
     log.info(
         "k-NN — current threshold=%.4f, empirical false-positive rate=%.2f%%",
-        Settings.OOD_KNN_DISTANCE_THRESHOLD,
+        current_thresholds.knn_distance,
         report.fp_rate_knn * 100,
     )
     log.info(
@@ -165,6 +239,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
             model_path=opts.model_path,
             cache_path=opts.cache_path,
             target_fp_rate=opts.target_fp_rate,
+            thresholds=current_thresholds,
         )
 
 
@@ -200,6 +275,15 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     default=Settings.TARGET_FP_RATE,
     show_default=True,
     help="Target false-positive rate used to compute the suggested threshold",
+)
+@click.option(
+    "--write-thresholds",
+    is_flag=True,
+    default=False,
+    help=(
+        "Persist the suggested thresholds into this model's ood_stats.npz, so "
+        "predict/predict-folder/serve use them instead of falling back to Settings.OOD_*"
+    ),
 )
 @click.option(
     "--log-wandb",

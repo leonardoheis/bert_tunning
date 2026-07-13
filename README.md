@@ -155,6 +155,8 @@ None of the three thresholds in `settings.py` are picked from first principles. 
 
 These are specific to BETO v2's training corpus and embeddings — re-run `evaluate-ood-calibration` and update `settings.py` whenever the training corpus changes materially, or when calibrating a different model (XLM-RoBERTa, MiniLM). A threshold calibrated for one trained model has no meaning against another.
 
+**Thresholds are per-model, not global.** Each model's `ood_stats.npz` can carry its own calibrated `mahalanobis_p_threshold`/`cosine_threshold`/`knn_distance_threshold` (written by `evaluate-ood-calibration --write-thresholds`). `resolve_ood_thresholds()` (`src/ood.py`) reads these from whichever `ood_stats.npz` the loaded classifier has, falling back to `Settings.OOD_*` only for artifacts that haven't been calibrated yet. This means BETO v2's calibrated values never leak into a different model's decisions — training XLM-RoBERTa or MiniLM and running `evaluate-ood-calibration --write-thresholds` against that specific checkpoint gives it its own thresholds, scoped to its own embedding space and corpus size.
+
 **Mahalanobis' 1% target is currently unreachable, not just "off."** `mahalanobis_p_value` is rank-based: its smallest possible value is `1 / (N_train + 1)`, where `N_train` is the number of training documents in `ood_stats.npz` (1,344 for BETO v2). That floor is `≈0.0007435` — and 5.90% of BETO v2's held-out test documents tie *exactly* at that floor, meaning no threshold between the floor and the next achievable rank value can land below ~5.9% FP rate without the signal going completely inert (0% FP rate, i.e. it can never fire, no matter how anomalous a document is). `0.001` is the practical minimum this training-set size can resolve; hitting the nominal 1% target would require a substantially larger training corpus so the rank resolution (`1/(N_train+1)`) is fine enough to distinguish "1% anomalous" from "in-distribution" at all. `evaluate-ood-calibration`'s raw log output rounds the suggested threshold to 6 decimal places — that rounding can itself land *below* the true resolution floor (this happened once during development: `0.000743` looked reasonable but was actually below the floor, silently disabling the signal). Sanity-check any new suggested Mahalanobis threshold against `1 / (N_train + 1)` before adopting it.
 
 **Threshold tradeoff curves** (BETO v2, 288-document held-out test split) — useful for picking a stricter or looser threshold than the calibrated default, e.g. to trade detection sensitivity against false-alarm rate for a specific deployment:
@@ -407,6 +409,10 @@ including `otro`.
 predicted* — unlike Mahalanobis/cosine, it makes no assumption that a class
 has one coherent "shape," which matters for broad, heterogeneous classes
 like `otro`.
+
+`BertTunningClassifier` validates that a loaded `ood_stats.npz`'s `class_names` match the model's own `id2label` (by order, not just the set) at construction time — a mismatch raises `BertTunningError` immediately (server startup or CLI invocation), rather than silently scoring every prediction's k-NN signal against the wrong class.
+
+`/predict` bounds the upload read to `MAX_UPLOAD_SIZE_BYTES` (default 25 MB), read in 1 MB chunks — an unbounded `await file.read()` would otherwise load an arbitrarily large upload into worker memory before any check ran.
 
 Backfill `ood_stats.npz` for an already-trained model (no retraining):
 

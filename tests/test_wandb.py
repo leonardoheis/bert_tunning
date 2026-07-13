@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+from src.ood import OodThresholds
 from src.schema import CalibrationReport, PredictResult
 from src.wandb import log_ood_calibration_results, log_predict_folder_results
 
@@ -113,6 +114,7 @@ def test_log_ood_calibration_results_logs_summary_metrics() -> None:
         suggested_cosine_threshold=13.7186,
         suggested_knn_threshold=4.2,
     )
+    thresholds = OodThresholds(mahalanobis_p=0.001, cosine_z=13.7366, knn_distance=16.7908)
     with (
         patch("src.wandb.wandb.init") as mock_init,
         patch("src.wandb.wandb.log") as mock_log,
@@ -123,10 +125,17 @@ def test_log_ood_calibration_results_logs_summary_metrics() -> None:
             model_path="fake/model",
             cache_path="fake/cache.parquet",
             target_fp_rate=0.01,
+            thresholds=thresholds,
         )
 
     mock_init.assert_called_once()
     assert mock_init.call_args.kwargs["job_type"] == "ood-calibration"
+    # The resolved per-model thresholds (not Settings.OOD_*) must be what's logged as
+    # "current" -- and knn is now included, which it wasn't before this task.
+    config = mock_init.call_args.kwargs["config"]
+    assert config["current_mahalanobis_threshold"] == 0.001  # noqa: PLR2004
+    assert config["current_cosine_threshold"] == 13.7366  # noqa: PLR2004
+    assert config["current_knn_threshold"] == 16.7908  # noqa: PLR2004
     mock_log.assert_called_once_with(
         {
             "ood/fp_rate_mahalanobis": 0.2951,

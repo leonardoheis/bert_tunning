@@ -1,6 +1,7 @@
 import logging
 
 import wandb
+from src.ood import OodThresholds
 from src.schema import CalibrationReport, EvaluationResult, Hyperparams, PredictResult
 from src.settings import Settings
 
@@ -90,9 +91,22 @@ def log_predict_folder_results(
 
 
 def log_ood_calibration_results(
-    report: CalibrationReport, *, model_path: str, cache_path: str, target_fp_rate: float
+    report: CalibrationReport,
+    *,
+    model_path: str,
+    cache_path: str,
+    target_fp_rate: float,
+    thresholds: OodThresholds,
 ) -> None:
-    """Log an evaluate-ood-calibration run's summary metrics to W&B."""
+    """Log an evaluate-ood-calibration run's summary metrics to W&B.
+
+    `thresholds` must be the resolved per-model OodThresholds (resolve_ood_thresholds(stats)),
+    not Settings.OOD_* directly -- otherwise a W&B dashboard comparing calibration runs across
+    models with different per-model thresholds shows the identical "current threshold" for
+    every model, silently wrong once any model has calibrated values written via
+    --write-thresholds. Also logs the k-NN threshold, which this function previously omitted
+    entirely.
+    """
     wandb.init(
         entity=Settings.WANDB_ENTITY,
         project=Settings.WANDB_PROJECT,
@@ -101,8 +115,9 @@ def log_ood_calibration_results(
             "model_path": model_path,
             "cache_path": cache_path,
             "target_fp_rate": target_fp_rate,
-            "current_mahalanobis_threshold": Settings.OOD_MAHALANOBIS_P_THRESHOLD,
-            "current_cosine_threshold": Settings.OOD_COSINE_THRESHOLD,
+            "current_mahalanobis_threshold": thresholds.mahalanobis_p,
+            "current_cosine_threshold": thresholds.cosine_z,
+            "current_knn_threshold": thresholds.knn_distance,
         },
     )
     wandb.log(

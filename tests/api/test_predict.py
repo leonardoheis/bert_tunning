@@ -158,3 +158,15 @@ def test_predict_endpoint_returns_theoretical_mahalanobis_p_value() -> None:
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()["mahalanobisPValueTheoretical"] == expected_theoretical_p
+
+
+def test_predict_endpoint_rejects_upload_exceeding_max_size() -> None:
+    app = create_app(model_path="fake/path")
+    app.state.clf = MagicMock()  # satisfy dependency; classifier is irrelevant to this assertion
+    with patch("src.api.routes.predict.endpoints.Settings.MAX_UPLOAD_SIZE_BYTES", 10):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+    assert response.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE

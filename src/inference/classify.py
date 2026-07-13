@@ -9,8 +9,13 @@ import numpy.typing as npt
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerBase
 
+from src.exceptions import BertTunningError
 from src.ingestion.extract import clean_text
 from src.ood import (
+    OodThresholds as OodThresholds,  # noqa: PLC0414 -- explicit re-export: mypy strict's
+)
+from src.ood import (
+    # no_implicit_reexport otherwise blocks tests from importing OodThresholds via this module
     compute_train_mahalanobis_distances,
     cosine_z_score,
     empirical_survival_p_value,
@@ -18,6 +23,7 @@ from src.ood import (
     load_stats,
     mahalanobis_chi2_p_value_from_distance,
     mahalanobis_min_distance,
+    resolve_ood_thresholds,
 )
 from src.schema import ClassEmbeddingStats, PredictResult
 from src.settings import Settings
@@ -60,30 +66,33 @@ class OodScores(NamedTuple):
     knn_distance: float
 
 
-def is_out_of_distribution(scores: OodScores) -> bool:
+def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool:
     """Any one of the three OOD signals firing is enough -- a deliberate OR, not a
     weighted blend (see README's "OOD scoring internals" for why). NaN in knn_distance
     means the predicted class had zero training points to compare against; treated as
     anomalous, fail-safe, since `nan > threshold` would otherwise silently pass.
+    `thresholds` comes from resolve_ood_thresholds(stats) -- per-model calibrated values
+    when available, Settings.OOD_* fallback otherwise. Never reads Settings directly here,
+    or a model's decisions silently use whichever thresholds happen to be configured for a
+    completely different model.
     """
-    maha_anomalous = scores.mahalanobis_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD
-    cosine_anomalous = scores.cosine_z > Settings.OOD_COSINE_THRESHOLD
+    maha_anomalous = scores.mahalanobis_p < thresholds.mahalanobis_p
+    cosine_anomalous = scores.cosine_z > thresholds.cosine_z
     knn_anomalous = (
-        bool(np.isnan(scores.knn_distance))
-        or scores.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
+        bool(np.isnan(scores.knn_distance)) or scores.knn_distance > thresholds.knn_distance
     )
     log.debug(
         "OOD signals: mahalanobis_p=%.6f (threshold=%.6f, anomalous=%s), "
         "cosine_z=%.4f (threshold=%.4f, anomalous=%s), "
         "knn_distance=%.4f (threshold=%.4f, anomalous=%s)",
         scores.mahalanobis_p,
-        Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        thresholds.mahalanobis_p,
         maha_anomalous,
         scores.cosine_z,
-        Settings.OOD_COSINE_THRESHOLD,
+        thresholds.cosine_z,
         cosine_anomalous,
         scores.knn_distance,
-        Settings.OOD_KNN_DISTANCE_THRESHOLD,
+        thresholds.knn_distance,
         knn_anomalous,
     )
     return maha_anomalous or cosine_anomalous or knn_anomalous
@@ -124,6 +133,9 @@ class BertTunningClassifier:
             self.model.config.max_position_embeddings,  # type: ignore[union-attr]
         )
         self._ood_stats = self._load_ood_stats(model_path)
+        self._validate_ood_stats_class_mapping()
+        self._validate_ood_stats_model_identity()
+        self._warn_on_uncalibrated_thresholds()
         log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
 
     @staticmethod
@@ -134,6 +146,95 @@ class BertTunningClassifier:
             return None
         log.info("Loaded OOD stats from %s", stats_path)
         return load_stats(stats_path)
+
+    def _validate_ood_stats_class_mapping(self) -> None:
+        """ood_stats.npz's class_names must match this model's id2label -- by count AND by
+        ordered index, since knn_mean_distance() indexes stats.knn_train_labels directly by
+        the model's own predicted label id (see predict_text). A silently mismatched or
+        stale ood_stats.npz would score every prediction's k-NN signal against the wrong
+        class's neighbors with no error. Fails fast here, once, at classifier construction
+        (server startup or CLI invocation) -- not per-request, so a bad artifact can't reach
+        production traffic at all rather than corrupting scores silently."""
+        if self._ood_stats is None:
+            return
+        id2label: dict[int, str] = self.model.config.id2label
+        expected = [id2label[i] for i in range(len(id2label))]
+        if self._ood_stats.class_names != expected:
+            msg = (
+                f"ood_stats.npz class_names {self._ood_stats.class_names} do not match "
+                f"this model's id2label {expected} (order matters, not just the set) -- "
+                "OOD scoring would silently score against the wrong classes. Regenerate "
+                "ood_stats.npz for this exact model with compute-ood-stats."
+            )
+            raise BertTunningError(msg)
+
+    def _validate_ood_stats_model_identity(self) -> None:
+        """class_names alone can't distinguish two different model architectures when both
+        were trained on the identical corpus/label set -- true for every model in this
+        project's registry (xlm-roberta/beto/minilm all commonly train on the same
+        FOLDER_TO_LABEL classes). model_type + hidden_size is a coarse fingerprint that
+        catches the realistic mistake (copying one model's ood_stats.npz next to a
+        different architecture) without a new CLI flag or fragile checkpoint-metadata
+        introspection. Skipped entirely when the stats predate this field (both None) --
+        this is an additional check layered on top of the class-mapping one, not a
+        replacement for it, and not a hard requirement for older artifacts."""
+        if self._ood_stats is None:
+            return
+        if self._ood_stats.model_type is None or self._ood_stats.model_hidden_size is None:
+            return
+        actual_type = self.model.config.model_type
+        actual_hidden_size = self.model.config.hidden_size
+        if (
+            self._ood_stats.model_type != actual_type
+            or self._ood_stats.model_hidden_size != actual_hidden_size
+        ):
+            msg = (
+                f"ood_stats.npz was computed from model_type={self._ood_stats.model_type!r}, "
+                f"hidden_size={self._ood_stats.model_hidden_size}, but the loaded model is "
+                f"model_type={actual_type!r}, hidden_size={actual_hidden_size} -- this "
+                "ood_stats.npz belongs to a different model architecture. Regenerate it for "
+                "this exact model with compute-ood-stats."
+            )
+            raise BertTunningError(msg)
+
+    def _warn_on_uncalibrated_thresholds(self) -> None:
+        """resolve_ood_thresholds()'s silent Settings.OOD_* fallback is intentional backward
+        compatibility, not something to hide from whoever operates this service -- a model
+        that's never been through `evaluate-ood-calibration --write-thresholds` silently
+        inherits whichever model Settings.OOD_* happens to be calibrated for. This does not
+        fail startup -- an uncalibrated model is still usable, just with potentially
+        miscalibrated OOD decisions -- but it must not be silent either. Runs once at
+        construction, not per-request. mahalanobis_threshold_status distinguishes "never
+        calibrated" (this WARNING) from "calibration ran, degenerate-threshold guard
+        correctly refused to persist a value" (a separate, non-actionable INFO line below) --
+        collapsing both into one message here is exactly the ambiguity that field exists to
+        remove."""
+        if self._ood_stats is None:
+            return
+        uncalibrated = [
+            name
+            for name, value in (
+                ("cosine_threshold", self._ood_stats.cosine_threshold),
+                ("knn_distance_threshold", self._ood_stats.knn_distance_threshold),
+            )
+            if value is None
+        ]
+        if self._ood_stats.mahalanobis_threshold_status == "not_calibrated":
+            uncalibrated.append("mahalanobis_p_threshold")
+        if uncalibrated:
+            log.warning(
+                "ood_stats.npz has no per-model value for %s -- falling back to Settings.OOD_* "
+                "(calibrated for a specific model, not necessarily this one). Run "
+                "evaluate-ood-calibration --write-thresholds for this model to silence this.",
+                ", ".join(uncalibrated),
+            )
+        if self._ood_stats.mahalanobis_threshold_status == "refused_degenerate":
+            log.info(
+                "mahalanobis_p_threshold falls back to Settings.OOD_MAHALANOBIS_P_THRESHOLD "
+                "because evaluate-ood-calibration's degenerate-threshold guard correctly "
+                "refused to persist a floor-adjacent value for this model -- expected, no "
+                "action needed."
+            )
 
     @cached_property
     def _train_mahalanobis_distances(self) -> npt.NDArray[np.float64] | None:
@@ -198,7 +299,8 @@ class BertTunningClassifier:
         maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(
             squared_distance, self._ood_stats
         )
-        in_distribution = not is_out_of_distribution(scores)
+        thresholds = resolve_ood_thresholds(self._ood_stats)
+        in_distribution = not is_out_of_distribution(scores, thresholds)
         return result.model_copy(
             update={
                 "mahalanobis_p_value": round(scores.mahalanobis_p, 6),

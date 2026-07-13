@@ -7,23 +7,25 @@ import numpy.typing as npt
 import pytest
 import torch
 
+from src.embeddings import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
+from src.exceptions import BertTunningError
 from src.ood import (
-    LoadedModel,
     compute_class_stats,
     compute_train_mahalanobis_distances,
     cosine_min_distance,
     cosine_z_score,
     empirical_survival_p_value,
-    extract_embeddings,
     knn_mean_distance,
     load_stats,
     mahalanobis_chi2_p_value,
     mahalanobis_chi2_p_value_from_distance,
     mahalanobis_empirical_p_value,
     mahalanobis_min_distance,
+    resolve_ood_thresholds,
     save_stats,
 )
 from src.schema import ClassEmbeddingStats
+from src.settings import Settings
 
 
 def _synthetic_embeddings() -> tuple[npt.NDArray[np.float64], list[int], list[str]]:
@@ -251,3 +253,321 @@ def test_extract_embeddings_returns_correct_shape() -> None:
     loaded = LoadedModel(model=model, tokenizer=tokenizer, device="cpu")
     embeddings = extract_embeddings(loaded, ["doc one", "doc two"], max_length=8, batch_size=2)
     assert embeddings.shape == (2, 16)
+
+
+def test_save_and_load_stats_roundtrip_includes_thresholds() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+        update={
+            "mahalanobis_p_threshold": 0.001,
+            "cosine_threshold": 13.7366,
+            "knn_distance_threshold": 26.125,
+        }
+    )
+    path = Path("test_stats_thresholds.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_p_threshold == pytest.approx(0.001)
+        assert loaded.cosine_threshold == pytest.approx(13.7366)
+        assert loaded.knn_distance_threshold == pytest.approx(26.125)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_thresholds_default_to_none() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_no_thresholds.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_p_threshold is None
+        assert loaded.cosine_threshold is None
+        assert loaded.knn_distance_threshold is None
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_includes_threshold_status() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+        update={"mahalanobis_threshold_status": "refused_degenerate"}
+    )
+    path = Path("test_stats_threshold_status.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_threshold_status == "refused_degenerate"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_threshold_status_defaults_to_not_calibrated() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_threshold_status_default.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_threshold_status == "not_calibrated"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_stats_handles_legacy_file_without_threshold_status_field() -> None:
+    # A pre-this-change ood_stats.npz has no mahalanobis_threshold_status key at all --
+    # load_stats must not KeyError, and must default to "not_calibrated".
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_legacy_threshold_status.npz")
+    try:
+        np.savez(
+            str(path),
+            class_names=np.array(stats.class_names),
+            pca_mean=stats.pca_mean,
+            pca_components=stats.pca_components,
+            centroids=stats.centroids,
+            covariance_inv=stats.covariance_inv,
+            cosine_calibration_mean=stats.cosine_calibration_mean,
+            cosine_calibration_std=stats.cosine_calibration_std,
+            knn_train_embeddings=stats.knn_train_embeddings,
+            knn_train_labels=np.array(stats.knn_train_labels),
+        )
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_threshold_status == "not_calibrated"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_stats_rejects_unknown_threshold_status() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_bad_threshold_status.npz")
+    try:
+        np.savez(
+            str(path),
+            class_names=np.array(stats.class_names),
+            pca_mean=stats.pca_mean,
+            pca_components=stats.pca_components,
+            centroids=stats.centroids,
+            covariance_inv=stats.covariance_inv,
+            cosine_calibration_mean=stats.cosine_calibration_mean,
+            cosine_calibration_std=stats.cosine_calibration_std,
+            knn_train_embeddings=stats.knn_train_embeddings,
+            knn_train_labels=np.array(stats.knn_train_labels),
+            mahalanobis_threshold_status="not_a_real_status",
+        )
+        with pytest.raises(BertTunningError, match="mahalanobis_threshold_status"):
+            load_stats(path)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_stats_leaves_original_file_untouched_if_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_atomic_original.npz")
+    try:
+        # A real, previously-good file already exists at `path`.
+        save_stats(stats, path)
+        original_bytes = path.read_bytes()
+
+        # Simulate a crash mid-write: np.savez succeeds but the written file is corrupt/
+        # incomplete, so load_stats(tmp_path) inside save_stats must raise before the
+        # original file is ever touched.
+        def _broken_savez(*_args: object, **_kwargs: object) -> None:
+            msg = "simulated write failure"
+            raise OSError(msg)
+
+        monkeypatch.setattr(np, "savez", _broken_savez)
+        with pytest.raises(OSError, match="simulated write failure"):
+            save_stats(stats, path)
+
+        assert path.read_bytes() == original_bytes  # untouched
+        assert not path.with_name(path.name + ".tmp").exists()  # tmp file cleaned up
+    finally:
+        path.unlink(missing_ok=True)
+        path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+
+
+def test_save_stats_leaves_original_file_untouched_when_load_back_verification_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unlike test_save_stats_leaves_original_file_untouched_if_write_fails (which fails
+    # np.savez itself, before any bytes hit disk), this exercises the actual gap the
+    # load-back verification step exists to close: np.savez succeeds and writes real bytes
+    # to the tmp file, but load_stats(tmp_path) -- called from inside save_stats() to catch
+    # a corrupt/incomplete write before it's ever promoted to the real path -- fails. A
+    # regression that silently dropped that verification call would still leave both other
+    # atomic-write tests passing; this one would catch it.
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_atomic_verify_fails.npz")
+    try:
+        save_stats(stats, path)
+        original_bytes = path.read_bytes()
+
+        real_load_stats = load_stats
+
+        def _load_stats_that_rejects_tmp_files(p: Path) -> ClassEmbeddingStats:
+            if str(p).endswith(".tmp"):
+                msg = "simulated corrupt tmp file"
+                raise ValueError(msg)
+            return real_load_stats(p)
+
+        monkeypatch.setattr("src.ood.load_stats", _load_stats_that_rejects_tmp_files)
+        with pytest.raises(ValueError, match="simulated corrupt tmp file"):
+            save_stats(stats, path)
+
+        assert path.read_bytes() == original_bytes  # untouched -- no bad replace happened
+        assert not path.with_name(path.name + ".tmp").exists()  # tmp file cleaned up
+    finally:
+        path.unlink(missing_ok=True)
+        path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+
+
+def test_save_stats_does_not_leave_tmp_file_on_success() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_atomic_success.npz")
+    try:
+        save_stats(stats, path)
+        assert path.exists()
+        assert not path.with_name(path.name + ".tmp").exists()
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_includes_model_identity() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(
+        embeddings,
+        labels,
+        class_names,
+        n_components=8,
+        model_type="bert",
+        model_hidden_size=768,
+    )
+    path = Path("test_stats_identity.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.model_type == "bert"
+        assert loaded.model_hidden_size == 768  # noqa: PLR2004
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_model_identity_defaults_to_none() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_identity_none.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.model_type is None
+        assert loaded.model_hidden_size is None
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_stats_handles_legacy_file_without_model_identity_fields() -> None:
+    # A pre-this-task ood_stats.npz (including one written by Task 1's atomic save_stats,
+    # which predates the model_type/model_hidden_size keys) has neither key at all.
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_identity_legacy.npz")
+    try:
+        with path.open("wb") as f:
+            np.savez(
+                f,
+                class_names=np.array(stats.class_names),
+                pca_mean=stats.pca_mean,
+                pca_components=stats.pca_components,
+                centroids=stats.centroids,
+                covariance_inv=stats.covariance_inv,
+                cosine_calibration_mean=stats.cosine_calibration_mean,
+                cosine_calibration_std=stats.cosine_calibration_std,
+                knn_train_embeddings=stats.knn_train_embeddings,
+                knn_train_labels=np.array(stats.knn_train_labels),
+                mahalanobis_p_threshold=np.nan,
+                cosine_threshold=np.nan,
+                knn_distance_threshold=np.nan,
+            )
+        loaded = load_stats(path)
+        assert loaded.model_type is None
+        assert loaded.model_hidden_size is None
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_stats_handles_legacy_file_without_threshold_fields() -> None:
+    # A pre-this-change ood_stats.npz has no threshold keys at all (not even as NaN) --
+    # load_stats must not KeyError, and must resolve all three to None.
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_legacy.npz")
+    try:
+        np.savez(
+            str(path),
+            class_names=np.array(stats.class_names),
+            pca_mean=stats.pca_mean,
+            pca_components=stats.pca_components,
+            centroids=stats.centroids,
+            covariance_inv=stats.covariance_inv,
+            cosine_calibration_mean=stats.cosine_calibration_mean,
+            cosine_calibration_std=stats.cosine_calibration_std,
+            knn_train_embeddings=stats.knn_train_embeddings,
+            knn_train_labels=np.array(stats.knn_train_labels),
+        )
+        loaded = load_stats(path)
+        assert loaded.mahalanobis_p_threshold is None
+        assert loaded.cosine_threshold is None
+        assert loaded.knn_distance_threshold is None
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_resolve_ood_thresholds_falls_back_to_settings_when_stats_thresholds_none() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    thresholds = resolve_ood_thresholds(stats)
+    assert thresholds.mahalanobis_p == Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    assert thresholds.cosine_z == Settings.OOD_COSINE_THRESHOLD
+    assert thresholds.knn_distance == Settings.OOD_KNN_DISTANCE_THRESHOLD
+
+
+def test_resolve_ood_thresholds_uses_stats_values_when_present() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+        update={
+            "mahalanobis_p_threshold": 0.002,
+            "cosine_threshold": 5.0,
+            "knn_distance_threshold": 10.0,
+        }
+    )
+    thresholds = resolve_ood_thresholds(stats)
+    assert thresholds.mahalanobis_p == pytest.approx(0.002)
+    assert thresholds.cosine_z == pytest.approx(5.0)
+    assert thresholds.knn_distance == pytest.approx(10.0)
+
+
+def test_extract_embeddings_and_predictions_returns_matching_lengths() -> None:
+    tokenizer = MagicMock()
+    tokenizer.return_value.to.return_value = {
+        "input_ids": torch.zeros(2, 8, dtype=torch.long),
+        "attention_mask": torch.ones(2, 8, dtype=torch.long),
+    }
+    model = MagicMock()
+    model.return_value.hidden_states = [torch.zeros(2, 8, 4)]
+    model.return_value.logits = torch.tensor([[2.0, 0.5], [0.1, 3.0]])
+
+    loaded = LoadedModel(model=model, tokenizer=tokenizer, device="cpu")
+    embeddings, predicted_ids = extract_embeddings_and_predictions(
+        loaded, ["doc one", "doc two"], max_length=8
+    )
+    assert embeddings.shape == (2, 4)
+    assert predicted_ids == [0, 1]  # argmax of each row above
