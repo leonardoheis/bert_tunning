@@ -233,6 +233,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
             model_path=opts.model_path,
             cache_path=opts.cache_path,
             target_fp_rate=opts.target_fp_rate,
+            thresholds=current_thresholds,
         )
 
 
