@@ -135,6 +135,7 @@ class BertTunningClassifier:
         self._ood_stats = self._load_ood_stats(model_path)
         self._validate_ood_stats_class_mapping()
         self._validate_ood_stats_model_identity()
+        self._warn_on_uncalibrated_thresholds()
         log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
 
     @staticmethod
@@ -195,6 +196,34 @@ class BertTunningClassifier:
                 "this exact model with compute-ood-stats."
             )
             raise BertTunningError(msg)
+
+    def _warn_on_uncalibrated_thresholds(self) -> None:
+        """resolve_ood_thresholds()'s silent Settings.OOD_* fallback is intentional backward
+        compatibility, not something to hide from whoever operates this service -- a model
+        that's never been through `evaluate-ood-calibration --write-thresholds` (or, like
+        BETO v2's Mahalanobis threshold, had a write correctly refused by the
+        degenerate-threshold guard) silently inherits whichever model Settings.OOD_* happens
+        to be calibrated for. This does not fail startup -- an uncalibrated model is still
+        usable, just with potentially miscalibrated OOD decisions -- but it must not be
+        silent either. Runs once at construction, not per-request."""
+        if self._ood_stats is None:
+            return
+        uncalibrated = [
+            name
+            for name, value in (
+                ("mahalanobis_p_threshold", self._ood_stats.mahalanobis_p_threshold),
+                ("cosine_threshold", self._ood_stats.cosine_threshold),
+                ("knn_distance_threshold", self._ood_stats.knn_distance_threshold),
+            )
+            if value is None
+        ]
+        if uncalibrated:
+            log.warning(
+                "ood_stats.npz has no per-model value for %s -- falling back to Settings.OOD_* "
+                "(calibrated for a specific model, not necessarily this one). Run "
+                "evaluate-ood-calibration --write-thresholds for this model to silence this.",
+                ", ".join(uncalibrated),
+            )
 
     @cached_property
     def _train_mahalanobis_distances(self) -> npt.NDArray[np.float64] | None:

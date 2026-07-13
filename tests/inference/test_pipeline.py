@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -564,3 +565,72 @@ def test_classifier_skips_validation_when_no_ood_stats(tmp_path: Path) -> None:
     with patch("torch.cuda.is_available", return_value=False):
         clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
     assert clf._ood_stats is None  # noqa: SLF001
+
+
+def test_classifier_warns_when_thresholds_fall_back_to_settings(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    # _make_stats() leaves all three thresholds at their None default -- fully uncalibrated.
+    save_stats(_make_stats(), tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        caplog.at_level(logging.WARNING),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+    assert any("falling back to Settings.OOD_*" in record.message for record in caplog.records)
+    assert any("mahalanobis_p_threshold" in record.message for record in caplog.records)
+    assert any("cosine_threshold" in record.message for record in caplog.records)
+    assert any("knn_distance_threshold" in record.message for record in caplog.records)
+
+
+def test_classifier_does_not_warn_when_thresholds_are_fully_calibrated(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    stats = _make_stats().model_copy(
+        update={
+            "mahalanobis_p_threshold": 0.001,
+            "cosine_threshold": 13.7366,
+            "knn_distance_threshold": 16.7908,
+        }
+    )
+    save_stats(stats, tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        caplog.at_level(logging.WARNING),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+    assert not any("falling back to Settings.OOD_*" in record.message for record in caplog.records)
+
+
+def test_classifier_does_not_warn_when_no_ood_stats(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        caplog.at_level(logging.WARNING),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+    assert not any("falling back to Settings.OOD_*" in record.message for record in caplog.records)
