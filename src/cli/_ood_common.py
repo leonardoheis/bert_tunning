@@ -8,7 +8,7 @@ import torch
 from sklearn.preprocessing import LabelEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.ood import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
+from src.embeddings import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
 from src.training.split import make_split
 from src.training.tokenize import prepare_text
 

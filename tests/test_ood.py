@@ -7,15 +7,13 @@ import numpy.typing as npt
 import pytest
 import torch
 
+from src.embeddings import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
 from src.ood import (
-    LoadedModel,
     compute_class_stats,
     compute_train_mahalanobis_distances,
     cosine_min_distance,
     cosine_z_score,
     empirical_survival_p_value,
-    extract_embeddings,
-    extract_embeddings_and_predictions,
     knn_mean_distance,
     load_stats,
     mahalanobis_chi2_p_value,

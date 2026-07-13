@@ -9,7 +9,8 @@ import pytest
 from click.testing import CliRunner, Result
 
 from src.cli.ood_calibration import build_calibration_report, evaluate_ood_calibration_cmd
-from src.ood import LoadedModel, OodThresholds, load_stats, save_stats
+from src.embeddings import LoadedModel
+from src.ood import OodThresholds, load_stats, save_stats
 from src.ood import knn_mean_distance as real_knn_mean_distance
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
