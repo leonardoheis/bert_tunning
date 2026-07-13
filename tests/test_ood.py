@@ -319,6 +319,42 @@ def test_save_stats_leaves_original_file_untouched_if_write_fails(
         path.with_name(path.name + ".tmp").unlink(missing_ok=True)
 
 
+def test_save_stats_leaves_original_file_untouched_when_load_back_verification_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unlike test_save_stats_leaves_original_file_untouched_if_write_fails (which fails
+    # np.savez itself, before any bytes hit disk), this exercises the actual gap the
+    # load-back verification step exists to close: np.savez succeeds and writes real bytes
+    # to the tmp file, but load_stats(tmp_path) -- called from inside save_stats() to catch
+    # a corrupt/incomplete write before it's ever promoted to the real path -- fails. A
+    # regression that silently dropped that verification call would still leave both other
+    # atomic-write tests passing; this one would catch it.
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_atomic_verify_fails.npz")
+    try:
+        save_stats(stats, path)
+        original_bytes = path.read_bytes()
+
+        real_load_stats = load_stats
+
+        def _load_stats_that_rejects_tmp_files(p: Path) -> ClassEmbeddingStats:
+            if str(p).endswith(".tmp"):
+                msg = "simulated corrupt tmp file"
+                raise ValueError(msg)
+            return real_load_stats(p)
+
+        monkeypatch.setattr("src.ood.load_stats", _load_stats_that_rejects_tmp_files)
+        with pytest.raises(ValueError, match="simulated corrupt tmp file"):
+            save_stats(stats, path)
+
+        assert path.read_bytes() == original_bytes  # untouched -- no bad replace happened
+        assert not path.with_name(path.name + ".tmp").exists()  # tmp file cleaned up
+    finally:
+        path.unlink(missing_ok=True)
+        path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+
+
 def test_save_stats_does_not_leave_tmp_file_on_success() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
