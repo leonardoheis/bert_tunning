@@ -367,6 +367,69 @@ def test_save_stats_does_not_leave_tmp_file_on_success() -> None:
         path.unlink(missing_ok=True)
 
 
+def test_save_and_load_stats_roundtrip_includes_model_identity() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(
+        embeddings,
+        labels,
+        class_names,
+        n_components=8,
+        model_type="bert",
+        model_hidden_size=768,
+    )
+    path = Path("test_stats_identity.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.model_type == "bert"
+        assert loaded.model_hidden_size == 768  # noqa: PLR2004
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_save_and_load_stats_roundtrip_model_identity_defaults_to_none() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_identity_none.npz")
+    try:
+        save_stats(stats, path)
+        loaded = load_stats(path)
+        assert loaded.model_type is None
+        assert loaded.model_hidden_size is None
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_stats_handles_legacy_file_without_model_identity_fields() -> None:
+    # A pre-this-task ood_stats.npz (including one written by Task 1's atomic save_stats,
+    # which predates the model_type/model_hidden_size keys) has neither key at all.
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_identity_legacy.npz")
+    try:
+        with path.open("wb") as f:
+            np.savez(
+                f,
+                class_names=np.array(stats.class_names),
+                pca_mean=stats.pca_mean,
+                pca_components=stats.pca_components,
+                centroids=stats.centroids,
+                covariance_inv=stats.covariance_inv,
+                cosine_calibration_mean=stats.cosine_calibration_mean,
+                cosine_calibration_std=stats.cosine_calibration_std,
+                knn_train_embeddings=stats.knn_train_embeddings,
+                knn_train_labels=np.array(stats.knn_train_labels),
+                mahalanobis_p_threshold=np.nan,
+                cosine_threshold=np.nan,
+                knn_distance_threshold=np.nan,
+            )
+        loaded = load_stats(path)
+        assert loaded.model_type is None
+        assert loaded.model_hidden_size is None
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_load_stats_handles_legacy_file_without_threshold_fields() -> None:
     # A pre-this-change ood_stats.npz has no threshold keys at all (not even as NaN) --
     # load_stats must not KeyError, and must resolve all three to None.

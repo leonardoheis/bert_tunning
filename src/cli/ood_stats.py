@@ -53,6 +53,8 @@ def _run_compute_ood_stats(opts: ComputeOodStatsOptions) -> None:
         split.train_df["label_id"].tolist(),
         split.classes,
         n_components=Settings.OOD_PCA_COMPONENTS,
+        model_type=split.loaded.model.config.model_type,  # type: ignore[union-attr,arg-type]
+        model_hidden_size=split.loaded.model.config.hidden_size,  # type: ignore[union-attr,arg-type]
     )
 
     out_path = Path(opts.model_path) / "ood_stats.npz"

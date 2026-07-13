@@ -134,6 +134,7 @@ class BertTunningClassifier:
         )
         self._ood_stats = self._load_ood_stats(model_path)
         self._validate_ood_stats_class_mapping()
+        self._validate_ood_stats_model_identity()
         log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
 
     @staticmethod
@@ -163,6 +164,35 @@ class BertTunningClassifier:
                 f"this model's id2label {expected} (order matters, not just the set) -- "
                 "OOD scoring would silently score against the wrong classes. Regenerate "
                 "ood_stats.npz for this exact model with compute-ood-stats."
+            )
+            raise BertTunningError(msg)
+
+    def _validate_ood_stats_model_identity(self) -> None:
+        """class_names alone can't distinguish two different model architectures when both
+        were trained on the identical corpus/label set -- true for every model in this
+        project's registry (xlm-roberta/beto/minilm all commonly train on the same
+        FOLDER_TO_LABEL classes). model_type + hidden_size is a coarse fingerprint that
+        catches the realistic mistake (copying one model's ood_stats.npz next to a
+        different architecture) without a new CLI flag or fragile checkpoint-metadata
+        introspection. Skipped entirely when the stats predate this field (both None) --
+        this is an additional check layered on top of the class-mapping one, not a
+        replacement for it, and not a hard requirement for older artifacts."""
+        if self._ood_stats is None:
+            return
+        if self._ood_stats.model_type is None or self._ood_stats.model_hidden_size is None:
+            return
+        actual_type = self.model.config.model_type
+        actual_hidden_size = self.model.config.hidden_size
+        if (
+            self._ood_stats.model_type != actual_type
+            or self._ood_stats.model_hidden_size != actual_hidden_size
+        ):
+            msg = (
+                f"ood_stats.npz was computed from model_type={self._ood_stats.model_type!r}, "
+                f"hidden_size={self._ood_stats.model_hidden_size}, but the loaded model is "
+                f"model_type={actual_type!r}, hidden_size={actual_hidden_size} -- this "
+                "ood_stats.npz belongs to a different model architecture. Regenerate it for "
+                "this exact model with compute-ood-stats."
             )
             raise BertTunningError(msg)
 

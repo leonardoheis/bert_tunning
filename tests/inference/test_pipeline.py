@@ -495,6 +495,65 @@ def test_classifier_loads_fine_when_ood_stats_class_names_match(tmp_path: Path) 
     assert clf._ood_stats is not None  # noqa: SLF001
 
 
+def test_classifier_raises_when_ood_stats_model_identity_mismatches(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+    model.config.model_type = "xlm-roberta"
+    model.config.hidden_size = 768
+
+    # Same class_names/order as the loaded model (passes the existing class-mapping check),
+    # but computed from a different model_type -- this is the exact gap the class-name-only
+    # check can't catch.
+    stats = _make_stats().model_copy(update={"model_type": "bert", "model_hidden_size": 768})
+    save_stats(stats, tmp_path / "ood_stats.npz")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        pytest.raises(BertTunningError, match="different model architecture"),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+
+def test_classifier_loads_fine_when_ood_stats_model_identity_matches(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+    model.config.model_type = "xlm-roberta"
+    model.config.hidden_size = 768
+
+    stats = _make_stats().model_copy(update={"model_type": "xlm-roberta", "model_hidden_size": 768})
+    save_stats(stats, tmp_path / "ood_stats.npz")
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._ood_stats is not None  # noqa: SLF001
+
+
+def test_classifier_skips_model_identity_check_when_stats_predate_the_field(
+    tmp_path: Path,
+) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+    model.config.model_type = "xlm-roberta"
+    model.config.hidden_size = 768
+
+    # _make_stats() doesn't set model_type/model_hidden_size -- both default to None,
+    # simulating an ood_stats.npz written before this field existed. No raise expected.
+    save_stats(_make_stats(), tmp_path / "ood_stats.npz")
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._ood_stats is not None  # noqa: SLF001
+
+
 def test_classifier_skips_validation_when_no_ood_stats(tmp_path: Path) -> None:
     tokenizer = MagicMock()
     tokenizer.model_max_length = 512

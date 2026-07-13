@@ -162,6 +162,8 @@ def run(
         train_df["label_id"].tolist(),
         list(le.classes_),
         n_components=Settings.OOD_PCA_COMPONENTS,
+        model_type=model.config.model_type,
+        model_hidden_size=model.config.hidden_size,
     )
     log.info("Computed OOD stats from %d training embeddings", train_embeddings.shape[0])
 

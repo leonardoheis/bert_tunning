@@ -113,6 +113,14 @@ class ClassEmbeddingStats(BaseModel):
     mahalanobis_p_threshold: float | None = None
     cosine_threshold: float | None = None
     knn_distance_threshold: float | None = None
+    # Coarse per-model identity fingerprint -- written by compute_class_stats() from the
+    # model that produced the embeddings, validated at classifier construction in
+    # BertTunningClassifier._validate_ood_stats_model_identity(). class_names alone can't
+    # distinguish two different model architectures trained on the same corpus/label set
+    # (true for every model in this project's registry). None means "predates this field" --
+    # the identity check is skipped entirely, not enforced as absent.
+    model_type: str | None = None
+    model_hidden_size: int | None = None
 
 
 class Hyperparams(BaseModel):

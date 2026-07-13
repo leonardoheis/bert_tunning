@@ -55,13 +55,18 @@ def _cosine_min_distance_raw(
     return float(cosine_distances(point.reshape(1, -1), centroids).min())
 
 
-def compute_class_stats(
+def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size are an optional
+    # identity fingerprint threaded through at the two call sites (training/pipeline.py,
+    # cli/ood_stats.py); bundling them into a NamedTuple for two rarely-varying trailing
+    # kwargs would be more ceremony than the limit is worth here.
     embeddings: npt.NDArray[np.float64],
     labels: list[int],
     class_names: list[str],
     *,
     n_components: int = 64,
     covariance_epsilon: float = 1e-6,
+    model_type: str | None = None,
+    model_hidden_size: int | None = None,
 ) -> ClassEmbeddingStats:
     pca_result = _reduce_dimensionality(embeddings, n_components)
     reduced = pca_result.reduced
@@ -87,6 +92,8 @@ def compute_class_stats(
         cosine_calibration_std=float(cosine_scores.std() + 1e-9),
         knn_train_embeddings=reduced,
         knn_train_labels=labels_arr.tolist(),
+        model_type=model_type,
+        model_hidden_size=model_hidden_size,
     )
 
 
@@ -260,6 +267,10 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
     )
     cosine_thresh = np.nan if stats.cosine_threshold is None else stats.cosine_threshold
     knn_thresh = np.nan if stats.knn_distance_threshold is None else stats.knn_distance_threshold
+    # "" / -1 are the None-sentinels for a string/int field, the same role NaN plays for the
+    # threshold floats above -- npz has no native optional-scalar support.
+    model_type = "" if stats.model_type is None else stats.model_type
+    model_hidden_size = -1 if stats.model_hidden_size is None else stats.model_hidden_size
 
     # Write to a temp file first, verify it actually loads back, then atomically replace the
     # real path -- np.savez writing directly to `path` left a window where a crash, disk-full,
@@ -286,6 +297,8 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
                 mahalanobis_p_threshold=maha_threshold,
                 cosine_threshold=cosine_thresh,
                 knn_distance_threshold=knn_thresh,
+                model_type=model_type,
+                model_hidden_size=model_hidden_size,
             )
         load_stats(tmp_path)  # fail fast on a corrupt/incomplete write, before touching `path`
         tmp_path.replace(path)
@@ -296,6 +309,16 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
 def _optional_threshold(data: npt.NDArray[np.float64]) -> float | None:
     value = float(data)
     return None if np.isnan(value) else value
+
+
+def _optional_str(data: npt.NDArray[np.str_]) -> str | None:
+    value = str(data)
+    return None if value == "" else value
+
+
+def _optional_int(data: npt.NDArray[np.int_]) -> int | None:
+    value = int(data)
+    return None if value == -1 else value
 
 
 def load_stats(path: Path) -> ClassEmbeddingStats:
@@ -321,6 +344,10 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         else None,
         knn_distance_threshold=_optional_threshold(data["knn_distance_threshold"])
         if "knn_distance_threshold" in data.files
+        else None,
+        model_type=_optional_str(data["model_type"]) if "model_type" in data.files else None,
+        model_hidden_size=_optional_int(data["model_hidden_size"])
+        if "model_hidden_size" in data.files
         else None,
     )
 
