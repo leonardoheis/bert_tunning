@@ -290,6 +290,47 @@ def test_save_and_load_stats_roundtrip_thresholds_default_to_none() -> None:
         path.unlink(missing_ok=True)
 
 
+def test_save_stats_leaves_original_file_untouched_if_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_atomic_original.npz")
+    try:
+        # A real, previously-good file already exists at `path`.
+        save_stats(stats, path)
+        original_bytes = path.read_bytes()
+
+        # Simulate a crash mid-write: np.savez succeeds but the written file is corrupt/
+        # incomplete, so load_stats(tmp_path) inside save_stats must raise before the
+        # original file is ever touched.
+        def _broken_savez(*_args: object, **_kwargs: object) -> None:
+            msg = "simulated write failure"
+            raise OSError(msg)
+
+        monkeypatch.setattr(np, "savez", _broken_savez)
+        with pytest.raises(OSError, match="simulated write failure"):
+            save_stats(stats, path)
+
+        assert path.read_bytes() == original_bytes  # untouched
+        assert not path.with_name(path.name + ".tmp").exists()  # tmp file cleaned up
+    finally:
+        path.unlink(missing_ok=True)
+        path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+
+
+def test_save_stats_does_not_leave_tmp_file_on_success() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = Path("test_stats_atomic_success.npz")
+    try:
+        save_stats(stats, path)
+        assert path.exists()
+        assert not path.with_name(path.name + ".tmp").exists()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_load_stats_handles_legacy_file_without_threshold_fields() -> None:
     # A pre-this-change ood_stats.npz has no threshold keys at all (not even as NaN) --
     # load_stats must not KeyError, and must resolve all three to None.

@@ -260,21 +260,37 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
     )
     cosine_thresh = np.nan if stats.cosine_threshold is None else stats.cosine_threshold
     knn_thresh = np.nan if stats.knn_distance_threshold is None else stats.knn_distance_threshold
-    np.savez(
-        str(path),
-        class_names=np.array(stats.class_names),
-        pca_mean=stats.pca_mean,
-        pca_components=stats.pca_components,
-        centroids=stats.centroids,
-        covariance_inv=stats.covariance_inv,
-        cosine_calibration_mean=stats.cosine_calibration_mean,
-        cosine_calibration_std=stats.cosine_calibration_std,
-        knn_train_embeddings=stats.knn_train_embeddings,
-        knn_train_labels=np.array(stats.knn_train_labels),
-        mahalanobis_p_threshold=maha_threshold,
-        cosine_threshold=cosine_thresh,
-        knn_distance_threshold=knn_thresh,
-    )
+
+    # Write to a temp file first, verify it actually loads back, then atomically replace the
+    # real path -- np.savez writing directly to `path` left a window where a crash, disk-full,
+    # or kill mid-write corrupts the ONLY copy of ood_stats.npz, which predict/serve also read
+    # from. Path.replace() (os.replace() under the hood) is atomic on both POSIX and Windows
+    # when src/dst are on the same filesystem (always true here -- same directory).
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        # A file handle, not a string/Path, is required here: np.savez auto-appends ".npz" to
+        # string/Path filenames that don't already end in it, which would silently save this
+        # as "....npz.tmp.npz" instead of the tmp_path we opened. A handle bypasses that.
+        with tmp_path.open("wb") as f:
+            np.savez(
+                f,
+                class_names=np.array(stats.class_names),
+                pca_mean=stats.pca_mean,
+                pca_components=stats.pca_components,
+                centroids=stats.centroids,
+                covariance_inv=stats.covariance_inv,
+                cosine_calibration_mean=stats.cosine_calibration_mean,
+                cosine_calibration_std=stats.cosine_calibration_std,
+                knn_train_embeddings=stats.knn_train_embeddings,
+                knn_train_labels=np.array(stats.knn_train_labels),
+                mahalanobis_p_threshold=maha_threshold,
+                cosine_threshold=cosine_thresh,
+                knn_distance_threshold=knn_thresh,
+            )
+        load_stats(tmp_path)  # fail fast on a corrupt/incomplete write, before touching `path`
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _optional_threshold(data: npt.NDArray[np.float64]) -> float | None:
