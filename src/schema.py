@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
@@ -54,6 +54,8 @@ class CalibrationReport(BaseModel):
     suggested_maha_threshold: float
     suggested_cosine_threshold: float
     suggested_knn_threshold: float
+    fp_rate_tfidf: float = 0.0
+    suggested_tfidf_threshold: float = 0.0
 
 
 class ExtractionMetadata(BaseModel):
@@ -132,6 +134,27 @@ class ClassEmbeddingStats(BaseModel):
     mahalanobis_threshold_status: Literal["not_calibrated", "calibrated", "refused_degenerate"] = (
         "not_calibrated"
     )
+    # TF-IDF cosine-centroid signal (added 2026-07-14) -- a fourth OOD signal, independent
+    # of the three above, operating on raw lexical vocabulary instead of BERT-embedding
+    # space. Catches divergence the embedding-based signals structurally cannot (e.g. a
+    # document naming a different municipality but sharing the same document-type shape).
+    # An empty vocabulary/idf/centroids together means "this ood_stats.npz predates this
+    # feature" -- a real fitted vectorizer always has >=1 term, so empty is an unambiguous
+    # "not fitted" sentinel (no None needed: see stop-using-none's "Nothing here" case).
+    # The signal is skipped entirely in is_out_of_distribution, not treated as anomalous.
+    tfidf_vocabulary_terms: list[str] = []  # ordered; index = TF-IDF feature id
+    tfidf_idf: Float64Array = Field(default_factory=lambda: np.zeros(0))
+    tfidf_centroids: Float64Array = Field(default_factory=lambda: np.zeros((0, 0)))
+    # These two stay Optional -- they're scalars with no safe zero-sentinel (a genuine
+    # calibration mean of 0.0 must stay distinguishable from "never computed"), matching
+    # the existing precedent mahalanobis_p_threshold/cosine_threshold/knn_distance_threshold
+    # already use for the identical reason.
+    tfidf_cosine_calibration_mean: float = 0.0
+    tfidf_cosine_calibration_std: float = 1.0  # never 0.0 -- avoids a divide-by-zero if
+    # ever read ungated, though every real caller already gates on tfidf_vocabulary_terms
+    # Per-model calibrated threshold, same role as cosine_threshold/knn_distance_threshold --
+    # no degenerate-guard status field needed, since that guard only ever applies to Mahalanobis.
+    tfidf_threshold: float | None = None
 
 
 class Hyperparams(BaseModel):

@@ -91,6 +91,11 @@ class _Settings(BaseSettings):
     # evaluate-ood-calibration if the training corpus changes materially.
     OOD_KNN_DISTANCE_THRESHOLD: float = 26.125
     TARGET_FP_RATE: float = 0.01
+    # Uncalibrated placeholder, matching how OOD_COSINE_THRESHOLD/OOD_KNN_DISTANCE_THRESHOLD
+    # started before their first evaluate-ood-calibration --write-thresholds run. Run that
+    # command for any model using this signal before trusting it in production.
+    OOD_TFIDF_COSINE_THRESHOLD: float = 2.5
+    OOD_TFIDF_MAX_FEATURES: int = 5000
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -19,3 +19,8 @@ def test_predict_result_ood_fields_default_to_none() -> None:
     assert result.mahalanobis_p_value is None
     assert result.cosine_z is None
     assert result.in_distribution is None
+
+
+def test_ood_tfidf_settings_have_defaults() -> None:
+    assert Settings.OOD_TFIDF_COSINE_THRESHOLD > 0
+    assert Settings.OOD_TFIDF_MAX_FEATURES > 0
