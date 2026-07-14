@@ -324,6 +324,7 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
     # threshold floats above -- npz has no native optional-scalar support.
     model_type = "" if stats.model_type is None else stats.model_type
     model_hidden_size = -1 if stats.model_hidden_size is None else stats.model_hidden_size
+    tfidf_threshold = np.nan if stats.tfidf_threshold is None else stats.tfidf_threshold
 
     # Write to a temp file first, verify it actually loads back, then atomically replace the
     # real path -- np.savez writing directly to `path` left a window where a crash, disk-full,
@@ -353,6 +354,12 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
                 model_type=model_type,
                 model_hidden_size=model_hidden_size,
                 mahalanobis_threshold_status=stats.mahalanobis_threshold_status,
+                tfidf_vocabulary_terms=np.array(stats.tfidf_vocabulary_terms),
+                tfidf_idf=stats.tfidf_idf,
+                tfidf_centroids=stats.tfidf_centroids,
+                tfidf_cosine_calibration_mean=stats.tfidf_cosine_calibration_mean,
+                tfidf_cosine_calibration_std=stats.tfidf_cosine_calibration_std,
+                tfidf_threshold=tfidf_threshold,
             )
         load_stats(tmp_path)  # fail fast on a corrupt/incomplete write, before touching `path`
         tmp_path.replace(path)
@@ -418,4 +425,28 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         mahalanobis_threshold_status=_threshold_status(data["mahalanobis_threshold_status"])
         if "mahalanobis_threshold_status" in data.files
         else "not_calibrated",
+        tfidf_vocabulary_terms=(
+            data["tfidf_vocabulary_terms"].tolist()
+            if "tfidf_vocabulary_terms" in data.files
+            else []
+        ),
+        tfidf_idf=(data["tfidf_idf"] if "tfidf_idf" in data.files else np.zeros(0)),
+        tfidf_centroids=(
+            data["tfidf_centroids"] if "tfidf_centroids" in data.files else np.zeros((0, 0))
+        ),
+        tfidf_cosine_calibration_mean=(
+            float(data["tfidf_cosine_calibration_mean"])
+            if "tfidf_cosine_calibration_mean" in data.files
+            else 0.0
+        ),
+        tfidf_cosine_calibration_std=(
+            float(data["tfidf_cosine_calibration_std"])
+            if "tfidf_cosine_calibration_std" in data.files
+            else 1.0
+        ),
+        tfidf_threshold=(
+            _optional_threshold(data["tfidf_threshold"])
+            if "tfidf_threshold" in data.files
+            else None
+        ),
     )

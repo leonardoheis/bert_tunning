@@ -535,6 +535,51 @@ def test_load_stats_handles_legacy_file_without_threshold_fields() -> None:
         path.unlink(missing_ok=True)
 
 
+def test_save_and_load_stats_roundtrip_includes_tfidf_fields(tmp_path: Path) -> None:
+    texts, labels, class_names = _synthetic_texts()
+    embeddings = np.random.default_rng(0).normal(size=(20, 16))
+    tfidf = compute_tfidf_stats(texts, labels, class_names, max_features=50)
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+        update={
+            "tfidf_vocabulary_terms": tfidf.vocabulary_terms,
+            "tfidf_idf": tfidf.idf,
+            "tfidf_centroids": tfidf.centroids,
+            "tfidf_cosine_calibration_mean": tfidf.cosine_calibration_mean,
+            "tfidf_cosine_calibration_std": tfidf.cosine_calibration_std,
+            "tfidf_threshold": 2.5,
+        }
+    )
+    path = tmp_path / "ood_stats.npz"
+    save_stats(stats, path)
+    loaded = load_stats(path)
+
+    assert loaded.tfidf_vocabulary_terms == stats.tfidf_vocabulary_terms
+    np.testing.assert_allclose(loaded.tfidf_idf, stats.tfidf_idf)
+    np.testing.assert_allclose(loaded.tfidf_centroids, stats.tfidf_centroids)
+    assert loaded.tfidf_cosine_calibration_mean == pytest.approx(
+        stats.tfidf_cosine_calibration_mean
+    )
+    assert loaded.tfidf_cosine_calibration_std == pytest.approx(stats.tfidf_cosine_calibration_std)
+    assert loaded.tfidf_threshold == pytest.approx(2.5)
+
+
+def test_load_stats_handles_legacy_file_without_tfidf_fields(tmp_path: Path) -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    path = tmp_path / "ood_stats.npz"
+    save_stats(stats, path)  # tfidf_* fields are all at their empty/None defaults --
+    # this IS the legacy-shape file (compute_class_stats here predates Task 4's texts= param)
+
+    loaded = load_stats(path)
+
+    assert loaded.tfidf_vocabulary_terms == []
+    assert len(loaded.tfidf_idf) == 0
+    assert loaded.tfidf_centroids.size == 0
+    assert loaded.tfidf_cosine_calibration_mean == 0.0
+    assert loaded.tfidf_cosine_calibration_std == 1.0
+    assert loaded.tfidf_threshold is None
+
+
 def test_resolve_ood_thresholds_falls_back_to_settings_when_stats_thresholds_none() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
