@@ -52,9 +52,11 @@ def _run_compute_ood_stats(opts: ComputeOodStatsOptions) -> None:
         embeddings,
         split.train_df["label_id"].tolist(),
         split.classes,
+        texts=split.train_df["text"].tolist(),
         n_components=Settings.OOD_PCA_COMPONENTS,
         model_type=split.loaded.model.config.model_type,  # type: ignore[union-attr,arg-type]
         model_hidden_size=split.loaded.model.config.hidden_size,  # type: ignore[union-attr,arg-type]
+        max_tfidf_features=Settings.OOD_TFIDF_MAX_FEATURES,
     )
 
     out_path = Path(opts.model_path) / "ood_stats.npz"

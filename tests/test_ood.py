@@ -43,14 +43,26 @@ def _synthetic_embeddings() -> tuple[npt.NDArray[np.float64], list[int], list[st
 
 def test_compute_class_stats_shapes() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     assert stats.centroids.shape == (2, 8)
     assert stats.covariance_inv.shape == (8, 8)
 
 
+def test_compute_class_stats_populates_tfidf_fields() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    texts = ["decreto rosario"] * 20 + ["ordenanza cordoba"] * 20
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8, texts=texts)
+    assert stats.tfidf_vocabulary_terms != []
+    assert len(stats.tfidf_centroids) == len(class_names)
+
+
 def test_in_distribution_point_has_lower_mahalanobis_distance_than_far_point() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
     known_distance = mahalanobis_min_distance(known_point, stats)
@@ -60,7 +72,9 @@ def test_in_distribution_point_has_lower_mahalanobis_distance_than_far_point() -
 
 def test_in_distribution_point_has_lower_cosine_distance_than_far_point() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     known_point = embeddings[0]
     # A uniform far_point (e.g. all -100) projects almost entirely onto PC1 — the
     # axis separating the two synthetic classes, since they differ by a uniform
@@ -78,7 +92,9 @@ def test_mahalanobis_chi2_p_value_is_lower_for_far_point() -> None:
     # A low p-value means "unlikely to be in-distribution" — the far point should
     # score LOWER (more anomalous), not higher, unlike a distance/z-score metric.
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
     maha_p_far = mahalanobis_chi2_p_value(far_point, stats)
@@ -88,7 +104,9 @@ def test_mahalanobis_chi2_p_value_is_lower_for_far_point() -> None:
 
 def test_mahalanobis_chi2_p_value_is_bounded_between_zero_and_one() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
     for point in (known_point, far_point):
@@ -101,7 +119,9 @@ def test_mahalanobis_chi2_p_value_from_distance_matches_embedding_based_call() -
     # result as the original embedding-based function -- the refactor that split the
     # distance computation out must not change the result.
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     far_point = np.full(16, 100.0)
     squared_distance = mahalanobis_min_distance(far_point, stats)
     assert mahalanobis_chi2_p_value_from_distance(squared_distance, stats) == pytest.approx(
@@ -124,7 +144,9 @@ def test_empirical_survival_p_value_raises_on_empty_reference() -> None:
 
 def test_compute_train_mahalanobis_distances_returns_one_value_per_training_doc() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     distances = compute_train_mahalanobis_distances(stats)
     assert distances.shape == (len(embeddings),)
     assert np.all(distances >= 0.0)
@@ -157,7 +179,9 @@ def test_compute_train_mahalanobis_distances_uses_true_label_not_nearest_centroi
 
 def test_mahalanobis_empirical_p_value_is_lower_for_far_point() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     train_distances = compute_train_mahalanobis_distances(stats)
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
@@ -168,7 +192,9 @@ def test_mahalanobis_empirical_p_value_is_lower_for_far_point() -> None:
 
 def test_mahalanobis_empirical_p_value_is_bounded_between_zero_and_one() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     train_distances = compute_train_mahalanobis_distances(stats)
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
@@ -179,7 +205,9 @@ def test_mahalanobis_empirical_p_value_is_bounded_between_zero_and_one() -> None
 
 def test_cosine_z_score_is_higher_for_far_point() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     known_point = embeddings[0]
     far_point = np.array([100.0 if i % 2 == 0 else -100.0 for i in range(16)])
     assert cosine_z_score(far_point, stats) > cosine_z_score(known_point, stats)
@@ -187,7 +215,9 @@ def test_cosine_z_score_is_higher_for_far_point() -> None:
 
 def test_save_and_load_stats_roundtrip(tmp_path: Path) -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = tmp_path / "ood_stats.npz"
     save_stats(stats, path)
     loaded = load_stats(path)
@@ -199,7 +229,9 @@ def test_save_and_load_stats_roundtrip(tmp_path: Path) -> None:
 
 def test_knn_mean_distance_is_zero_for_a_training_point_itself() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     # embeddings[0] is a class_a point; its own class-conditional 10-NN distance
     # should be small (it's one of its own neighbors, distance 0 to itself).
     dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=0, k=10)
@@ -209,7 +241,9 @@ def test_knn_mean_distance_is_zero_for_a_training_point_itself() -> None:
 
 def test_knn_mean_distance_is_larger_for_a_far_point() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     far_point = np.full(16, 100.0)
     near_dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=0, k=10)
     far_dist = knn_mean_distance(far_point, stats, predicted_label_id=0, k=10)
@@ -218,7 +252,9 @@ def test_knn_mean_distance_is_larger_for_a_far_point() -> None:
 
 def test_knn_mean_distance_handles_k_larger_than_class_size() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     # class_a has 20 members in the fixture; request more neighbors than exist.
     dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=0, k=1000)
     assert dist >= 0.0  # falls back to using all available class members, not an error
@@ -228,7 +264,9 @@ def test_knn_mean_distance_logs_warning_when_class_has_no_training_points(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     with caplog.at_level(logging.WARNING, logger="src.ood"):
         dist = knn_mean_distance(embeddings[0], stats, predicted_label_id=99, k=10)
     assert np.isnan(dist)
@@ -237,7 +275,9 @@ def test_knn_mean_distance_logs_warning_when_class_has_no_training_points(
 
 def test_save_and_load_stats_roundtrip_includes_knn_fields(tmp_path: Path) -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = tmp_path / "ood_stats.npz"
     save_stats(stats, path)
     loaded = load_stats(path)
@@ -261,7 +301,9 @@ def test_extract_embeddings_returns_correct_shape() -> None:
 
 def test_save_and_load_stats_roundtrip_includes_thresholds() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    ).model_copy(
         update={
             "mahalanobis_p_threshold": 0.001,
             "cosine_threshold": 13.7366,
@@ -281,7 +323,9 @@ def test_save_and_load_stats_roundtrip_includes_thresholds() -> None:
 
 def test_save_and_load_stats_roundtrip_thresholds_default_to_none() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_no_thresholds.npz")
     try:
         save_stats(stats, path)
@@ -295,9 +339,9 @@ def test_save_and_load_stats_roundtrip_thresholds_default_to_none() -> None:
 
 def test_save_and_load_stats_roundtrip_includes_threshold_status() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
-        update={"mahalanobis_threshold_status": "refused_degenerate"}
-    )
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    ).model_copy(update={"mahalanobis_threshold_status": "refused_degenerate"})
     path = Path("test_stats_threshold_status.npz")
     try:
         save_stats(stats, path)
@@ -309,7 +353,9 @@ def test_save_and_load_stats_roundtrip_includes_threshold_status() -> None:
 
 def test_save_and_load_stats_roundtrip_threshold_status_defaults_to_not_calibrated() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_threshold_status_default.npz")
     try:
         save_stats(stats, path)
@@ -323,7 +369,9 @@ def test_load_stats_handles_legacy_file_without_threshold_status_field() -> None
     # A pre-this-change ood_stats.npz has no mahalanobis_threshold_status key at all --
     # load_stats must not KeyError, and must default to "not_calibrated".
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_legacy_threshold_status.npz")
     try:
         np.savez(
@@ -346,7 +394,9 @@ def test_load_stats_handles_legacy_file_without_threshold_status_field() -> None
 
 def test_load_stats_rejects_unknown_threshold_status() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_bad_threshold_status.npz")
     try:
         np.savez(
@@ -372,7 +422,9 @@ def test_save_stats_leaves_original_file_untouched_if_write_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_atomic_original.npz")
     try:
         # A real, previously-good file already exists at `path`.
@@ -408,7 +460,9 @@ def test_save_stats_leaves_original_file_untouched_when_load_back_verification_f
     # regression that silently dropped that verification call would still leave both other
     # atomic-write tests passing; this one would catch it.
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_atomic_verify_fails.npz")
     try:
         save_stats(stats, path)
@@ -435,7 +489,9 @@ def test_save_stats_leaves_original_file_untouched_when_load_back_verification_f
 
 def test_save_stats_does_not_leave_tmp_file_on_success() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_atomic_success.npz")
     try:
         save_stats(stats, path)
@@ -452,6 +508,7 @@ def test_save_and_load_stats_roundtrip_includes_model_identity() -> None:
         labels,
         class_names,
         n_components=8,
+        texts=["placeholder text"] * len(labels),
         model_type="bert",
         model_hidden_size=768,
     )
@@ -467,7 +524,9 @@ def test_save_and_load_stats_roundtrip_includes_model_identity() -> None:
 
 def test_save_and_load_stats_roundtrip_model_identity_defaults_to_none() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_identity_none.npz")
     try:
         save_stats(stats, path)
@@ -482,7 +541,9 @@ def test_load_stats_handles_legacy_file_without_model_identity_fields() -> None:
     # A pre-this-task ood_stats.npz (including one written by Task 1's atomic save_stats,
     # which predates the model_type/model_hidden_size keys) has neither key at all.
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_identity_legacy.npz")
     try:
         with path.open("wb") as f:
@@ -512,7 +573,9 @@ def test_load_stats_handles_legacy_file_without_threshold_fields() -> None:
     # A pre-this-change ood_stats.npz has no threshold keys at all (not even as NaN) --
     # load_stats must not KeyError, and must resolve all three to None.
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     path = Path("test_stats_legacy.npz")
     try:
         np.savez(
@@ -539,7 +602,9 @@ def test_save_and_load_stats_roundtrip_includes_tfidf_fields(tmp_path: Path) -> 
     texts, labels, class_names = _synthetic_texts()
     embeddings = np.random.default_rng(0).normal(size=(20, 16))
     tfidf = compute_tfidf_stats(texts, labels, class_names, max_features=50)
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    ).model_copy(
         update={
             "tfidf_vocabulary_terms": tfidf.vocabulary_terms,
             "tfidf_idf": tfidf.idf,
@@ -565,7 +630,20 @@ def test_save_and_load_stats_roundtrip_includes_tfidf_fields(tmp_path: Path) -> 
 
 def test_load_stats_handles_legacy_file_without_tfidf_fields(tmp_path: Path) -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    # Reset tfidf_* fields back to their empty/None defaults via model_copy -- simulates a
+    # stats file saved before Task 4 wired TF-IDF fitting into compute_class_stats, since
+    # compute_class_stats itself now always populates these fields.
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    ).model_copy(
+        update={
+            "tfidf_vocabulary_terms": [],
+            "tfidf_idf": np.zeros(0),
+            "tfidf_centroids": np.zeros((0, 0)),
+            "tfidf_cosine_calibration_mean": 0.0,
+            "tfidf_cosine_calibration_std": 1.0,
+        }
+    )
     path = tmp_path / "ood_stats.npz"
     save_stats(stats, path)  # tfidf_* fields are all at their empty/None defaults --
     # this IS the legacy-shape file (compute_class_stats here predates Task 4's texts= param)
@@ -582,7 +660,9 @@ def test_load_stats_handles_legacy_file_without_tfidf_fields(tmp_path: Path) -> 
 
 def test_resolve_ood_thresholds_falls_back_to_settings_when_stats_thresholds_none() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    )
     thresholds = resolve_ood_thresholds(stats)
     assert thresholds.mahalanobis_p == Settings.OOD_MAHALANOBIS_P_THRESHOLD
     assert thresholds.cosine_z == Settings.OOD_COSINE_THRESHOLD
@@ -591,7 +671,9 @@ def test_resolve_ood_thresholds_falls_back_to_settings_when_stats_thresholds_non
 
 def test_resolve_ood_thresholds_uses_stats_values_when_present() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8).model_copy(
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    ).model_copy(
         update={
             "mahalanobis_p_threshold": 0.002,
             "cosine_threshold": 5.0,
@@ -675,7 +757,11 @@ def test_build_tfidf_vectorizer_reconstructs_fitted_transform() -> None:
 
 def test_build_tfidf_vectorizer_returns_none_when_stats_predate_feature() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    # Reset tfidf_vocabulary_terms to [] via model_copy -- simulates a stats file saved
+    # before Task 4 wired TF-IDF fitting into compute_class_stats.
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=["placeholder text"] * len(labels)
+    ).model_copy(update={"tfidf_vocabulary_terms": []})
     assert build_tfidf_vectorizer(stats) is None
 
 

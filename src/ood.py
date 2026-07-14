@@ -57,18 +57,20 @@ def _cosine_min_distance_raw(
     return float(cosine_distances(point.reshape(1, -1), centroids).min())
 
 
-def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size are an optional
-    # identity fingerprint threaded through at the two call sites (training/pipeline.py,
-    # cli/ood_stats.py); bundling them into a NamedTuple for two rarely-varying trailing
-    # kwargs would be more ceremony than the limit is worth here.
+def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size/texts/
+    # max_tfidf_features are optional trailing kwargs threaded through from the two call
+    # sites (training/pipeline.py, cli/ood_stats.py); bundling them into a NamedTuple for
+    # rarely-varying trailing kwargs would be more ceremony than the limit is worth here.
     embeddings: npt.NDArray[np.float64],
     labels: list[int],
     class_names: list[str],
     *,
+    texts: list[str],
     n_components: int = 64,
     covariance_epsilon: float = 1e-6,
     model_type: str | None = None,
     model_hidden_size: int | None = None,
+    max_tfidf_features: int = 5000,
 ) -> ClassEmbeddingStats:
     pca_result = _reduce_dimensionality(embeddings, n_components)
     reduced = pca_result.reduced
@@ -83,6 +85,7 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size are an
     cosine_scores = np.array(
         [_cosine_min_distance_raw(reduced[i], centroids) for i in range(reduced.shape[0])]
     )
+    tfidf = compute_tfidf_stats(texts, labels, class_names, max_features=max_tfidf_features)
 
     return ClassEmbeddingStats(
         class_names=class_names,
@@ -96,6 +99,11 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size are an
         knn_train_labels=labels_arr.tolist(),
         model_type=model_type,
         model_hidden_size=model_hidden_size,
+        tfidf_vocabulary_terms=tfidf.vocabulary_terms,
+        tfidf_idf=tfidf.idf,
+        tfidf_centroids=tfidf.centroids,
+        tfidf_cosine_calibration_mean=tfidf.cosine_calibration_mean,
+        tfidf_cosine_calibration_std=tfidf.cosine_calibration_std,
     )
 
 
