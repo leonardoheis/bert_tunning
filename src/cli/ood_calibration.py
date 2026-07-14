@@ -72,15 +72,14 @@ def _write_calibrated_thresholds(
     would be mathematically unreachable (the signal could never fire), the exact bug this
     project hit once already with an unchecked suggested value."""
     floor = 1 / (n_train + 1)
-    suggested_maha_threshold = report.suggested_maha_threshold
-    maha_threshold: float | None = suggested_maha_threshold
+    maha_threshold: float | None = report.suggested_maha_threshold
     maha_status: Literal["calibrated", "refused_degenerate"] = "calibrated"
-    if suggested_maha_threshold <= floor:
+    if report.suggested_maha_threshold <= floor:
         log.warning(
             "Refusing to write suggested Mahalanobis threshold %.6f: at or below this "
             "model's empirical resolution floor %.6f (n_train=%d). The signal would never "
             "fire. Keeping the existing value (%s).",
-            suggested_maha_threshold,
+            report.suggested_maha_threshold,
             floor,
             n_train,
             stats.mahalanobis_p_threshold,
