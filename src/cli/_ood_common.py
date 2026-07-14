@@ -4,11 +4,15 @@ import click
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-import torch
 from sklearn.preprocessing import LabelEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.embeddings import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
+from src.embeddings import (
+    LoadedModel,
+    extract_embeddings,
+    extract_embeddings_and_predictions,
+    select_device,
+)
 from src.training.split import make_split
 from src.training.tokenize import prepare_text
 
@@ -17,7 +21,7 @@ def load_model_and_verify_classes(model_path: str, cache_labels: set[str]) -> Lo
     """Load a trained model + tokenizer for an OOD command, on the right device, and verify
     its classes match the cache the caller is about to reconstruct a split from — shared by
     compute-ood-stats and evaluate-ood-calibration, which both need exactly this."""
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = select_device()
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = AutoModelForSequenceClassification.from_pretrained(model_path)
     model.eval()

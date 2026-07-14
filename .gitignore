@@ -97,6 +97,8 @@ celerybeat.pid
 .env
 .env.*
 !.env.example
+!.env.windows.example
+!.env.macos.example
 .venv
 env/
 venv/

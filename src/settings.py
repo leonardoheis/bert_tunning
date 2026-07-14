@@ -1,10 +1,17 @@
 import os
+import platform
 from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def _default_docs_root() -> str:
+    if platform.system() == "Windows":
+        return r"C:\Users\YourUser\Downloads\downloadsdocs\downloads"
+    return str(Path.home() / "Downloads" / "downloadsdocs" / "downloads")
 
 
 class _Settings(BaseSettings):
@@ -22,7 +29,7 @@ class _Settings(BaseSettings):
     MAX_LENGTH: int = 512
 
     # ── Paths ─────────────────────────────────────────────────────────────────
-    DOCS_ROOT: str = r"C:\Users\YourUser\Downloads\downloadsdocs\downloads"
+    DOCS_ROOT: str = _default_docs_root()
     OUTPUT_DIR: str = "./models/bert_tunning_model_beto_v2"
     CACHE_PATH: str = "./data/bert_tunning_cache.parquet"
 

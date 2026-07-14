@@ -9,6 +9,7 @@ import numpy.typing as npt
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerBase
 
+from src.embeddings import select_device
 from src.exceptions import BertTunningError
 from src.ingestion.extract import clean_text
 from src.ood import (
@@ -125,7 +126,7 @@ class BertTunningClassifier:
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_path)
         self.model: Any = model or AutoModelForSequenceClassification.from_pretrained(model_path)
         self.threshold = confidence_threshold
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = select_device()
         self.model.eval()
         self.model.to(self.device)
         self.max_length = min(  # type: ignore[type-var]

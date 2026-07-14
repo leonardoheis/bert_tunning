@@ -35,7 +35,8 @@ def _reduce_dimensionality(embeddings: npt.NDArray[np.float64], n_components: in
 def _project(
     embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
 ) -> npt.NDArray[np.float64]:
-    return (embedding - stats.pca_mean) @ stats.pca_components.T
+    projected: npt.NDArray[np.float64] = (embedding - stats.pca_mean) @ stats.pca_components.T
+    return projected
 
 
 def _cosine_min_distance_raw(

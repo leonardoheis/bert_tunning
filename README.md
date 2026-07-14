@@ -215,24 +215,33 @@ main.py                Click CLI entry point
 ## Requirements
 
 - Python ≥ 3.10
-- CUDA-capable GPU (tested on NVIDIA RTX A4000 Laptop, 8 GB VRAM, CUDA 11.8)
+- Windows/Linux: CUDA-capable GPU (tested on NVIDIA RTX A4000 Laptop, 8 GB VRAM, CUDA 11.8). macOS: CPU or Apple Silicon (MPS) — no CUDA available.
 - [uv](https://docs.astral.sh/uv/)
 
 ## Installation
 
-```powershell
+Same command on every OS — `uv` resolves the right `torch` build for the platform automatically:
+
+```bash
 uv sync
 ```
 
-> `torch` is pulled from the PyTorch CUDA 11.8 index automatically via `[tool.uv.sources]` in `pyproject.toml`.
+> `pyproject.toml`'s `[tool.uv.sources]` pulls `torch` from the PyTorch CUDA 11.8 index on Windows/Linux (`marker = "sys_platform != 'darwin'"`); macOS falls back to the standard PyPI build (CPU/MPS-capable). Device selection at runtime (`src/embeddings.py::select_device()`) follows `cuda` → `mps` → `cpu`.
 
 ## Configuration
 
-All settings live in `src/settings.py` and can be overridden via a `.env` file at the project root:
+All settings live in `src/settings.py` and can be overridden via a `.env` file at the project root. Copy the template matching your OS and edit `DOCS_ROOT`:
+
+```bash
+cp .env.macos.example .env      # macOS/Linux
+copy .env.windows.example .env  # Windows (PowerShell/cmd)
+```
+
+`DOCS_ROOT`'s built-in default also auto-detects the OS (`platform.system()`) if `.env` doesn't set it, but a real per-user path always belongs in `.env`.
 
 ```ini
 # .env (optional — values shown are the defaults)
-DOCS_ROOT=C:\path\to\downloads
+DOCS_ROOT=/path/to/downloads   # C:\path\to\downloads on Windows
 MODEL_KEY=xlm-roberta
 OUTPUT_DIR=./models/bert_tunning_model_beto_v2
 EPOCHS=15

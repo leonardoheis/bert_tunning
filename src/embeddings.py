@@ -16,6 +16,16 @@ class LoadedModel(NamedTuple):
     device: str
 
 
+def select_device() -> str:
+    """cuda -> mps -> cpu, in order of preference — mps covers Apple Silicon Macs, which
+    have no CUDA support but do have a GPU worth using."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def extract_embeddings(
     loaded: LoadedModel,
     texts: list[str],

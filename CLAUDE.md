@@ -31,7 +31,7 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is 
 | Tool | Purpose |
 |---|---|
 | Python ≥ 3.10 | Runtime — use `X \| Y` union types, not `Optional[X]` |
-| PyTorch (CUDA 11.8) | Training backend |
+| PyTorch (CUDA 11.8 on Windows/Linux, CPU/MPS on macOS) | Training backend |
 | HuggingFace Transformers ≥ 4.46 | Model loading, Trainer API |
 | XLM-RoBERTa base | Default model — stable multilingual, strong Spanish |
 | Pydantic v2 | All config and schema objects — `frozen=True`, `alias_generator=to_camel` on API schemas |
@@ -48,6 +48,8 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is 
 
 ## Development Commands
 
+Same commands on Windows (PowerShell) and macOS/Linux (bash/zsh) — `uv run` abstracts the shell:
+
 ```powershell
 uv sync                  # install all deps including dev
 uv run poe check         # lint + typecheck + test — run before every commit
@@ -58,12 +60,36 @@ uv run poe test          # pytest
 uv run poe coverage      # pytest with HTML coverage report
 ```
 
+### Cross-platform setup
+
+`uv sync` resolves the right PyTorch build per OS on its own (`sys_platform` marker in `pyproject.toml`'s `[tool.uv.sources]`): CUDA 11.8 wheels on Windows/Linux, standard PyPI CPU/MPS wheels on macOS. Device selection at runtime (`src/embeddings.py:select_device()`) follows `cuda` → `mps` → `cpu`.
+
+`DOCS_ROOT` (and other local paths) are set via `.env`, which is git-ignored per machine. Copy the template matching your OS and edit it:
+
+```bash
+cp .env.macos.example .env      # macOS/Linux
+copy .env.windows.example .env  # Windows (PowerShell/cmd)
+```
+
+`src/settings.py`'s `DOCS_ROOT` default also auto-detects the OS (`platform.system()`) if `.env` doesn't set it, but a real per-user path still belongs in `.env`.
+
 ## CLI
 
 ```powershell
+# Windows
 uv run python main.py train --docs-root "C:\path\to\downloads"
 uv run python main.py train --model beto --max-docs-per-class 100
 uv run python main.py train --docs-root "C:\path\to\downloads" --epochs 20
+```
+
+```bash
+# macOS/Linux
+uv run python main.py train --docs-root "/path/to/downloads"
+uv run python main.py train --model beto --max-docs-per-class 100
+uv run python main.py train --docs-root "/path/to/downloads" --epochs 20
+```
+
+```bash
 uv run python main.py predict path/to/doc.pdf
 uv run python main.py predict-folder path/to/folder
 uv run python main.py serve --model-path ./models/bert_tunning_model/final
@@ -280,6 +306,9 @@ If a class is absent from the training split (small per-class counts + stratifie
 
 **Follow-up hardening: model identity fingerprint, atomic writes, uncalibrated-threshold visibility, W&B parity (2026-07-13)**
 A critical review of the per-model OOD threshold work above found four gaps. (1) `_validate_ood_stats_class_mapping()` only compared `class_names`, which is a property of the training corpus, not the model — since this project's three registered models (`xlm-roberta`, `beto`, `minilm`) are commonly trained on the identical label set, a `beto` model's `ood_stats.npz` copied next to an `xlm-roberta` checkpoint would pass that check trivially. `ClassEmbeddingStats` now also carries an optional `model_type`/`model_hidden_size` fingerprint (from `model.config.model_type`/`.hidden_size` at `compute_class_stats()` time), validated by a new `_validate_ood_stats_model_identity()` — skipped entirely for stats predating the field, enforced when present. (2) `save_stats()` wrote directly to `ood_stats.npz` with no atomicity; an interrupted write could corrupt the only copy a running server reads from. It now writes to a temp file, verifies the temp file loads back with `load_stats()`, then `os.replace()`s it onto the real path. (3) `resolve_ood_thresholds()`'s Settings fallback was completely silent — a freshly trained, never-calibrated model would inherit BETO v2's thresholds with no visibility. `BertTunningClassifier` now logs one `WARNING` at construction naming which specific thresholds are falling back. This is deliberately a warning, not a startup failure or a disabled signal: BETO v2's own `mahalanobis_p_threshold` is `None` because `--write-thresholds`'s degenerate-guard correctly refused to persist a floor-adjacent value, not because it was never calibrated — `Settings.OOD_MAHALANOBIS_P_THRESHOLD` genuinely is BETO v2's calibrated value in that case, so failing startup would break a correctly-configured model. A follow-up (2026-07-13) replaced this prose-only distinction with an explicit `mahalanobis_threshold_status` field (`"not_calibrated"` / `"calibrated"` / `"refused_degenerate"`) on `ClassEmbeddingStats`, so `_warn_on_uncalibrated_thresholds` logs an actionable `WARNING` only for the genuinely-uncalibrated case and a separate non-actionable `INFO` line for the expected-refusal case, instead of one `WARNING` whose own text had to explain both possibilities. (4) `log_ood_calibration_results()` logged `Settings.OOD_*` directly instead of the resolved per-model thresholds (the same gap already fixed in `evaluate-ood-calibration`'s own console/log output during PR #43's review), and never logged a k-NN threshold at all — both fixed, threading the same `OodThresholds` the CLI's log lines use.
+
+**Cross-platform (Windows/macOS) run parametrization (`fix/parameter-parametrization`)**
+`pyproject.toml`'s `[tool.uv.sources]` unconditionally pinned `torch` to the CUDA 11.8 wheel index, which publishes no macOS wheels — `uv sync` couldn't resolve on a Mac at all. `torch` now carries a `marker = "sys_platform != 'darwin'"`, so Windows/Linux still get CUDA 11.8 wheels and macOS falls back to the default PyPI index (CPU/MPS-capable build); `uv.lock` was regenerated to capture both resolutions. `Settings.DOCS_ROOT`'s default was a hardcoded Windows path baked into `src/settings.py` — a new `_default_docs_root()` helper picks the Windows path via `platform.system() == "Windows"` and a macOS/POSIX default (`~/Downloads/downloadsdocs/downloads`) otherwise; `.env` (see `.env.windows.example`/`.env.macos.example`) still overrides this either way, since a real per-user path always belongs there rather than in code. `select_device()` (`src/embeddings.py`) centralizes the `cuda` → `mps` → `cpu` fallback chain (previously duplicated as `cuda`-or-`cpu` in both `src/inference/classify.py` and `src/cli/_ood_common.py`), adding Apple Silicon GPU support instead of silently falling all the way to CPU on macOS. `src/training/pipeline.py` needed no change — HuggingFace's `Trainer`/`accelerate` already pick the best available device (including `mps`) on their own.
 
 ## Git Workflow
 
