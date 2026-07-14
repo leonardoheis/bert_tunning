@@ -6,11 +6,14 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 import torch
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from src.embeddings import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
 from src.exceptions import BertTunningError
 from src.ood import (
+    build_tfidf_vectorizer,
     compute_class_stats,
+    compute_tfidf_stats,
     compute_train_mahalanobis_distances,
     cosine_min_distance,
     cosine_z_score,
@@ -23,6 +26,7 @@ from src.ood import (
     mahalanobis_min_distance,
     resolve_ood_thresholds,
     save_stats,
+    tfidf_cosine_z_score,
 )
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
@@ -571,3 +575,90 @@ def test_extract_embeddings_and_predictions_returns_matching_lengths() -> None:
     )
     assert embeddings.shape == (2, 4)
     assert predicted_ids == [0, 1]  # argmax of each row above
+
+
+def _synthetic_texts() -> tuple[list[str], list[int], list[str]]:
+    # Two lexically distinct clusters -- "decreto rosario" vocabulary vs. "ordenanza cordoba"
+    # vocabulary -- so a same-class query with different vocabulary lands far from its
+    # class's TF-IDF centroid, the exact failure mode this signal targets.
+    decreto_docs = ["decreto rosario municipal intendente"] * 10
+    ordenanza_docs = ["ordenanza cordoba concejo deliberante"] * 10
+    texts = decreto_docs + ordenanza_docs
+    labels = [0] * 10 + [1] * 10
+    return texts, labels, ["decreto", "ordenanza"]
+
+
+def test_compute_tfidf_stats_shapes() -> None:
+    texts, labels, class_names = _synthetic_texts()
+    stats = compute_tfidf_stats(texts, labels, class_names, max_features=50)
+    n_terms = len(stats.vocabulary_terms)
+    assert stats.idf.shape == (n_terms,)
+    assert stats.centroids.shape == (2, n_terms)
+    assert stats.cosine_calibration_std > 0
+
+
+def test_build_tfidf_vectorizer_reconstructs_fitted_transform() -> None:
+    texts, labels, class_names = _synthetic_texts()
+    stats_partial = compute_tfidf_stats(texts, labels, class_names, max_features=50)
+    stats = ClassEmbeddingStats(
+        class_names=class_names,
+        pca_mean=np.zeros(1),
+        pca_components=np.eye(1),
+        centroids=np.zeros((2, 1)),
+        covariance_inv=np.eye(1),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.zeros((2, 1)),
+        knn_train_labels=[0, 1],
+        tfidf_vocabulary_terms=stats_partial.vocabulary_terms,
+        tfidf_idf=stats_partial.idf,
+        tfidf_centroids=stats_partial.centroids,
+        tfidf_cosine_calibration_mean=stats_partial.cosine_calibration_mean,
+        tfidf_cosine_calibration_std=stats_partial.cosine_calibration_std,
+    )
+    vectorizer = build_tfidf_vectorizer(stats)
+    assert vectorizer is not None
+
+    reference = TfidfVectorizer(max_features=50)
+    reference.fit(texts)
+    query = "decreto rosario municipal intendente"
+    np.testing.assert_allclose(
+        vectorizer.transform([query]).toarray(),
+        reference.transform([query]).toarray(),
+    )
+
+
+def test_build_tfidf_vectorizer_returns_none_when_stats_predate_feature() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    assert build_tfidf_vectorizer(stats) is None
+
+
+def test_tfidf_cosine_z_score_higher_for_lexically_divergent_same_class_query() -> None:
+    texts, labels, class_names = _synthetic_texts()
+    stats_partial = compute_tfidf_stats(texts, labels, class_names, max_features=50)
+    stats = ClassEmbeddingStats(
+        class_names=class_names,
+        pca_mean=np.zeros(1),
+        pca_components=np.eye(1),
+        centroids=np.zeros((2, 1)),
+        covariance_inv=np.eye(1),
+        cosine_calibration_mean=0.0,
+        cosine_calibration_std=1.0,
+        knn_train_embeddings=np.zeros((2, 1)),
+        knn_train_labels=[0, 1],
+        tfidf_vocabulary_terms=stats_partial.vocabulary_terms,
+        tfidf_idf=stats_partial.idf,
+        tfidf_centroids=stats_partial.centroids,
+        tfidf_cosine_calibration_mean=stats_partial.cosine_calibration_mean,
+        tfidf_cosine_calibration_std=stats_partial.cosine_calibration_std,
+    )
+    vectorizer = build_tfidf_vectorizer(stats)
+    assert vectorizer is not None
+
+    matching_z = tfidf_cosine_z_score("decreto rosario municipal intendente", stats, vectorizer)
+    # Same words as the OTHER class's training vocabulary -- lexically divergent from
+    # whichever centroid it's nearest to, so its z-score should be higher (more anomalous)
+    # than a query using words seen during training.
+    divergent_z = tfidf_cosine_z_score("otro texto completamente distinto aqui", stats, vectorizer)
+    assert divergent_z > matching_z

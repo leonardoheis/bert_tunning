@@ -6,9 +6,11 @@ import numpy as np
 import numpy.typing as npt
 from scipy.stats import chi2
 from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_distances
 
 from src.exceptions import BertTunningError
+from src.ingestion.extract import clean_text
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
 
@@ -23,6 +25,17 @@ class _PcaReduction(NamedTuple):
     reduced: npt.NDArray[np.float64]
     mean: npt.NDArray[np.float64]
     components: npt.NDArray[np.float64]
+
+
+class _TfidfStats(NamedTuple):
+    """Internal return type for compute_tfidf_stats -- merged into ClassEmbeddingStats by
+    the caller (compute_class_stats), same convention as _PcaReduction."""
+
+    vocabulary_terms: list[str]
+    idf: npt.NDArray[np.float64]
+    centroids: npt.NDArray[np.float64]
+    cosine_calibration_mean: float
+    cosine_calibration_std: float
 
 
 def _reduce_dimensionality(embeddings: npt.NDArray[np.float64], n_components: int) -> _PcaReduction:
@@ -84,6 +97,55 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size are an
         model_type=model_type,
         model_hidden_size=model_hidden_size,
     )
+
+
+def compute_tfidf_stats(
+    texts: list[str], labels: list[int], class_names: list[str], *, max_features: int = 5000
+) -> _TfidfStats:
+    """Fits a TF-IDF vectorizer + per-class centroids on raw training text -- a signal
+    independent of compute_class_stats' BERT-embedding space, operating on surface
+    vocabulary instead. Catches lexical divergence (e.g. a different municipality's name)
+    that a shared document-type "shape" in embedding space cannot separate."""
+    cleaned = [clean_text(t) for t in texts]
+    vectorizer = TfidfVectorizer(max_features=max_features)
+    X = vectorizer.fit_transform(cleaned).toarray()
+    labels_arr = np.asarray(labels)
+
+    centroids = np.stack([X[labels_arr == k].mean(axis=0) for k in range(len(class_names))])
+    cosine_scores = np.array([_cosine_min_distance_raw(X[i], centroids) for i in range(X.shape[0])])
+
+    return _TfidfStats(
+        vocabulary_terms=vectorizer.get_feature_names_out().tolist(),
+        idf=vectorizer.idf_,
+        centroids=centroids,
+        cosine_calibration_mean=float(cosine_scores.mean()),
+        cosine_calibration_std=float(cosine_scores.std() + 1e-9),
+    )
+
+
+def build_tfidf_vectorizer(stats: ClassEmbeddingStats) -> TfidfVectorizer | None:
+    """Reconstructs a fixed-vocabulary TfidfVectorizer from the two arrays load_stats/
+    save_stats round-trip through ood_stats.npz -- verified to produce bit-identical
+    .transform() output to the originally-fitted vectorizer. Returns None when this
+    model's ood_stats.npz predates the TF-IDF signal (tfidf_vocabulary_terms is empty),
+    so callers can treat the signal as disabled rather than crash on missing data."""
+    if not stats.tfidf_vocabulary_terms:  # empty list = not fitted, see Task 1's field comment
+        return None
+    vocabulary = {term: i for i, term in enumerate(stats.tfidf_vocabulary_terms)}
+    vectorizer = TfidfVectorizer(vocabulary=vocabulary)
+    vectorizer.idf_ = stats.tfidf_idf
+    return vectorizer
+
+
+def tfidf_cosine_z_score(
+    text: str, stats: ClassEmbeddingStats, vectorizer: TfidfVectorizer
+) -> float:
+    """Cosine distance to the nearest TF-IDF centroid, z-scored against the training set --
+    same technique as cosine_z_score, different vector space. Caller must have already
+    confirmed build_tfidf_vectorizer(stats) is not None."""
+    point = vectorizer.transform([clean_text(text)]).toarray()[0]
+    cosine_raw = _cosine_min_distance_raw(point, stats.tfidf_centroids)
+    return (cosine_raw - stats.tfidf_cosine_calibration_mean) / stats.tfidf_cosine_calibration_std
 
 
 def mahalanobis_min_distance(
