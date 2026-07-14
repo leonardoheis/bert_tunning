@@ -37,6 +37,7 @@ class PredictResult(BaseModel):
     mahalanobis_p_value_theoretical: float | None = None
     cosine_z: float | None = None
     knn_distance: float | None = None
+    tfidf_cosine_z: float | None = None
     in_distribution: bool | None = None
     extracted_text: str = ""
     extractor_used: str = ""

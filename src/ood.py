@@ -300,6 +300,7 @@ class OodThresholds(NamedTuple):
     mahalanobis_p: float
     cosine_z: float
     knn_distance: float
+    tfidf_cosine_z: float = Settings.OOD_TFIDF_COSINE_THRESHOLD
 
 
 def resolve_ood_thresholds(stats: ClassEmbeddingStats) -> OodThresholds:
@@ -316,6 +317,9 @@ def resolve_ood_thresholds(stats: ClassEmbeddingStats) -> OodThresholds:
         knn_distance=stats.knn_distance_threshold
         if stats.knn_distance_threshold is not None
         else Settings.OOD_KNN_DISTANCE_THRESHOLD,
+        tfidf_cosine_z=stats.tfidf_threshold
+        if stats.tfidf_threshold is not None
+        else Settings.OOD_TFIDF_COSINE_THRESHOLD,
     )
 
 

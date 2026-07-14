@@ -2,12 +2,15 @@ import logging
 from enum import Enum
 from functools import cached_property
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerBase
+
+if TYPE_CHECKING:
+    from sklearn.feature_extraction.text import TfidfVectorizer
 
 from src.exceptions import BertTunningError
 from src.ingestion.extract import clean_text
@@ -16,6 +19,7 @@ from src.ood import (
 )
 from src.ood import (
     # no_implicit_reexport otherwise blocks tests from importing OodThresholds via this module
+    build_tfidf_vectorizer,
     compute_train_mahalanobis_distances,
     cosine_z_score,
     empirical_survival_p_value,
@@ -24,6 +28,7 @@ from src.ood import (
     mahalanobis_chi2_p_value_from_distance,
     mahalanobis_min_distance,
     resolve_ood_thresholds,
+    tfidf_cosine_z_score,
 )
 from src.schema import ClassEmbeddingStats, PredictResult
 from src.settings import Settings
@@ -55,22 +60,29 @@ class OodEvidence(Enum):
 
 
 class OodScores(NamedTuple):
-    """The three OOD signals -- always computed together, passed together, never used
-    independently. Matches LoadedModel/_PcaReduction's convention in src/ood.py.
-    mahalanobis_p is the empirical (rank-based) p-value, not the chi2 one -- see
-    BertTunningClassifier.predict_text for where the chi2 value is separately attached
-    to PredictResult.mahalanobis_p_value_theoretical, informational only."""
+    """The four OOD signals -- always computed together, passed together, never used
+    independently. tfidf_cosine_z uses the same NaN-sentinel convention as knn_distance,
+    not Optional -- keeps this NamedTuple a uniform tuple of plain floats. The two NaNs
+    mean different things and are handled with OPPOSITE polarity in is_out_of_distribution:
+    knn_distance's NaN means "this document's predicted class has zero training points"
+    and fails CLOSED (anomalous); tfidf_cosine_z's NaN means "this whole model's
+    ood_stats.npz predates the TF-IDF signal" and fails OPEN (not anomalous, same as
+    _ood_stats being None disables OOD scoring entirely for the other three signals)."""
 
     mahalanobis_p: float
     cosine_z: float
     knn_distance: float
+    tfidf_cosine_z: float = float("nan")
 
 
 def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool:
-    """Any one of the three OOD signals firing is enough -- a deliberate OR, not a
+    """Any one of the four OOD signals firing is enough -- a deliberate OR, not a
     weighted blend (see README's "OOD scoring internals" for why). NaN in knn_distance
     means the predicted class had zero training points to compare against; treated as
-    anomalous, fail-safe, since `nan > threshold` would otherwise silently pass.
+    anomalous, fail-safe, since `nan > threshold` would otherwise silently pass. NaN in
+    tfidf_cosine_z means this model's ood_stats.npz predates the TF-IDF signal -- treated
+    as NOT anomalous, fail-open, the opposite polarity, since there the signal simply
+    doesn't exist for this model rather than having failed to compute for this document.
     `thresholds` comes from resolve_ood_thresholds(stats) -- per-model calibrated values
     when available, Settings.OOD_* fallback otherwise. Never reads Settings directly here,
     or a model's decisions silently use whichever thresholds happen to be configured for a
@@ -81,10 +93,15 @@ def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool
     knn_anomalous = (
         bool(np.isnan(scores.knn_distance)) or scores.knn_distance > thresholds.knn_distance
     )
+    # Opposite of knn_anomalous's NaN handling on purpose -- see OodScores' docstring.
+    tfidf_anomalous = (
+        not np.isnan(scores.tfidf_cosine_z) and scores.tfidf_cosine_z > thresholds.tfidf_cosine_z
+    )
     log.debug(
         "OOD signals: mahalanobis_p=%.6f (threshold=%.6f, anomalous=%s), "
         "cosine_z=%.4f (threshold=%.4f, anomalous=%s), "
-        "knn_distance=%.4f (threshold=%.4f, anomalous=%s)",
+        "knn_distance=%.4f (threshold=%.4f, anomalous=%s), "
+        "tfidf_cosine_z=%s (threshold=%.4f, anomalous=%s)",
         scores.mahalanobis_p,
         thresholds.mahalanobis_p,
         maha_anomalous,
@@ -94,8 +111,11 @@ def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool
         scores.knn_distance,
         thresholds.knn_distance,
         knn_anomalous,
+        scores.tfidf_cosine_z,
+        thresholds.tfidf_cosine_z,
+        tfidf_anomalous,
     )
-    return maha_anomalous or cosine_anomalous or knn_anomalous
+    return maha_anomalous or cosine_anomalous or knn_anomalous or tfidf_anomalous
 
 
 def decide_review_route(*, confidence_tier: ConfidenceTier, ood_evidence: OodEvidence) -> str:
@@ -221,6 +241,8 @@ class BertTunningClassifier:
         ]
         if self._ood_stats.mahalanobis_threshold_status == "not_calibrated":
             uncalibrated.append("mahalanobis_p_threshold")
+        if self._ood_stats.tfidf_centroids.size > 0 and self._ood_stats.tfidf_threshold is None:
+            uncalibrated.append("tfidf_threshold")
         if uncalibrated:
             log.warning(
                 "ood_stats.npz has no per-model value for %s -- falling back to Settings.OOD_* "
@@ -244,6 +266,15 @@ class BertTunningClassifier:
         if self._ood_stats is None:
             return None
         return compute_train_mahalanobis_distances(self._ood_stats)
+
+    @cached_property
+    def _tfidf_vectorizer(self) -> "TfidfVectorizer | None":
+        """Reconstructed once per process lifetime, not per predict_text() call -- mirrors
+        _train_mahalanobis_distances' caching rationale. None when ood_stats.npz predates
+        the TF-IDF signal or there's no ood_stats.npz at all."""
+        if self._ood_stats is None:
+            return None
+        return build_tfidf_vectorizer(self._ood_stats)
 
     def predict_text(self, text: str) -> PredictResult:
         inputs = self.tokenizer(
@@ -288,6 +319,11 @@ class BertTunningClassifier:
             )
             return result
 
+        tfidf_z = (
+            tfidf_cosine_z_score(text, self._ood_stats, self._tfidf_vectorizer)
+            if self._tfidf_vectorizer is not None
+            else float("nan")
+        )
         squared_distance = mahalanobis_min_distance(cls_embedding, self._ood_stats)
         scores = OodScores(
             mahalanobis_p=empirical_survival_p_value(squared_distance, train_distances),
@@ -295,6 +331,7 @@ class BertTunningClassifier:
             knn_distance=knn_mean_distance(
                 cls_embedding, self._ood_stats, pred_idx, k=Settings.OOD_KNN_NEIGHBORS
             ),
+            tfidf_cosine_z=tfidf_z,
         )
         maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(
             squared_distance, self._ood_stats
@@ -307,6 +344,9 @@ class BertTunningClassifier:
                 "mahalanobis_p_value_theoretical": round(maha_p_theoretical, 6),
                 "cosine_z": round(scores.cosine_z, 4),
                 "knn_distance": round(scores.knn_distance, 4),
+                "tfidf_cosine_z": (
+                    None if np.isnan(scores.tfidf_cosine_z) else round(scores.tfidf_cosine_z, 4)
+                ),
                 "in_distribution": in_distribution,
                 "review_route": decide_review_route(
                     confidence_tier=confidence_tier,
