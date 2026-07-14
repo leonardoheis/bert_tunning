@@ -12,6 +12,7 @@ from src.cli._ood_common import embed_texts_and_predict, reconstruct_split_and_l
 from src.logger import setup_logging
 from src.ood import (
     OodThresholds,
+    build_tfidf_vectorizer,
     compute_train_mahalanobis_distances,
     cosine_z_score,
     knn_mean_distance,
@@ -19,6 +20,7 @@ from src.ood import (
     mahalanobis_empirical_p_value,
     resolve_ood_thresholds,
     save_stats,
+    tfidf_cosine_z_score,
 )
 from src.schema import CalibrationReport, ClassEmbeddingStats
 from src.settings import Settings
@@ -28,19 +30,26 @@ from src.wandb import log_ood_calibration_results
 log = logging.getLogger(__name__)
 
 
-def build_calibration_report(
+def build_calibration_report(  # noqa: PLR0913 -- one param per OOD signal, all required
     p_values: npt.NDArray[np.float64],
     z_scores: npt.NDArray[np.float64],
     knn_distances: npt.NDArray[np.float64],
     target_fp_rate: float,
     thresholds: OodThresholds,
+    tfidf_z_scores: npt.NDArray[np.float64],
 ) -> CalibrationReport:
     """Pure calibration math, isolated from model/IO for direct unit testing.
 
     Mahalanobis: LOW p-value = anomalous, so the threshold for a target false-positive
-    rate is the `target_fp_rate`-th percentile of in-distribution p-values. Cosine and
-    k-NN mean distance: HIGH value = anomalous, so their thresholds are the
-    `(1 - target_fp_rate)`-th percentile.
+    rate is the `target_fp_rate`-th percentile of in-distribution p-values. Cosine, k-NN
+    mean distance, and TF-IDF cosine z-score: HIGH value = anomalous, so their thresholds
+    are the `(1 - target_fp_rate)`-th percentile.
+
+    `tfidf_z_scores` is required (no `None`/default) -- an empty array is the "no TF-IDF
+    data for this run" case, passed explicitly by the one caller rather than defaulted, so
+    there's no mutable-default-argument lint concern and no silent fabrication of a number
+    when a model has no TF-IDF stats. When empty, fp_rate_tfidf/suggested_tfidf_threshold
+    are reported as 0.0.
 
     `thresholds` must come from resolve_ood_thresholds(stats) at the call site, not
     Settings.OOD_* directly -- otherwise re-running this command on a model that already
@@ -48,6 +57,11 @@ def build_calibration_report(
     false-positive rate of thresholds production isn't even using, silently defeating the
     per-model calibration this module exists to support.
     """
+    fp_rate_tfidf = 0.0
+    suggested_tfidf_threshold = 0.0
+    if len(tfidf_z_scores) > 0:
+        fp_rate_tfidf = float(np.mean(tfidf_z_scores > thresholds.tfidf_cosine_z))
+        suggested_tfidf_threshold = float(np.percentile(tfidf_z_scores, (1 - target_fp_rate) * 100))
     return CalibrationReport(
         fp_rate_maha=float(np.mean(p_values < thresholds.mahalanobis_p)),
         fp_rate_cosine=float(np.mean(z_scores > thresholds.cosine_z)),
@@ -55,6 +69,8 @@ def build_calibration_report(
         suggested_maha_threshold=float(np.percentile(p_values, target_fp_rate * 100)),
         suggested_cosine_threshold=float(np.percentile(z_scores, (1 - target_fp_rate) * 100)),
         suggested_knn_threshold=float(np.percentile(knn_distances, (1 - target_fp_rate) * 100)),
+        fp_rate_tfidf=fp_rate_tfidf,
+        suggested_tfidf_threshold=suggested_tfidf_threshold,
     )
 
 
@@ -95,6 +111,11 @@ def _write_calibrated_thresholds(
             "mahalanobis_threshold_status": maha_status,
             "cosine_threshold": report.suggested_cosine_threshold,
             "knn_distance_threshold": report.suggested_knn_threshold,
+            "tfidf_threshold": (
+                report.suggested_tfidf_threshold
+                if report.suggested_tfidf_threshold > 0
+                else stats.tfidf_threshold
+            ),
         }
     )
     save_stats(updated, stats_path)
@@ -186,6 +207,15 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     if not knn_valid.any():
         msg = "No test documents have same-class training points — cannot calibrate k-NN"
         raise click.ClickException(msg)
+
+    tfidf_vectorizer = build_tfidf_vectorizer(stats)
+    tfidf_z_scores = np.array([])  # "no TF-IDF data for this run" -- passed explicitly,
+    # not defaulted, matching build_calibration_report's required (non-Optional) parameter
+    if tfidf_vectorizer is not None:
+        tfidf_z_scores = np.array(
+            [tfidf_cosine_z_score(text, stats, tfidf_vectorizer) for text in split.test_df["text"]]
+        )
+
     # The model's actually-deployed thresholds -- per-model calibrated values from `stats`
     # if evaluate-ood-calibration --write-thresholds already ran for this model, falling
     # back to Settings.OOD_* otherwise. Reading Settings.OOD_* unconditionally here would
@@ -193,7 +223,12 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     # once a model has its own per-model thresholds persisted.
     current_thresholds = resolve_ood_thresholds(stats)
     report = build_calibration_report(
-        p_values, z_scores, knn_distances[knn_valid], opts.target_fp_rate, current_thresholds
+        p_values,
+        z_scores,
+        knn_distances[knn_valid],
+        opts.target_fp_rate,
+        current_thresholds,
+        tfidf_z_scores=tfidf_z_scores,
     )
     if opts.write_thresholds:
         _write_calibrated_thresholds(stats, stats_path, report, len(train_distances))
@@ -230,6 +265,16 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         "k-NN — suggested threshold for %.1f%% target FP rate: %.4f",
         opts.target_fp_rate * 100,
         report.suggested_knn_threshold,
+    )
+    log.info(
+        "TF-IDF cosine — current threshold=%.4f, empirical false-positive rate=%.2f%%",
+        current_thresholds.tfidf_cosine_z,
+        report.fp_rate_tfidf * 100,
+    )
+    log.info(
+        "TF-IDF cosine — suggested threshold for %.1f%% target FP rate: %.4f",
+        opts.target_fp_rate * 100,
+        report.suggested_tfidf_threshold,
     )
 
     if opts.log_wandb:

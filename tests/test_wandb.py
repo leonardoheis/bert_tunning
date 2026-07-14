@@ -113,8 +113,12 @@ def test_log_ood_calibration_results_logs_summary_metrics() -> None:
         suggested_maha_threshold=0.0,
         suggested_cosine_threshold=13.7186,
         suggested_knn_threshold=4.2,
+        fp_rate_tfidf=0.0093,
+        suggested_tfidf_threshold=2.71,
     )
-    thresholds = OodThresholds(mahalanobis_p=0.001, cosine_z=13.7366, knn_distance=16.7908)
+    thresholds = OodThresholds(
+        mahalanobis_p=0.001, cosine_z=13.7366, knn_distance=16.7908, tfidf_cosine_z=2.5
+    )
     with (
         patch("src.wandb.wandb.init") as mock_init,
         patch("src.wandb.wandb.log") as mock_log,
@@ -136,6 +140,7 @@ def test_log_ood_calibration_results_logs_summary_metrics() -> None:
     assert config["current_mahalanobis_threshold"] == 0.001  # noqa: PLR2004
     assert config["current_cosine_threshold"] == 13.7366  # noqa: PLR2004
     assert config["current_knn_threshold"] == 16.7908  # noqa: PLR2004
+    assert config["current_tfidf_threshold"] == 2.5  # noqa: PLR2004
     mock_log.assert_called_once_with(
         {
             "ood/fp_rate_mahalanobis": 0.2951,
@@ -144,6 +149,8 @@ def test_log_ood_calibration_results_logs_summary_metrics() -> None:
             "ood/suggested_cosine_threshold": 13.7186,
             "ood/fp_rate_knn": 0.0087,
             "ood/suggested_knn_threshold": 4.2,
+            "ood/fp_rate_tfidf": 0.0093,
+            "ood/suggested_tfidf_threshold": 2.71,
         }
     )
     mock_finish.assert_called_once()

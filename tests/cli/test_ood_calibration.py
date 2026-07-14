@@ -48,7 +48,12 @@ def test_build_calibration_report_percentile_direction() -> None:
     thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
 
     report = build_calibration_report(
-        p_values, z_scores, knn_distances, target_fp_rate=0.25, thresholds=thresholds
+        p_values,
+        z_scores,
+        knn_distances,
+        target_fp_rate=0.25,
+        thresholds=thresholds,
+        tfidf_z_scores=np.array([]),
     )
 
     assert report.suggested_maha_threshold == pytest.approx(np.percentile(p_values, 25))
@@ -68,7 +73,12 @@ def test_build_calibration_report_knn_percentile_direction() -> None:
     thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
 
     report = build_calibration_report(
-        p_values, z_scores, knn_distances, target_fp_rate=0.25, thresholds=thresholds
+        p_values,
+        z_scores,
+        knn_distances,
+        target_fp_rate=0.25,
+        thresholds=thresholds,
+        tfidf_z_scores=np.array([]),
     )
 
     assert report.suggested_knn_threshold == pytest.approx(np.percentile(knn_distances, 75))
@@ -96,12 +106,63 @@ def test_build_calibration_report_fp_rates() -> None:
         knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
     )
     report = build_calibration_report(
-        p_values, z_scores, knn_distances, target_fp_rate=0.01, thresholds=thresholds
+        p_values,
+        z_scores,
+        knn_distances,
+        target_fp_rate=0.01,
+        thresholds=thresholds,
+        tfidf_z_scores=np.array([]),
     )
 
     assert report.fp_rate_maha == pytest.approx(0.5)
     assert report.fp_rate_cosine == pytest.approx(0.5)
     assert report.fp_rate_knn == pytest.approx(0.5)
+
+
+def test_build_calibration_report_tfidf_percentile_direction() -> None:
+    # Same HIGH-value-is-anomalous direction as cosine/knn.
+    p_values = np.array([0.1, 0.2, 0.3, 0.4])
+    z_scores = np.array([1.0, 2.0, 3.0, 4.0])
+    knn_distances = np.array([1.0, 2.0, 3.0, 4.0])
+    tfidf_z_scores = np.array([1.0, 2.0, 3.0, 4.0])
+    thresholds = OodThresholds(
+        mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0, tfidf_cosine_z=2.5
+    )
+
+    report = build_calibration_report(
+        p_values,
+        z_scores,
+        knn_distances,
+        target_fp_rate=0.25,
+        thresholds=thresholds,
+        tfidf_z_scores=tfidf_z_scores,
+    )
+
+    assert report.suggested_tfidf_threshold == pytest.approx(np.percentile(tfidf_z_scores, 75))
+    assert report.suggested_tfidf_threshold > np.median(tfidf_z_scores)
+
+
+def test_build_calibration_report_tfidf_fp_rate_zero_when_scores_empty() -> None:
+    # When the model has no TF-IDF stats, the caller passes an empty array (not None --
+    # see this task's Interfaces note on why tfidf_z_scores has no Optional/default at
+    # all) and the TF-IDF FP rate/suggested threshold must be reported as 0.0, not crash
+    # and not silently fabricate a number.
+    p_values = np.array([0.1, 0.2])
+    z_scores = np.array([1.0, 2.0])
+    knn_distances = np.array([1.0, 2.0])
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+
+    report = build_calibration_report(
+        p_values,
+        z_scores,
+        knn_distances,
+        target_fp_rate=0.25,
+        thresholds=thresholds,
+        tfidf_z_scores=np.array([]),
+    )
+
+    assert report.fp_rate_tfidf == 0.0
+    assert report.suggested_tfidf_threshold == 0.0
 
 
 def test_evaluate_ood_calibration_cmd_help() -> None:
