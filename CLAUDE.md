@@ -319,3 +319,4 @@ samples/    sample PDFs for quick tests
 |---|---|---|
 | `# noqa: FBT001, FBT002` | `src/training/trainer.py:25` | Boolean arg in WeightedTrainer — matches HuggingFace Trainer signature |
 | `# noqa: PLC0415` | `src/training/models/__init__.py:_build_registry` | Deferred import avoids circular import with model submodules |
+| `# noqa: PLR0913` | `src/cli/ood_calibration.py:build_calibration_report` | One parameter per OOD signal (Mahalanobis/cosine/k-NN/TF-IDF), all required — no natural grouping without a wrapper object that would obscure the calibration math |
