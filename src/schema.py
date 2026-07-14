@@ -145,10 +145,13 @@ class ClassEmbeddingStats(BaseModel):
     tfidf_vocabulary_terms: list[str] = []  # ordered; index = TF-IDF feature id
     tfidf_idf: Float64Array = Field(default_factory=lambda: np.zeros(0))
     tfidf_centroids: Float64Array = Field(default_factory=lambda: np.zeros((0, 0)))
-    # These two stay Optional -- they're scalars with no safe zero-sentinel (a genuine
-    # calibration mean of 0.0 must stay distinguishable from "never computed"), matching
-    # the existing precedent mahalanobis_p_threshold/cosine_threshold/knn_distance_threshold
-    # already use for the identical reason.
+    # These two are plain floats (0.0/1.0 sentinels), NOT Optional, unlike tfidf_threshold
+    # below -- they're always produced together with tfidf_vocabulary_terms/tfidf_idf/
+    # tfidf_centroids in one compute_tfidf_stats() call, never independently set or
+    # independently checked, so a None here would just be a second, redundant way to
+    # express what tfidf_vocabulary_terms' emptiness already expresses (see stop-using-none:
+    # a reason nobody branches on isn't worth modeling). tfidf_threshold differs because
+    # it's set independently, later, by a separate calibration step.
     tfidf_cosine_calibration_mean: float = 0.0
     tfidf_cosine_calibration_std: float = 1.0  # never 0.0 -- avoids a divide-by-zero if
     # ever read ungated, though every real caller already gates on tfidf_vocabulary_terms
