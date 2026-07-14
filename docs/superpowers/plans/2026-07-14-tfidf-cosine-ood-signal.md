@@ -10,14 +10,18 @@
 
 ## Global Constraints
 
-- **Backward compatibility is mandatory.** BETO v1's and BETO v2's committed `ood_stats.npz` files predate this feature and must keep working without regeneration. Every new field on `ClassEmbeddingStats` defaults to `None`, exactly like `model_type`/`model_hidden_size` did for the identity-fingerprint feature. When the TF-IDF fields are `None`, the signal is **disabled** for that model (skipped in `is_out_of_distribution`, not treated as "always anomalous" — that fail-safe-anomalous behavior is reserved for `knn_distance`'s NaN case, which represents a specific document's predicted class having zero training points, a different situation from a whole model never having computed this signal at all).
+- **Backward compatibility is mandatory.** BETO v1's and BETO v2's committed `ood_stats.npz` files predate this feature and must keep working without regeneration. Every new field on `ClassEmbeddingStats` defaults to its own "absent" sentinel (empty collection for `tfidf_vocabulary_terms`/`tfidf_idf`/`tfidf_centroids`, `None` for the three scalar calibration/threshold fields — see the `stop-using-none` bullet below for why these differ), the same backward-compatible-default spirit `model_type`/`model_hidden_size` already established for the identity-fingerprint feature. When the TF-IDF signal is absent, it is **disabled** for that model (skipped in `is_out_of_distribution`, not treated as "always anomalous" — that fail-safe-anomalous behavior is reserved for `knn_distance`'s NaN case, which represents a specific document's predicted class having zero training points, a different situation from a whole model never having computed this signal at all).
 - **No new artifact file.** `TfidfVectorizer.vocabulary_` (a `dict[str, int]`) and `.idf_` (a float array) must round-trip through `save_stats`/`load_stats`'s existing `allow_pickle=False` NumPy-array-only pattern — store the vocabulary as an ordered array of terms (`vectorizer.get_feature_names_out()`, index = feature id) plus the parallel `idf_` array, and reconstruct a fixed-vocabulary `TfidfVectorizer` from those two arrays at load time. This was verified working end-to-end before this plan was written (fit → extract terms + idf → reconstruct → transform produces bit-identical output to the original fitted vectorizer).
 - **Never blend into one score.** `is_out_of_distribution` becomes a 4-way OR. Do not average, weight, or otherwise combine `tfidf_cosine_z` with the other three signals.
 - **Reuse the existing percentile calibration technique exactly.** HIGH `tfidf_cosine_z` = anomalous (same direction as `cosine_z`/`knn_distance`), so the calibrated threshold is the `(1 - target_fp_rate)`-th percentile of in-distribution scores — do not invent a new calibration method.
-- **`OodThresholds` and `OodScores` are both `NamedTuple`s with existing call sites across the test suite** (11 and 5 respectively, none of which pass a TF-IDF value). Give the new field a default (`Settings.OOD_TFIDF_COSINE_THRESHOLD` for `OodThresholds.tfidf_cosine_z`; `None` for `OodScores.tfidf_cosine_z`) so none of those existing call sites need to change.
+- **`OodThresholds` and `OodScores` are both `NamedTuple`s with existing call sites across the test suite** (11 and 5 respectively, none of which pass a TF-IDF value). Give the new field a default (`Settings.OOD_TFIDF_COSINE_THRESHOLD` for `OodThresholds.tfidf_cosine_z`; `float("nan")` for `OodScores.tfidf_cosine_z` — see the `stop-using-none` bullet below) so none of those existing call sites need to change.
 - **`CalibrationReport` gets two new required-shape fields** (`fp_rate_tfidf`, `suggested_tfidf_threshold`) with a `0.0` default for the same non-breaking reason — one existing test (`tests/test_wandb.py`) constructs it directly.
 - Use `clean_text` (`from src.ingestion.extract import clean_text`, already imported this way in `src/inference/classify.py`) on text before fitting/transforming with the TF-IDF vectorizer, for consistency with what `predict_text` already does before BERT tokenization.
 - Cache the reconstructed `TfidfVectorizer` for the classifier's process lifetime (mirror `BertTunningClassifier._train_mahalanobis_distances`'s `@cached_property` pattern) — do not rebuild it on every `predict_text` call.
+- **Avoid `None` where an existing, more specific pattern already fits** (per `stop-using-none`): `tfidf_vocabulary_terms`/`tfidf_idf`/`tfidf_centroids` are collections — a real fitted vectorizer always has ≥1 term, so an **empty collection** (`[]` / a zero-length array) is an unambiguous, self-describing "not fitted yet" sentinel, exactly the "Nothing here" row in the skill's Quick Reference table. This also removes a whole NaN-sentinel translation layer from `save_stats`/`load_stats` for these three fields specifically (an empty array written to `.npz` and an empty array read back are already the same value — no None↔NaN round-trip needed).
+  `tfidf_cosine_calibration_mean`/`.std` are **plain floats with placeholder defaults** (`0.0`/`1.0`), not `Optional` — despite superficially looking like the same "scalar, no safe zero" case `mahalanobis_p_threshold` et al. are. The test that actually distinguishes them: `mahalanobis_p_threshold`/`cosine_threshold`/`knn_distance_threshold`/`tfidf_threshold` are each set **independently**, later, by a separate calibration step (`evaluate-ood-calibration --write-thresholds`) that may or may not have run for any one of them — a caller (`resolve_ood_thresholds`, `_warn_on_uncalibrated_thresholds`) genuinely branches per-field on that. `tfidf_cosine_calibration_mean`/`.std`, by contrast, are **always** produced together with `tfidf_vocabulary_terms`/`tfidf_idf`/`tfidf_centroids` in the same `compute_tfidf_stats` call — never independently set, never independently checked. No caller reads `tfidf_cosine_calibration_mean` without having already confirmed `tfidf_vocabulary_terms` is non-empty (`build_tfidf_vectorizer`'s emptiness check gates every path that would use it). A `None` here would just be a second, redundant way to express a condition `tfidf_vocabulary_terms` already expresses — the "reason nobody branches on" case the skill says isn't worth modeling. `std` defaults to `1.0`, not `0.0`, purely as a defensive non-zero divisor if ever misused ungated; it is never actually read that way.
+  `tfidf_threshold` stays `float | None`, matching `mahalanobis_p_threshold`/`cosine_threshold`/`knn_distance_threshold`'s existing, already-shipped precedent exactly, for the identical independently-calibrated reason.
+- **`OodScores.tfidf_cosine_z` uses the NaN sentinel already established by its sibling `knn_distance` field in the same `NamedTuple`**, not `float | None` — keeps `OodScores` a uniform 4-tuple of plain floats with zero `Optional` fields, matching its own existing style. This is a *deliberately opposite* NaN convention from `knn_distance`'s: `knn_distance`'s NaN means "this specific document's predicted class had zero training points" and fails **closed** (treated as anomalous, since the model can't judge it at all). `tfidf_cosine_z`'s NaN means "this whole model's `ood_stats.npz` predates the TF-IDF signal" and fails **open** (skipped, not anomalous) — the same "whole model doesn't have this capability" situation `_ood_stats is None` already handles by skipping OOD scoring entirely for the other three signals. Two NaNs, two different reasons, two different handling rules — call out both explicitly in code comments so a future reader doesn't assume they share one convention. `PredictResult.tfidf_cosine_z` (the external/API-facing field) stays `float | None = None`, matching its three already-shipped siblings (`mahalanobis_p_value`, `cosine_z`, `knn_distance`) exactly — that's a genuine system/API boundary, the one place the skill says `None` still fits, and `predict_text` is where the internal NaN sentinel gets translated back to external `None`, mirroring how `save_stats`/`load_stats` already translate NaN↔`None` at the `.npz` storage boundary.
 
 ---
 
@@ -30,7 +34,7 @@
 - Test: `tests/test_schema.py`
 
 **Interfaces:**
-- Produces: `Settings.OOD_TFIDF_COSINE_THRESHOLD: float`, `Settings.OOD_TFIDF_MAX_FEATURES: int`; `ClassEmbeddingStats.tfidf_vocabulary_terms: list[str] | None`, `.tfidf_idf: Float64Array | None`, `.tfidf_centroids: Float64Array | None`, `.tfidf_cosine_calibration_mean: float | None`, `.tfidf_cosine_calibration_std: float | None`, `.tfidf_threshold: float | None`; `CalibrationReport.fp_rate_tfidf: float`, `.suggested_tfidf_threshold: float`.
+- Produces: `Settings.OOD_TFIDF_COSINE_THRESHOLD: float`, `Settings.OOD_TFIDF_MAX_FEATURES: int`; `ClassEmbeddingStats.tfidf_vocabulary_terms: list[str]` (empty = not fitted), `.tfidf_idf: Float64Array` (empty = not fitted), `.tfidf_centroids: Float64Array` (empty = not fitted), `.tfidf_cosine_calibration_mean: float` (default `0.0`, empty when not fitted), `.tfidf_cosine_calibration_std: float` (default `1.0`), `.tfidf_threshold: float | None`; `CalibrationReport.fp_rate_tfidf: float`, `.suggested_tfidf_threshold: float`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -45,7 +49,7 @@ def test_ood_tfidf_settings_have_defaults() -> None:
 Add to `tests/test_schema.py`:
 
 ```python
-def test_class_embedding_stats_tfidf_fields_default_to_none() -> None:
+def test_class_embedding_stats_tfidf_fields_default_to_absent() -> None:
     stats = ClassEmbeddingStats(
         class_names=["a", "b"],
         pca_mean=np.zeros(4),
@@ -57,11 +61,11 @@ def test_class_embedding_stats_tfidf_fields_default_to_none() -> None:
         knn_train_embeddings=np.zeros((2, 4)),
         knn_train_labels=[0, 1],
     )
-    assert stats.tfidf_vocabulary_terms is None
-    assert stats.tfidf_idf is None
-    assert stats.tfidf_centroids is None
-    assert stats.tfidf_cosine_calibration_mean is None
-    assert stats.tfidf_cosine_calibration_std is None
+    assert stats.tfidf_vocabulary_terms == []
+    assert len(stats.tfidf_idf) == 0
+    assert stats.tfidf_centroids.size == 0
+    assert stats.tfidf_cosine_calibration_mean == 0.0
+    assert stats.tfidf_cosine_calibration_std == 1.0
     assert stats.tfidf_threshold is None
 
 
@@ -99,20 +103,33 @@ In `src/settings.py`, immediately after the `OOD_KNN_DISTANCE_THRESHOLD`/`TARGET
 
 - [ ] **Step 4: Add the ClassEmbeddingStats fields**
 
-In `src/schema.py`, inside `ClassEmbeddingStats`, immediately after the `mahalanobis_threshold_status` field:
+In `src/schema.py`, add the `Field` import to the existing `from pydantic import ...` line:
+
+```python
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+```
+
+Then, inside `ClassEmbeddingStats`, immediately after the `mahalanobis_threshold_status` field:
 
 ```python
     # TF-IDF cosine-centroid signal (added 2026-07-14) -- a fourth OOD signal, independent
     # of the three above, operating on raw lexical vocabulary instead of BERT-embedding
     # space. Catches divergence the embedding-based signals structurally cannot (e.g. a
     # document naming a different municipality but sharing the same document-type shape).
-    # All None together means "this ood_stats.npz predates this feature" -- the signal is
-    # skipped entirely in is_out_of_distribution, not treated as anomalous by default.
-    tfidf_vocabulary_terms: list[str] | None = None  # ordered; index = TF-IDF feature id
-    tfidf_idf: Float64Array | None = None  # parallel to tfidf_vocabulary_terms
-    tfidf_centroids: Float64Array | None = None  # shape (n_classes, len(tfidf_vocabulary_terms))
-    tfidf_cosine_calibration_mean: float | None = None
-    tfidf_cosine_calibration_std: float | None = None
+    # An empty vocabulary/idf/centroids together means "this ood_stats.npz predates this
+    # feature" -- a real fitted vectorizer always has >=1 term, so empty is an unambiguous
+    # "not fitted" sentinel (no None needed: see stop-using-none's "Nothing here" case).
+    # The signal is skipped entirely in is_out_of_distribution, not treated as anomalous.
+    tfidf_vocabulary_terms: list[str] = []  # ordered; index = TF-IDF feature id
+    tfidf_idf: Float64Array = Field(default_factory=lambda: np.zeros(0))
+    tfidf_centroids: Float64Array = Field(default_factory=lambda: np.zeros((0, 0)))
+    # These two stay Optional -- they're scalars with no safe zero-sentinel (a genuine
+    # calibration mean of 0.0 must stay distinguishable from "never computed"), matching
+    # the existing precedent mahalanobis_p_threshold/cosine_threshold/knn_distance_threshold
+    # already use for the identical reason.
+    tfidf_cosine_calibration_mean: float = 0.0
+    tfidf_cosine_calibration_std: float = 1.0  # never 0.0 -- avoids a divide-by-zero if
+    # ever read ungated, though every real caller already gates on tfidf_vocabulary_terms
     # Per-model calibrated threshold, same role as cosine_threshold/knn_distance_threshold --
     # no degenerate-guard status field needed, since that guard only ever applies to Mahalanobis.
     tfidf_threshold: float | None = None
@@ -308,9 +325,9 @@ def build_tfidf_vectorizer(stats: ClassEmbeddingStats) -> TfidfVectorizer | None
     """Reconstructs a fixed-vocabulary TfidfVectorizer from the two arrays load_stats/
     save_stats round-trip through ood_stats.npz -- verified to produce bit-identical
     .transform() output to the originally-fitted vectorizer. Returns None when this
-    model's ood_stats.npz predates the TF-IDF signal (all tfidf_* fields None), so
-    callers can treat the signal as disabled rather than crash on missing data."""
-    if stats.tfidf_vocabulary_terms is None:
+    model's ood_stats.npz predates the TF-IDF signal (tfidf_vocabulary_terms is empty),
+    so callers can treat the signal as disabled rather than crash on missing data."""
+    if not stats.tfidf_vocabulary_terms:  # empty list = not fitted, see Task 1's field comment
         return None
     vocabulary = {term: i for i, term in enumerate(stats.tfidf_vocabulary_terms)}
     vectorizer = TfidfVectorizer(vocabulary=vocabulary)
@@ -357,7 +374,7 @@ git commit -m "feat: add TF-IDF cosine-centroid stats/scoring functions"
 
 **Interfaces:**
 - Consumes: `ClassEmbeddingStats.tfidf_*` fields (Task 1).
-- Produces: `save_stats`/`load_stats` round-trip all six new fields; loading a legacy `.npz` (missing the new keys) still works, with all six fields defaulting to `None`.
+- Produces: `save_stats`/`load_stats` round-trip all six new fields; loading a legacy `.npz` (missing the new keys) still works, with the three collection fields defaulting to empty and the three scalar fields defaulting to `None`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -396,84 +413,62 @@ def test_load_stats_handles_legacy_file_without_tfidf_fields(tmp_path: Path) -> 
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
     path = tmp_path / "ood_stats.npz"
-    save_stats(stats, path)  # tfidf_* fields are all None -- this IS the legacy-shape file
+    save_stats(stats, path)  # tfidf_* fields are all at their empty/None defaults --
+    # this IS the legacy-shape file (compute_class_stats here predates Task 4's texts= param)
 
     loaded = load_stats(path)
 
-    assert loaded.tfidf_vocabulary_terms is None
-    assert loaded.tfidf_idf is None
-    assert loaded.tfidf_centroids is None
-    assert loaded.tfidf_cosine_calibration_mean is None
-    assert loaded.tfidf_cosine_calibration_std is None
+    assert loaded.tfidf_vocabulary_terms == []
+    assert len(loaded.tfidf_idf) == 0
+    assert loaded.tfidf_centroids.size == 0
+    assert loaded.tfidf_cosine_calibration_mean == 0.0
+    assert loaded.tfidf_cosine_calibration_std == 1.0
     assert loaded.tfidf_threshold is None
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_ood.py -v -k "tfidf_fields"`
-Expected: `test_save_and_load_stats_roundtrip_includes_tfidf_fields` FAILs (round-tripped values are `None`, not the fitted ones) — `test_load_stats_handles_legacy_file_without_tfidf_fields` currently passes vacuously (fields are already always `None`) but must stay passing after Step 3.
+Expected: `test_save_and_load_stats_roundtrip_includes_tfidf_fields` FAILs (round-tripped values are the empty/default values, not the fitted ones) — `test_load_stats_handles_legacy_file_without_tfidf_fields` currently passes vacuously (fields are already always at their defaults) but must stay passing after Step 3.
 
 - [ ] **Step 3: Implement persistence**
 
-In `src/ood.py`'s `save_stats`, add the None→sentinel translation alongside the existing threshold ones (a vocabulary of `[]` and `idf`/`centroids` of empty arrays are unambiguous "absent" sentinels here, since a real fitted vectorizer always has ≥1 term):
+In `src/ood.py`'s `save_stats`, five of the six new fields need NO None-translation at all -- `stats.tfidf_vocabulary_terms`/`.tfidf_idf`/`.tfidf_centroids`/`.tfidf_cosine_calibration_mean`/`.tfidf_cosine_calibration_std` are all plain (possibly-empty/placeholder-default) values per Task 1's field defaults, so they pass straight into `np.savez` unchanged. Only `tfidf_threshold` still needs the existing NaN-sentinel translation, since `.npz` has no native `None`:
 
 ```python
-    tfidf_vocabulary_terms = (
-        np.array([], dtype=str)
-        if stats.tfidf_vocabulary_terms is None
-        else np.array(stats.tfidf_vocabulary_terms)
-    )
-    tfidf_idf = np.array([], dtype=np.float64) if stats.tfidf_idf is None else stats.tfidf_idf
-    tfidf_centroids = (
-        np.zeros((0, 0)) if stats.tfidf_centroids is None else stats.tfidf_centroids
-    )
-    tfidf_cal_mean = (
-        np.nan if stats.tfidf_cosine_calibration_mean is None else stats.tfidf_cosine_calibration_mean
-    )
-    tfidf_cal_std = (
-        np.nan if stats.tfidf_cosine_calibration_std is None else stats.tfidf_cosine_calibration_std
-    )
     tfidf_threshold = np.nan if stats.tfidf_threshold is None else stats.tfidf_threshold
 ```
 
-Add these six to the `np.savez(...)` call (alongside the existing `mahalanobis_threshold_status=...` line):
+Add all six to the `np.savez(...)` call (alongside the existing `mahalanobis_threshold_status=...` line) -- note five pass the `ClassEmbeddingStats` fields through directly, no local variable needed:
 
 ```python
-                tfidf_vocabulary_terms=tfidf_vocabulary_terms,
-                tfidf_idf=tfidf_idf,
-                tfidf_centroids=tfidf_centroids,
-                tfidf_cosine_calibration_mean=tfidf_cal_mean,
-                tfidf_cosine_calibration_std=tfidf_cal_std,
+                tfidf_vocabulary_terms=np.array(stats.tfidf_vocabulary_terms),
+                tfidf_idf=stats.tfidf_idf,
+                tfidf_centroids=stats.tfidf_centroids,
+                tfidf_cosine_calibration_mean=stats.tfidf_cosine_calibration_mean,
+                tfidf_cosine_calibration_std=stats.tfidf_cosine_calibration_std,
                 tfidf_threshold=tfidf_threshold,
 ```
 
-In `load_stats`, add the six fields to the `ClassEmbeddingStats(...)` construction, guarded by `"key" in data.files` exactly like `model_type`/`model_hidden_size` already are:
+In `load_stats`, add the six fields to the `ClassEmbeddingStats(...)` construction. Five of them only need the legacy-file guard (`"key" in data.files` -- a pre-this-feature `.npz` doesn't have the key at all), with no None-vs-value branching, since a value written by `save_stats` reads back as the same value directly:
 
 ```python
         tfidf_vocabulary_terms=(
-            data["tfidf_vocabulary_terms"].tolist()
-            if "tfidf_vocabulary_terms" in data.files and len(data["tfidf_vocabulary_terms"]) > 0
-            else None
+            data["tfidf_vocabulary_terms"].tolist() if "tfidf_vocabulary_terms" in data.files else []
         ),
-        tfidf_idf=(
-            data["tfidf_idf"]
-            if "tfidf_idf" in data.files and len(data["tfidf_idf"]) > 0
-            else None
-        ),
+        tfidf_idf=(data["tfidf_idf"] if "tfidf_idf" in data.files else np.zeros(0)),
         tfidf_centroids=(
-            data["tfidf_centroids"]
-            if "tfidf_centroids" in data.files and data["tfidf_centroids"].size > 0
-            else None
+            data["tfidf_centroids"] if "tfidf_centroids" in data.files else np.zeros((0, 0))
         ),
         tfidf_cosine_calibration_mean=(
-            _optional_threshold(data["tfidf_cosine_calibration_mean"])
+            float(data["tfidf_cosine_calibration_mean"])
             if "tfidf_cosine_calibration_mean" in data.files
-            else None
+            else 0.0
         ),
         tfidf_cosine_calibration_std=(
-            _optional_threshold(data["tfidf_cosine_calibration_std"])
+            float(data["tfidf_cosine_calibration_std"])
             if "tfidf_cosine_calibration_std" in data.files
-            else None
+            else 1.0
         ),
         tfidf_threshold=(
             _optional_threshold(data["tfidf_threshold"])
@@ -496,7 +491,7 @@ from src.ood import load_stats
 from pathlib import Path
 for p in ['models/bert_tunning_model_beto/final/ood_stats.npz', 'models/bert_tunning_model_beto_v2/final/ood_stats.npz']:
     s = load_stats(Path(p))
-    assert s.tfidf_vocabulary_terms is None
+    assert s.tfidf_vocabulary_terms == []
     print(p, 'OK')
 "
 ```
@@ -541,7 +536,7 @@ def test_compute_class_stats_populates_tfidf_fields() -> None:
     stats = compute_class_stats(
         embeddings, labels, class_names, n_components=8, texts=texts
     )
-    assert stats.tfidf_vocabulary_terms is not None
+    assert stats.tfidf_vocabulary_terms != []
     assert len(stats.tfidf_centroids) == len(class_names)
 ```
 
@@ -665,7 +660,7 @@ git commit -m "feat: fit TF-IDF stats inside compute_class_stats, wire into both
 
 **Interfaces:**
 - Consumes: `build_tfidf_vectorizer`, `tfidf_cosine_z_score` (Task 2), `ClassEmbeddingStats.tfidf_*` (Task 1/3).
-- Produces: `OodThresholds.tfidf_cosine_z: float`; `OodScores.tfidf_cosine_z: float | None`; `is_out_of_distribution` becomes a 4-way OR; `PredictResult.tfidf_cosine_z: float | None`; `BertTunningClassifier._tfidf_vectorizer` cached property.
+- Produces: `OodThresholds.tfidf_cosine_z: float`; `OodScores.tfidf_cosine_z: float` (NaN sentinel — no `Optional`, see the Global Constraints `stop-using-none` bullet); `is_out_of_distribution` becomes a 4-way OR; `PredictResult.tfidf_cosine_z: float | None` (the one place this stays `Optional` — external API boundary, matching its three siblings); `BertTunningClassifier._tfidf_vectorizer` cached property (`TfidfVectorizer | None` — single-reason absence at a data-loading boundary, the legitimate `None` case per the same skill).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -673,10 +668,15 @@ Add to `tests/inference/test_pipeline.py` (mirroring the existing `test_is_out_o
 
 ```python
 def test_is_out_of_distribution_false_when_tfidf_signal_absent_and_others_pass() -> None:
-    # tfidf_cosine_z=None (signal not available for this model) must not make the
-    # document anomalous by itself -- absence is "skip," not "fail-safe anomalous"
-    # (that fail-safe behavior belongs to knn_distance's NaN case, a different situation).
-    scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=None)
+    # tfidf_cosine_z=nan (signal not available for this model) must not make the document
+    # anomalous by itself -- NaN here means "skip, fail open," the OPPOSITE of
+    # knn_distance's NaN, which means "fail closed, treat as anomalous." The two NaNs
+    # represent different situations (whole-model signal absence vs. one document's
+    # predicted class having zero training points) and are handled with opposite polarity
+    # on purpose -- see the Global Constraints note in this plan.
+    scores = OodScores(
+        mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=float("nan")
+    )
     thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
     assert is_out_of_distribution(scores, thresholds) is False
 
@@ -714,12 +714,16 @@ def test_predict_text_attaches_tfidf_cosine_z_when_available() -> None:
     )
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("decreto rosario municipal")
+    # PredictResult.tfidf_cosine_z stays Optional at this external boundary (matching
+    # mahalanobis_p_value/cosine_z/knn_distance) -- predict_text is where the internal
+    # NaN sentinel translates back to None, same as save_stats/load_stats already do at
+    # the .npz storage boundary for the scalar threshold fields.
     assert result.tfidf_cosine_z is not None
 
 
 def test_predict_text_leaves_tfidf_cosine_z_none_when_stats_predate_feature() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats()  # noqa: SLF001 -- tfidf_* fields all default to None
+    clf._ood_stats = _make_stats()  # noqa: SLF001 -- tfidf_vocabulary_terms defaults to []
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.tfidf_cosine_z is None
@@ -764,10 +768,19 @@ def resolve_ood_thresholds(stats: ClassEmbeddingStats) -> OodThresholds:
 
 ```python
 class OodScores(NamedTuple):
+    """The four OOD signals -- always computed together, passed together, never used
+    independently. tfidf_cosine_z uses the same NaN-sentinel convention as knn_distance,
+    not Optional -- keeps this NamedTuple a uniform tuple of plain floats. The two NaNs
+    mean different things and are handled with OPPOSITE polarity in is_out_of_distribution:
+    knn_distance's NaN means "this document's predicted class has zero training points"
+    and fails CLOSED (anomalous); tfidf_cosine_z's NaN means "this whole model's
+    ood_stats.npz predates the TF-IDF signal" and fails OPEN (not anomalous, same as
+    _ood_stats being None disables OOD scoring entirely for the other three signals)."""
+
     mahalanobis_p: float
     cosine_z: float
     knn_distance: float
-    tfidf_cosine_z: float | None = None
+    tfidf_cosine_z: float = float("nan")
 ```
 
 ```python
@@ -777,8 +790,9 @@ def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool
     knn_anomalous = (
         bool(np.isnan(scores.knn_distance)) or scores.knn_distance > thresholds.knn_distance
     )
+    # Opposite of knn_anomalous's NaN handling on purpose -- see OodScores' docstring.
     tfidf_anomalous = (
-        scores.tfidf_cosine_z is not None and scores.tfidf_cosine_z > thresholds.tfidf_cosine_z
+        not np.isnan(scores.tfidf_cosine_z) and scores.tfidf_cosine_z > thresholds.tfidf_cosine_z
     )
     log.debug(
         "OOD signals: mahalanobis_p=%.6f (threshold=%.6f, anomalous=%s), "
@@ -833,13 +847,13 @@ Add a cached property, mirroring `_train_mahalanobis_distances`:
 
 (Add `from sklearn.feature_extraction.text import TfidfVectorizer` under `TYPE_CHECKING` if mypy strict requires it for the string-quoted return annotation — check how `LoadedModel`/other sklearn-typed members in this file already handle this, and match that convention exactly rather than guessing.)
 
-In `predict_text`, after the existing `scores = OodScores(...)` construction, compute the fourth value and include it:
+In `predict_text`, after the existing `scores = OodScores(...)` construction, compute the fourth value and include it. `tfidf_z` uses the NaN sentinel (matching `OodScores.tfidf_cosine_z`'s type) when the vectorizer is absent, not `None`:
 
 ```python
         tfidf_z = (
             tfidf_cosine_z_score(text, self._ood_stats, self._tfidf_vectorizer)
             if self._tfidf_vectorizer is not None
-            else None
+            else float("nan")
         )
         squared_distance = mahalanobis_min_distance(cls_embedding, self._ood_stats)
         scores = OodScores(
@@ -852,14 +866,22 @@ In `predict_text`, after the existing `scores = OodScores(...)` construction, co
         )
 ```
 
-Add `"tfidf_cosine_z": round(scores.tfidf_cosine_z, 4) if scores.tfidf_cosine_z is not None else None,` to the `result.model_copy(update={...})` call's dict.
+Add this to the `result.model_copy(update={...})` call's dict — this is where the internal NaN sentinel translates to the external `PredictResult.tfidf_cosine_z: float | None` (the same NaN↔`None` translation `save_stats`/`load_stats` already do at the `.npz` boundary for the scalar threshold fields):
+
+```python
+                "tfidf_cosine_z": (
+                    None if np.isnan(scores.tfidf_cosine_z) else round(scores.tfidf_cosine_z, 4)
+                ),
+```
 
 Extend `_warn_on_uncalibrated_thresholds` to also check the TF-IDF threshold, but only when the TF-IDF signal actually exists for this model (don't warn about a signal that isn't in use at all):
 
 ```python
-        if self._ood_stats.tfidf_centroids is not None and self._ood_stats.tfidf_threshold is None:
+        if self._ood_stats.tfidf_centroids.size > 0 and self._ood_stats.tfidf_threshold is None:
             uncalibrated.append("tfidf_threshold")
-```//(add this line into the existing `uncalibrated` list-building block, alongside the `cosine_threshold`/`knn_distance_threshold` checks)
+```
+
+(Add this line into the existing `uncalibrated` list-building block, alongside the `cosine_threshold`/`knn_distance_threshold` checks.)
 
 - [ ] **Step 6: Run tests to verify they pass**
 
@@ -890,7 +912,7 @@ git commit -m "feat: wire TF-IDF cosine-centroid as a fourth OOD signal into Ber
 
 **Interfaces:**
 - Consumes: `build_tfidf_vectorizer`, `tfidf_cosine_z_score` (Task 2), `OodThresholds.tfidf_cosine_z` (Task 5), `CalibrationReport.fp_rate_tfidf`/`.suggested_tfidf_threshold` (Task 1).
-- Produces: `build_calibration_report` gains a `tfidf_z_scores: npt.NDArray[np.float64] | None` parameter; `_write_calibrated_thresholds` also persists `tfidf_threshold`; `_run_ood_calibration` computes TF-IDF scores for the test split when available; `log_ood_calibration_results` logs the TF-IDF FP rate/suggested threshold/current threshold.
+- Produces: `build_calibration_report` gains a required `tfidf_z_scores: npt.NDArray[np.float64]` parameter — no `None`/default: an empty array (`np.array([])`) is the "no TF-IDF data for this run" case, passed explicitly by the one caller rather than defaulted, so there's no mutable-default-argument lint concern (ruff `B006`/`B008`) and no `Optional` on this parameter at all; `_write_calibrated_thresholds` also persists `tfidf_threshold`; `_run_ood_calibration` computes TF-IDF scores for the test split when available (empty array otherwise); `log_ood_calibration_results` logs the TF-IDF FP rate/suggested threshold/current threshold.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -914,9 +936,11 @@ def test_build_calibration_report_tfidf_percentile_direction() -> None:
     assert report.suggested_tfidf_threshold > np.median(tfidf_z_scores)
 
 
-def test_build_calibration_report_tfidf_fp_rate_zero_when_scores_none() -> None:
-    # When the model has no TF-IDF stats (tfidf_z_scores=None), the TF-IDF FP rate/suggested
-    # threshold must be reported as 0.0, not crash and not silently fabricate a number.
+def test_build_calibration_report_tfidf_fp_rate_zero_when_scores_empty() -> None:
+    # When the model has no TF-IDF stats, the caller passes an empty array (not None --
+    # see this task's Interfaces note on why tfidf_z_scores has no Optional/default at
+    # all) and the TF-IDF FP rate/suggested threshold must be reported as 0.0, not crash
+    # and not silently fabricate a number.
     p_values = np.array([0.1, 0.2])
     z_scores = np.array([1.0, 2.0])
     knn_distances = np.array([1.0, 2.0])
@@ -924,7 +948,7 @@ def test_build_calibration_report_tfidf_fp_rate_zero_when_scores_none() -> None:
 
     report = build_calibration_report(
         p_values, z_scores, knn_distances, target_fp_rate=0.25, thresholds=thresholds,
-        tfidf_z_scores=None,
+        tfidf_z_scores=np.array([]),
     )
 
     assert report.fp_rate_tfidf == 0.0
@@ -996,11 +1020,11 @@ def build_calibration_report(
     knn_distances: npt.NDArray[np.float64],
     target_fp_rate: float,
     thresholds: OodThresholds,
-    tfidf_z_scores: npt.NDArray[np.float64] | None = None,
+    tfidf_z_scores: npt.NDArray[np.float64],
 ) -> CalibrationReport:
     fp_rate_tfidf = 0.0
     suggested_tfidf_threshold = 0.0
-    if tfidf_z_scores is not None:
+    if len(tfidf_z_scores) > 0:
         fp_rate_tfidf = float(np.mean(tfidf_z_scores > thresholds.tfidf_cosine_z))
         suggested_tfidf_threshold = float(
             np.percentile(tfidf_z_scores, (1 - target_fp_rate) * 100)
@@ -1029,7 +1053,8 @@ After the existing `knn_distances`/`knn_valid` block, add:
 
 ```python
     tfidf_vectorizer = build_tfidf_vectorizer(stats)
-    tfidf_z_scores = None
+    tfidf_z_scores = np.array([])  # "no TF-IDF data for this run" -- passed explicitly,
+    # not defaulted, matching build_calibration_report's required (non-Optional) parameter
     if tfidf_vectorizer is not None:
         tfidf_z_scores = np.array(
             [
@@ -1115,7 +1140,7 @@ Add a new paragraph under "Key Technical Decisions", after the "k-NN class-condi
 
 ```markdown
 **TF-IDF cosine-centroid — a fourth OOD signal, catching lexical divergence the embedding-based signals cannot**
-Mahalanobis, cosine, and k-NN all operate on the `[CLS]` embedding's semantic "shape" -- which means a document sharing the same document-type genre (e.g. a decree) but naming a different municipality than any in the training corpus is nearly indistinguishable from a genuine in-distribution document in that space, since BERT's embedding compresses away the specific place name in favor of "this is decree-shaped text." `compute_tfidf_stats()` (`src/ood.py`) fits a `TfidfVectorizer` + per-class centroids directly on training text's raw vocabulary instead, and `tfidf_cosine_z_score()` scores new documents the same way `cosine_z_score` already does (cosine distance to nearest centroid, z-scored against the training set) -- just in TF-IDF space, where a different city's name is a literal distinguishing feature rather than noise the embedding smooths over. Persisted through the existing `ood_stats.npz` with no new artifact file: `TfidfVectorizer.vocabulary_`/`.idf_` round-trip through two plain arrays (`tfidf_vocabulary_terms`, `tfidf_idf`), verified to reconstruct a vectorizer whose `.transform()` output is bit-identical to the originally-fitted one. All six `tfidf_*` fields default to `None` for backward compatibility -- an `ood_stats.npz` predating this feature has the signal skipped entirely (not treated as anomalous by default), and must be regenerated via `compute-ood-stats` to gain it. Folded into the same OR as the other three signals (`in_distribution=False` if any of the four fire) -- never blended into one score, same rationale as the original Mahalanobis/cosine decision. `OOD_TFIDF_COSINE_THRESHOLD` (default `2.5`) is an uncalibrated placeholder like the original `OOD_COSINE_THRESHOLD`/`OOD_KNN_DISTANCE_THRESHOLD` were -- run `evaluate-ood-calibration --write-thresholds` before trusting it in production.
+Mahalanobis, cosine, and k-NN all operate on the `[CLS]` embedding's semantic "shape" -- which means a document sharing the same document-type genre (e.g. a decree) but naming a different municipality than any in the training corpus is nearly indistinguishable from a genuine in-distribution document in that space, since BERT's embedding compresses away the specific place name in favor of "this is decree-shaped text." `compute_tfidf_stats()` (`src/ood.py`) fits a `TfidfVectorizer` + per-class centroids directly on training text's raw vocabulary instead, and `tfidf_cosine_z_score()` scores new documents the same way `cosine_z_score` already does (cosine distance to nearest centroid, z-scored against the training set) -- just in TF-IDF space, where a different city's name is a literal distinguishing feature rather than noise the embedding smooths over. Persisted through the existing `ood_stats.npz` with no new artifact file: `TfidfVectorizer.vocabulary_`/`.idf_` round-trip through two plain arrays (`tfidf_vocabulary_terms`, `tfidf_idf`), verified to reconstruct a vectorizer whose `.transform()` output is bit-identical to the originally-fitted one. All six `tfidf_*` fields default to an "absent" sentinel for backward compatibility -- an empty vocabulary/idf/centroids for the three collection fields (a real fitted vectorizer always has >=1 term, so empty is unambiguous), `None` for the three scalar calibration/threshold fields (no safe zero-sentinel for those) -- an `ood_stats.npz` predating this feature has the signal skipped entirely (not treated as anomalous by default), and must be regenerated via `compute-ood-stats` to gain it. Folded into the same OR as the other three signals (`in_distribution=False` if any of the four fire) -- never blended into one score, same rationale as the original Mahalanobis/cosine decision. `OOD_TFIDF_COSINE_THRESHOLD` (default `2.5`) is an uncalibrated placeholder like the original `OOD_COSINE_THRESHOLD`/`OOD_KNN_DISTANCE_THRESHOLD` were -- run `evaluate-ood-calibration --write-thresholds` before trusting it in production.
 ```
 
 - [ ] **Step 5: Run the full test suite one final time**
