@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from src.inference.classify import BertTunningClassifier
 from src.inference.pipeline import extraction_failed
+from src.ingestion._text import detect_foreign_municipality
 from src.ingestion.extract import extract_pdf_with_metadata
 from src.schema import PredictResult
 from src.settings import Settings
@@ -92,6 +93,7 @@ async def predict(
             "filename": file.filename,
             "extracted_text": extraction.text,
             "extractor_used": extraction.extractor_used or "",
+            "foreign_municipality": detect_foreign_municipality(extraction.text or ""),
         }
     )
     return _to_predict_response(result)

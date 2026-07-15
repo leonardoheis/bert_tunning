@@ -42,6 +42,7 @@ class PredictResult(BaseModel):
     extracted_text: str = ""
     extractor_used: str = ""
     review_route: str = ""
+    foreign_municipality: str | None = None
 
 
 class CalibrationReport(BaseModel):
