@@ -30,7 +30,7 @@ from src.ood import (
     resolve_ood_thresholds,
     tfidf_cosine_z_score,
 )
-from src.schema import ClassEmbeddingStats, PredictResult
+from src.schema import ClassEmbeddingStats, OodMetrics, PredictResult
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -338,16 +338,19 @@ class BertTunningClassifier:
         )
         thresholds = resolve_ood_thresholds(self._ood_stats)
         in_distribution = not is_out_of_distribution(scores, thresholds)
+        ood_metrics = OodMetrics(
+            mahalanobis_p_value=round(scores.mahalanobis_p, 6),
+            mahalanobis_p_value_theoretical=round(maha_p_theoretical, 6),
+            cosine_z=round(scores.cosine_z, 4),
+            knn_distance=round(scores.knn_distance, 4),
+            tfidf_cosine_z=(
+                None if np.isnan(scores.tfidf_cosine_z) else round(scores.tfidf_cosine_z, 4)
+            ),
+            in_distribution=in_distribution,
+        )
         return result.model_copy(
             update={
-                "mahalanobis_p_value": round(scores.mahalanobis_p, 6),
-                "mahalanobis_p_value_theoretical": round(maha_p_theoretical, 6),
-                "cosine_z": round(scores.cosine_z, 4),
-                "knn_distance": round(scores.knn_distance, 4),
-                "tfidf_cosine_z": (
-                    None if np.isnan(scores.tfidf_cosine_z) else round(scores.tfidf_cosine_z, 4)
-                ),
-                "in_distribution": in_distribution,
+                "ood_metrics": ood_metrics,
                 "review_route": decide_review_route(
                     confidence_tier=confidence_tier,
                     ood_evidence=OodEvidence.from_in_distribution(in_distribution=in_distribution),

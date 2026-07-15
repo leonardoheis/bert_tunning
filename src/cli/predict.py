@@ -8,6 +8,7 @@ from pydantic.alias_generators import to_camel
 
 from src.inference.pipeline import predict_folder, predict_pdf
 from src.logger import setup_logging
+from src.schema import flatten_predict_result
 from src.settings import Settings
 from src.wandb import log_predict_folder_results
 
@@ -57,14 +58,13 @@ def predict_cmd(
     click.echo(f"  Label     : {result.label}")
     click.echo(f"  Confidence: {result.confidence:.2%}")
     click.echo(f"  Certain   : {result.certain}")
-    if result.mahalanobis_p_value is not None:
-        click.echo(f"  Mahalanobis p: {result.mahalanobis_p_value:.6f}")
-        theoretical = result.mahalanobis_p_value_theoretical
-        theoretical_str = f"{theoretical:.6f}" if theoretical is not None else "n/a"
-        click.echo(f"  Mahalanobis p (chi2, theoretical): {theoretical_str}")
-        click.echo(f"  Cosine Z     : {result.cosine_z:.4f}")
-        click.echo(f"  k-NN dist    : {result.knn_distance:.4f}")
-        click.echo(f"  In-Dist.     : {result.in_distribution}")
+    if result.ood_metrics is not None:
+        m = result.ood_metrics
+        click.echo(f"  Mahalanobis p: {m.mahalanobis_p_value:.6f}")
+        click.echo(f"  Mahalanobis p (chi2, theoretical): {m.mahalanobis_p_value_theoretical:.6f}")
+        click.echo(f"  Cosine Z     : {m.cosine_z:.4f}")
+        click.echo(f"  k-NN dist    : {m.knn_distance:.4f}")
+        click.echo(f"  In-Dist.     : {m.in_distribution}")
     click.echo(f"  Review route : {result.review_route}")
     click.echo(f"  Extractor : {result.extractor_used or 'n/a'}")
     click.echo(f"  Extracted text (first 200 chars): {result.extracted_text[:200]!r}")
@@ -82,7 +82,7 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
         opts.model_path, opts.folder_path, threshold=opts.threshold, use_ocr=not opts.no_ocr
     )
     output = opts.output or str(Path(opts.folder_path) / "bert_tunning_predictions.csv")
-    df = pd.DataFrame([r.model_dump() for r in results])
+    df = pd.DataFrame([flatten_predict_result(r) for r in results])
     df.insert(1, "model", opts.model_path)
     df.to_csv(output, index=False)
     log.info("Results saved to %s", output)

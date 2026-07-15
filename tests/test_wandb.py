@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from src.ood import OodThresholds
-from src.schema import CalibrationReport, PredictResult
+from src.schema import CalibrationReport, OodMetrics, PredictResult
 from src.wandb import log_ood_calibration_results, log_predict_folder_results
 
 
@@ -44,7 +44,13 @@ def test_log_predict_folder_results_table_includes_knn_distance_column() -> None
             label="decreto",
             confidence=0.9,
             certain=True,
-            knn_distance=expected_knn_distance,
+            ood_metrics=OodMetrics(
+                mahalanobis_p_value=0.5,
+                mahalanobis_p_value_theoretical=0.6,
+                cosine_z=1.0,
+                knn_distance=expected_knn_distance,
+                in_distribution=True,
+            ),
         ),
     ]
     mock_table = MagicMock()
@@ -67,7 +73,14 @@ def test_log_predict_folder_results_table_includes_tfidf_cosine_z_column() -> No
             label="decreto",
             confidence=0.9,
             certain=True,
-            tfidf_cosine_z=expected_tfidf_cosine_z,
+            ood_metrics=OodMetrics(
+                mahalanobis_p_value=0.5,
+                mahalanobis_p_value_theoretical=0.6,
+                cosine_z=1.0,
+                knn_distance=2.0,
+                tfidf_cosine_z=expected_tfidf_cosine_z,
+                in_distribution=True,
+            ),
         ),
     ]
     mock_table = MagicMock()
@@ -112,7 +125,13 @@ def test_log_predict_folder_results_table_includes_theoretical_mahalanobis_colum
             label="decreto",
             confidence=0.9,
             certain=True,
-            mahalanobis_p_value_theoretical=expected_theoretical_p,
+            ood_metrics=OodMetrics(
+                mahalanobis_p_value=0.5,
+                mahalanobis_p_value_theoretical=expected_theoretical_p,
+                cosine_z=1.0,
+                knn_distance=2.0,
+                in_distribution=True,
+            ),
         ),
     ]
     mock_table = MagicMock()
@@ -126,6 +145,25 @@ def test_log_predict_folder_results_table_includes_theoretical_mahalanobis_colum
 
     row = _logged_row(mock_table_cls, mock_table)
     assert row["mahalanobis_p_value_theoretical"] == expected_theoretical_p
+
+
+def test_log_predict_folder_results_table_handles_missing_ood_metrics() -> None:
+    results = [
+        PredictResult(filename="a.pdf", label="decreto", confidence=0.9, certain=True),
+    ]
+    mock_table = MagicMock()
+    with (
+        patch("src.wandb.wandb.init"),
+        patch("src.wandb.wandb.Table", return_value=mock_table) as mock_table_cls,
+        patch("src.wandb.wandb.log"),
+        patch("src.wandb.wandb.finish"),
+    ):
+        log_predict_folder_results(results, model_path="fake/model", folder_path="fake/folder")
+
+    row = _logged_row(mock_table_cls, mock_table)
+    assert row["mahalanobis_p_value"] is None
+    assert row["knn_distance"] is None
+    assert row["in_distribution"] is None
 
 
 def test_log_ood_calibration_results_logs_summary_metrics() -> None:
