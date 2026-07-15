@@ -57,6 +57,7 @@ def _run_compute_ood_stats(opts: ComputeOodStatsOptions) -> None:
         model_type=split.loaded.model.config.model_type,  # type: ignore[union-attr,arg-type]
         model_hidden_size=split.loaded.model.config.hidden_size,  # type: ignore[union-attr,arg-type]
         max_tfidf_features=Settings.OOD_TFIDF_MAX_FEATURES,
+        max_tfidf_max_df=Settings.OOD_TFIDF_MAX_DF,
     )
 
     out_path = Path(opts.model_path) / "ood_stats.npz"

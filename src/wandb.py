@@ -16,6 +16,7 @@ _PREDICTION_COLUMNS = [
     "mahalanobis_p_value_theoretical",
     "cosine_z",
     "knn_distance",
+    "tfidf_cosine_z",
     "in_distribution",
     "review_route",
     "extractor_used",

@@ -96,6 +96,10 @@ class _Settings(BaseSettings):
     # command for any model using this signal before trusting it in production.
     OOD_TFIDF_COSINE_THRESHOLD: float = 2.5
     OOD_TFIDF_MAX_FEATURES: int = 5000
+    # Excludes terms appearing in over half the training corpus (shared legal boilerplate --
+    # "considerando", "por cuanto", etc.) from the TF-IDF vocabulary, so cosine distance isn't
+    # diluted by tokens every document has regardless of municipality or type.
+    OOD_TFIDF_MAX_DF: float = 0.5
 
     model_config = SettingsConfigDict(
         env_file=".env",

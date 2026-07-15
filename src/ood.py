@@ -58,9 +58,10 @@ def _cosine_min_distance_raw(
 
 
 def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size/texts/
-    # max_tfidf_features are optional trailing kwargs threaded through from the two call
-    # sites (training/pipeline.py, cli/ood_stats.py); bundling them into a NamedTuple for
-    # rarely-varying trailing kwargs would be more ceremony than the limit is worth here.
+    # max_tfidf_features/max_tfidf_max_df are optional trailing kwargs threaded through from
+    # the two call sites (training/pipeline.py, cli/ood_stats.py); bundling them into a
+    # NamedTuple for rarely-varying trailing kwargs would be more ceremony than the limit is
+    # worth here.
     embeddings: npt.NDArray[np.float64],
     labels: list[int],
     class_names: list[str],
@@ -71,6 +72,7 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size/texts/
     model_type: str | None = None,
     model_hidden_size: int | None = None,
     max_tfidf_features: int = 5000,
+    max_tfidf_max_df: float = 0.5,
 ) -> ClassEmbeddingStats:
     pca_result = _reduce_dimensionality(embeddings, n_components)
     reduced = pca_result.reduced
@@ -85,7 +87,9 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size/texts/
     cosine_scores = np.array(
         [_cosine_min_distance_raw(reduced[i], centroids) for i in range(reduced.shape[0])]
     )
-    tfidf = compute_tfidf_stats(texts, labels, class_names, max_features=max_tfidf_features)
+    tfidf = compute_tfidf_stats(
+        texts, labels, class_names, max_features=max_tfidf_features, max_df=max_tfidf_max_df
+    )
 
     return ClassEmbeddingStats(
         class_names=class_names,
@@ -108,14 +112,22 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size/texts/
 
 
 def compute_tfidf_stats(
-    texts: list[str], labels: list[int], class_names: list[str], *, max_features: int = 5000
+    texts: list[str],
+    labels: list[int],
+    class_names: list[str],
+    *,
+    max_features: int = 5000,
+    max_df: float = 0.5,
 ) -> _TfidfStats:
     """Fits a TF-IDF vectorizer + per-class centroids on raw training text -- a signal
     independent of compute_class_stats' BERT-embedding space, operating on surface
     vocabulary instead. Catches lexical divergence (e.g. a different municipality's name)
-    that a shared document-type "shape" in embedding space cannot separate."""
+    that a shared document-type "shape" in embedding space cannot separate. max_df excludes
+    terms above that document-frequency fraction from the vocabulary entirely -- without it,
+    shared legal boilerplate dominates the 5000-feature budget and dilutes the cosine
+    distance a rare, genuinely distinguishing term (like a city name) could otherwise carry."""
     cleaned = [clean_text(t) for t in texts]
-    vectorizer = TfidfVectorizer(max_features=max_features)
+    vectorizer = TfidfVectorizer(max_features=max_features, max_df=max_df)
     X = vectorizer.fit_transform(cleaned).toarray()
     labels_arr = np.asarray(labels)
 
