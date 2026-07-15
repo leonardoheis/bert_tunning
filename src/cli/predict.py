@@ -8,6 +8,7 @@ from pydantic.alias_generators import to_camel
 
 from src.inference.pipeline import predict_folder, predict_pdf
 from src.logger import setup_logging
+from src.schema import flatten_predict_result
 from src.settings import Settings
 from src.wandb import log_predict_folder_results
 
@@ -81,7 +82,7 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
         opts.model_path, opts.folder_path, threshold=opts.threshold, use_ocr=not opts.no_ocr
     )
     output = opts.output or str(Path(opts.folder_path) / "bert_tunning_predictions.csv")
-    df = pd.DataFrame([r.model_dump() for r in results])
+    df = pd.DataFrame([flatten_predict_result(r) for r in results])
     df.insert(1, "model", opts.model_path)
     df.to_csv(output, index=False)
     log.info("Results saved to %s", output)

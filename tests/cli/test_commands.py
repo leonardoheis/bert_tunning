@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
 from click.testing import CliRunner
 
 from src.cli.clean import clean_cmd
@@ -91,3 +92,32 @@ def test_clean_cmd_help() -> None:
     result = CliRunner().invoke(clean_cmd, ["--help"])
     assert result.exit_code == 0
     assert "Wipe" in result.output
+
+
+def test_predict_folder_cmd_writes_flat_ood_columns_to_csv(tmp_path: Path) -> None:
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    output = tmp_path / "results.csv"
+    fake_results = [
+        PredictResult(
+            filename="a.pdf",
+            label="decreto",
+            confidence=0.9,
+            certain=True,
+            ood_metrics=OodMetrics(
+                mahalanobis_p_value=0.5,
+                mahalanobis_p_value_theoretical=0.6,
+                cosine_z=1.0,
+                knn_distance=2.0,
+                in_distribution=True,
+            ),
+        ),
+    ]
+
+    with patch("src.cli.predict.predict_folder", return_value=fake_results):
+        result = CliRunner().invoke(predict_folder_cmd, ["--output", str(output), str(folder)])
+
+    assert result.exit_code == 0
+    df = pd.read_csv(output)
+    assert "ood_metrics" not in df.columns
+    assert df["knn_distance"].iloc[0] == 2.0  # noqa: PLR2004
