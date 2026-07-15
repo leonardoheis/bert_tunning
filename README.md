@@ -136,8 +136,11 @@ All three signals live in `src/ood.py` and share one PCA projection (`_project()
 | `mahalanobis_p_value_theoretical` | The original chi²-based p-value, kept as a transparent secondary field — never used to decide `in_distribution`. A large gap between this and `mahalanobis_p_value` for a given document is itself diagnostic: it means the Gaussian assumption is failing badly for that document's region of the embedding space. | Informational only, not a decision input | Also a `[0.0, 1.0]` value on the same low-is-anomalous scale as `mahalanobis_p_value`, but purely diagnostic — compare the two side by side to gauge how badly the Gaussian assumption is failing for a given document, don't act on this value alone. |
 | `cosine_z_score` | Cosine distance to the nearest centroid, z-scored against the training set's own distribution of that same metric. | **HIGH** z-score (> `OOD_COSINE_THRESHOLD`) | A standard z-score, so it **can be negative** — that's not an error, it just means this document's cosine distance to its centroid is *below* the training set's average distance (i.e. more typical than average, even more so than most training documents). Only large *positive* values are anomalous; `0` is average, negative is unremarkable. |
 | `knn_mean_distance` | Mean Euclidean distance (PCA space) to the `k` nearest training documents — filtered to only the **predicted class**, not the whole training set. Makes no assumption that a class has one coherent shape, which is what makes it useful for a broad, heterogeneous class like `otro`. Returns `NaN` (logged as a warning) if the predicted class has zero training points; treated as anomalous, fail-safe, rather than silently passing. | **HIGH** distance (> `OOD_KNN_DISTANCE_THRESHOLD`) | A raw distance in PCA-space units — there's no natural "average is 0" reference point like the other two, so read it only relative to its calibrated threshold, not as a standalone percentage or probability. Thresholds are calibrated per model (`evaluate-ood-calibration`); a value calibrated for one trained model has no meaning against another. |
+| `tfidf_cosine_z` | Cosine distance to the nearest centroid, same as `cosine_z_score`, but computed over a `TfidfVectorizer` fit on the raw training vocabulary instead of the `[CLS]` embedding — catches lexical divergence (e.g. a different municipality's name) that the embedding signals can smooth away. `None` if `ood_stats.npz` predates this signal. | **HIGH** z-score (> `OOD_TFIDF_COSINE_THRESHOLD`) | Same shape as `cosine_z_score` — can be negative, only large positive values are anomalous. |
 
-The three are deliberately **not combined into one score** — `in_distribution=False` fires if *any* one of them crosses its threshold. This means a document can be `certain=True` (softmax is confident) and `in_distribution=False` (the embedding doesn't resemble anything trained on) at the same time — the exact failure mode this feature exists to catch, and a human reviewing predictions can always see which specific signal fired.
+The four are deliberately **not combined into one score** — `in_distribution=False` fires if *any* one of them crosses its threshold. This means a document can be `certain=True` (softmax is confident) and `in_distribution=False` (the embedding/lexical signals don't resemble anything trained on) at the same time — the exact failure mode this feature exists to catch, and a human reviewing predictions can always see which specific signal fired.
+
+**`foreign_municipality` is a separate, non-statistical check, not part of this ensemble.** `detect_foreign_municipality()` (`src/ingestion/_text.py`) looks for an explicit `"Municipalidad de <Name>"` phrase naming a municipality other than the trained one (`"rosario"`). It's categorical, not a threshold — `None` if no such phrase is found, the foreign name otherwise — and is attached to `PredictResult.foreign_municipality` independently of `in_distribution`, since a document explicitly naming a different jurisdiction is stronger, more literal evidence than any statistical signal above.
 
 **Is a signal actually calibrated?** Run `evaluate-ood-calibration` (see "Out-of-distribution detection" below) against the model's own held-out test split — known in-distribution by construction. It reports each signal's *empirical false-positive rate*: the fraction of genuinely in-distribution test documents the current threshold would incorrectly flag. A signal is calibrated when that rate is close to the target (`--target-fp-rate`, default 1%). If it's far off (Mahalanobis routinely runs 20–30% on this corpus, due to the shared-covariance assumption breaking down on heterogeneous classes like `otro`), don't blindly adopt the tool's `suggested_*_threshold` — check first whether the suggestion is itself degenerate (e.g. a suggested Mahalanobis p-value threshold of `0.0`, which would just disable the signal). Only update `settings.py` when the suggested value is a real, usable threshold.
 
@@ -196,17 +199,18 @@ src/
 ├── settings.py        all configuration (Pydantic BaseSettings, overridable via .env)
 ├── schema.py          shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, CalibrationReport, Hyperparams, ReportDict)
 ├── wandb.py            all W&B interaction — WandbLogger (training) + log_predict_folder_results/log_ood_calibration_results (--log-wandb)
-├── ood.py              OOD math — compute_class_stats, mahalanobis_p_value, cosine_z_score, knn_mean_distance, extract_embeddings, save_stats/load_stats.
+├── ood.py              OOD math — compute_class_stats, mahalanobis_p_value, cosine_z_score, knn_mean_distance, compute_tfidf_stats/tfidf_cosine_z_score, save_stats/load_stats.
 │                       Lives at top level, not under training/ or inference/, since it's used by both (training-time stats computation, inference-time scoring)
+├── embeddings.py       LoadedModel, extract_embeddings, extract_embeddings_and_predictions — the model forward pass that produces [CLS] embeddings. Split out of ood.py so ood.py's stats/persistence functions don't pull in torch/transformers
 ├── exceptions.py      BertTunningError base
 ├── logger.py          setup_logging() — per-run timestamped log file
-├── ingestion/         extract.py (extract_pdf_with_metadata) · scan.py · cache.py · pipeline.py · extractors/
+├── ingestion/         extract.py (extract_pdf_with_metadata) · scan.py · cache.py · pipeline.py · _text.py (detect_foreign_municipality) · extractors/ (markitdown.py · ocr.py · _factory.py · _base.py)
 ├── training/
 │   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
 │   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py · reporting.py
-├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
-├── api/               app.py · schema.py · __init__.py · routes/predict/ · routes/health/
-└── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · clean.py
+├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN/TF-IDF scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
+├── api/               app.py · schema.py · __init__.py · __main__.py · error_handlers/ · routes/predict/ · routes/health/
+└── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · _ood_common.py (shared helpers) · clean.py
 
 Dockerfile             multi-stage: uv builder + python:3.10-slim-bookworm runtime
 main.py                Click CLI entry point
@@ -377,7 +381,8 @@ Output:
 
 If the loaded model directory contains `ood_stats.npz` (generated automatically
 during `train`, or backfilled for an existing model — see below), predictions
-include four extra fields:
+include five extra fields (`mahalanobisPValue`/`cosineZ`/`knnDistance`/`tfidfCosineZ`/`inDistribution`).
+`foreignMunicipality` is a separate, always-present, non-statistical check (see below).
 
 ```json
 {
@@ -386,19 +391,22 @@ include four extra fields:
   "mahalanobisPValue": 0.0003,
   "cosineZ": 1.1,
   "knnDistance": 31.4,
-  "inDistribution": false
+  "tfidfCosineZ": 3.28,
+  "inDistribution": false,
+  "foreignMunicipality": null
 }
 ```
 
-`mahalanobisPValue`/`cosineZ`/`knnDistance` are reported separately rather
+`mahalanobisPValue`/`cosineZ`/`knnDistance`/`tfidfCosineZ` are reported separately rather
 than combined into one score — note `mahalanobisPValue` points in the
-**opposite direction** from the other two: a LOW `mahalanobisPValue` (below
+**opposite direction** from the other three: a LOW `mahalanobisPValue` (below
 `OOD_MAHALANOBIS_P_THRESHOLD`, default `0.001` — see "OOD scoring internals" above for why this is calibrated per-model, not a fixed constant) is anomalous, while a HIGH
-`cosineZ` (above `OOD_COSINE_THRESHOLD`) or a HIGH `knnDistance` (above
-`OOD_KNN_DISTANCE_THRESHOLD`) is anomalous. Any one of the three alone is
+`cosineZ` (above `OOD_COSINE_THRESHOLD`), a HIGH `knnDistance` (above
+`OOD_KNN_DISTANCE_THRESHOLD`), or a HIGH `tfidfCosineZ` (above
+`OOD_TFIDF_COSINE_THRESHOLD`) is anomalous. Any one of the four alone is
 enough to set `inDistribution: false`. This means `inDistribution: false`
 doesn't hide *which* signal fired: a human reviewing predictions can see
-whether Mahalanobis, cosine, k-NN, or several flagged the document.
+whether Mahalanobis, cosine, k-NN, TF-IDF, or several flagged the document.
 Treat `inDistribution: false` as "do not trust `label` for this document"
 regardless of how high `confidence` is — this is the mechanism that catches
 documents (e.g. payment receipts) that were never in any training class,
@@ -514,13 +522,15 @@ API docs at `http://localhost:8000/docs` (Swagger UI).
   "mahalanobisPValue": 0.42,
   "cosineZ": 0.8,
   "knnDistance": 9.7,
+  "tfidfCosineZ": 0.31,
   "inDistribution": true,
+  "foreignMunicipality": null,
   "extractedText": "DECRETO N° 123/2026...",
   "extractorUsed": "MarkItDownExtractor"
 }
 ```
 
-`mahalanobisPValue`/`cosineZ`/`knnDistance`/`inDistribution` are only present (non-null) when the loaded model directory has an `ood_stats.npz` — see "Out-of-distribution detection" above.
+`mahalanobisPValue`/`cosineZ`/`knnDistance`/`tfidfCosineZ`/`inDistribution` are only present (non-null) when the loaded model directory has an `ood_stats.npz` — see "Out-of-distribution detection" above. `foreignMunicipality` is computed independently of `ood_stats.npz` and is always present (`null` when no foreign jurisdiction phrase is found).
 
 ### Clean state
 
