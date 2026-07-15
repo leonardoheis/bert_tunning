@@ -18,3 +18,4 @@ class PredictResponse(BaseSchema):
     extracted_text: str = ""
     extractor_used: str = ""
     review_route: str = ""
+    foreign_municipality: str | None = None

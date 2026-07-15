@@ -18,6 +18,7 @@ _PREDICTION_COLUMNS = [
     "knn_distance",
     "tfidf_cosine_z",
     "in_distribution",
+    "foreign_municipality",
     "review_route",
     "extractor_used",
     "error",

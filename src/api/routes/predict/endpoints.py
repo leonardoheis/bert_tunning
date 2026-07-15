@@ -61,6 +61,7 @@ def _to_predict_response(result: PredictResult) -> PredictResponse:
         extracted_text=data["extracted_text"],
         extractor_used=data["extractor_used"],
         review_route=data["review_route"],
+        foreign_municipality=data["foreign_municipality"],
     )
 
 

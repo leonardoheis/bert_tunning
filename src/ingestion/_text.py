@@ -23,9 +23,7 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def detect_foreign_municipality(
-    text: str, known_municipality: str = Settings.OOD_TRAINED_MUNICIPALITY
-) -> str | None:
+def detect_foreign_municipality(text: str, known_municipality: str | None = None) -> str | None:
     """Returns the name found in a "Municipalidad de <Name>" phrase when it doesn't match
     known_municipality; None if no such phrase appears at all, or every phrase found
     matches. A bare city-name substring search (e.g. for "Cordoba") is too loose -- it
@@ -35,9 +33,14 @@ def detect_foreign_municipality(
     (None) for the ~11% of documents that never name their municipality this way at all --
     this is a deliberate independent signal, not folded into the OR-based in_distribution
     ensemble in src/inference/classify.py, since one boolean-ish fact ("this document
-    names a different city") shouldn't be diluted by or blended with continuous z-scores."""
+    names a different city") shouldn't be diluted by or blended with continuous z-scores.
+    known_municipality defaults to None, read from Settings inside the body rather than as
+    a function-default expression -- Settings is a module-level singleton constructed once
+    at import, so a `= Settings.OOD_TRAINED_MUNICIPALITY` default would freeze to whatever
+    that held at import time instead of reflecting later reads."""
+    reference = known_municipality or Settings.OOD_TRAINED_MUNICIPALITY
     for match in _MUNICIPALIDAD_DE_RE.findall(text):
         name = str(match)
-        if not name.lower().startswith(known_municipality.lower()):
+        if not name.lower().startswith(reference.lower()):
             return name
     return None
