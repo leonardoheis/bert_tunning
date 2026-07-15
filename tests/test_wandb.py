@@ -95,6 +95,28 @@ def test_log_predict_folder_results_table_includes_tfidf_cosine_z_column() -> No
     assert _logged_row(mock_table_cls, mock_table)["tfidf_cosine_z"] == expected_tfidf_cosine_z
 
 
+def test_log_predict_folder_results_table_includes_foreign_municipality_column() -> None:
+    results = [
+        PredictResult(
+            filename="a.pdf",
+            label="decreto",
+            confidence=0.9,
+            certain=True,
+            foreign_municipality="Cordoba",
+        ),
+    ]
+    mock_table = MagicMock()
+    with (
+        patch("src.wandb.wandb.init"),
+        patch("src.wandb.wandb.Table", return_value=mock_table) as mock_table_cls,
+        patch("src.wandb.wandb.log"),
+        patch("src.wandb.wandb.finish"),
+    ):
+        log_predict_folder_results(results, model_path="fake/model", folder_path="fake/folder")
+
+    assert _logged_row(mock_table_cls, mock_table)["foreign_municipality"] == "Cordoba"
+
+
 def test_log_predict_folder_results_table_includes_review_route_column() -> None:
     results = [
         PredictResult(

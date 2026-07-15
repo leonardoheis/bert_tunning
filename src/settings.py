@@ -100,6 +100,12 @@ class _Settings(BaseSettings):
     # "considerando", "por cuanto", etc.) from the TF-IDF vocabulary, so cosine distance isn't
     # diluted by tokens every document has regardless of municipality or type.
     OOD_TFIDF_MAX_DF: float = 0.5
+    # The corpus is mono-jurisdictional -- every training document is from this municipality.
+    # detect_foreign_municipality() flags a document as anomalous when it explicitly names a
+    # DIFFERENT one ("Municipalidad de <Name>" where Name != this), independent of the
+    # embedding/lexical OOD signals above, which a single mismatched proper noun can't
+    # reliably move (see the TF-IDF known-limitation note in CLAUDE.md).
+    OOD_TRAINED_MUNICIPALITY: str = "rosario"
 
     model_config = SettingsConfigDict(
         env_file=".env",
