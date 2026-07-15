@@ -2,7 +2,13 @@ import logging
 
 import wandb
 from src.ood import OodThresholds
-from src.schema import CalibrationReport, EvaluationResult, Hyperparams, PredictResult
+from src.schema import (
+    CalibrationReport,
+    EvaluationResult,
+    Hyperparams,
+    PredictResult,
+    flatten_predict_result,
+)
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -79,7 +85,7 @@ def log_predict_folder_results(
     )
     table = wandb.Table(columns=_PREDICTION_COLUMNS)
     for r in results:
-        row = r.model_dump()
+        row = flatten_predict_result(r)
         table.add_data(*(row[col] for col in _PREDICTION_COLUMNS))
     wandb.log({"predictions": table})
     wandb.finish()
