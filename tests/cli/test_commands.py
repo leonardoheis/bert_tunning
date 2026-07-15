@@ -6,7 +6,7 @@ from click.testing import CliRunner
 from src.cli.clean import clean_cmd
 from src.cli.predict import predict_cmd, predict_folder_cmd
 from src.cli.train import train_cmd
-from src.schema import PredictResult
+from src.schema import OodMetrics, PredictResult
 
 
 def test_train_cmd_help() -> None:
@@ -63,25 +63,28 @@ def test_predict_folder_cmd_skips_wandb_by_default(tmp_path: Path) -> None:
     mock_log.assert_not_called()
 
 
-def test_predict_cmd_echoes_n_a_when_theoretical_p_value_missing(tmp_path: Path) -> None:
+def test_predict_cmd_prints_ood_metrics_when_present(tmp_path: Path) -> None:
     pdf_path = tmp_path / "doc.pdf"
     pdf_path.write_bytes(b"%PDF-1.4 fake content")
     fake_result = PredictResult(
         label="decreto",
         confidence=0.9,
         certain=True,
-        mahalanobis_p_value=0.005,
-        cosine_z=0.1,
-        knn_distance=1.0,
-        in_distribution=False,
-        mahalanobis_p_value_theoretical=None,
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.005,
+            mahalanobis_p_value_theoretical=0.017,
+            cosine_z=0.1,
+            knn_distance=1.0,
+            in_distribution=False,
+        ),
     )
 
     with patch("src.cli.predict.predict_pdf", return_value=fake_result):
         result = CliRunner().invoke(predict_cmd, [str(pdf_path)])
 
     assert result.exit_code == 0
-    assert "Mahalanobis p (chi2, theoretical): n/a" in result.output
+    assert "Mahalanobis p (chi2, theoretical): 0.017000" in result.output
+    assert "In-Dist.     : False" in result.output
 
 
 def test_clean_cmd_help() -> None:
