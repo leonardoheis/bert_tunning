@@ -4,7 +4,21 @@
       "Bash(python:*)",
       "Bash(uv:*)",
       "Bash(pre-commit:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "mcp__codegraph__*",
+      "mcp__codegraph__codegraph_explore"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "codegraph prompt-hook"
+          }
+        ]
+      }
     ]
   }
 }

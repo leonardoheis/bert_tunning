@@ -1,6 +1,7 @@
 from pydantic import Field
 
 from src.api.schema import BaseSchema
+from src.schema import OodMetrics
 
 
 class PredictResponse(BaseSchema):
@@ -10,3 +11,9 @@ class PredictResponse(BaseSchema):
     certain: bool
     all_scores: dict[str, float] = Field(default_factory=dict)
     error: str | None = None
+    ood_metrics: OodMetrics | None = None
+    extracted_text: str = ""
+    extractor_used: str = ""
+    review_route: str = ""
+    foreign_municipality: str | None = None
+    foreign_municipality_context: str | None = None

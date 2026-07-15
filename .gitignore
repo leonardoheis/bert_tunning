@@ -133,6 +133,7 @@ data/**
 *.csv
 *.tsv
 *.parquet
+!data/*.parquet
 *.feather
 *.h5
 *.hdf5
@@ -214,8 +215,18 @@ models/bert_tunning_model_*/
 !models/bert_tunning_model_beto_v2/
 !models/bert_tunning_model_beto_v2/**
 
+# Exception: BETO v1 (8-class, no `otro`) is tracked via Git LFS (see .gitattributes) —
+# kept alongside v2 for comparison/reproducibility.
+!models/bert_tunning_model_beto/
+!models/bert_tunning_model_beto/**
+
+# ood_stats.npz was previously re-ignored here specifically so accidental git operations
+# (e.g. git clean) couldn't delete it — but that made it a locally-generated artifact that
+# was never actually committed, and it silently disappeared at least once as a result
+# (regenerable via compute-ood-stats, but broke OOD scoring with no error until noticed).
+# Now committed instead, alongside the model checkpoint it belongs to, so it can't vanish.
+
 # Cache / data
-data/
 bert_tunning_predictions.csv
 
 #Sample files

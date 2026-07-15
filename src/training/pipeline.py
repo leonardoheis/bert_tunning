@@ -15,14 +15,17 @@ from transformers import (
     TrainingArguments,
 )
 
+from src.embeddings import LoadedModel, extract_embeddings
+from src.ood import compute_class_stats, save_stats
 from src.schema import Hyperparams
+from src.settings import Settings
 from src.training.evaluate import run_evaluation
 from src.training.models import ModelConfig
 from src.training.options import TrainingRequest
 from src.training.split import make_split
 from src.training.tokenize import BertTunningDataset, prepare_text
 from src.training.trainer import WeightedTrainer, compute_metrics
-from src.training.wandb_logger import WandbLogger
+from src.wandb import WandbLogger
 
 log = logging.getLogger(__name__)
 
@@ -150,6 +153,24 @@ def run(
     trainer.train()
     log.info("Training complete")
 
+    train_embeddings = extract_embeddings(
+        LoadedModel(model=model, tokenizer=tokenizer, device=str(model.device)),
+        _texts(train_df, request.chunk_strategy),
+        max_length=model_cfg.max_tokens,
+    )
+    ood_stats = compute_class_stats(
+        train_embeddings,
+        train_df["label_id"].tolist(),
+        list(le.classes_),
+        texts=train_df["text"].tolist(),
+        n_components=Settings.OOD_PCA_COMPONENTS,
+        model_type=model.config.model_type,
+        model_hidden_size=model.config.hidden_size,
+        max_tfidf_features=Settings.OOD_TFIDF_MAX_FEATURES,
+        max_tfidf_max_df=Settings.OOD_TFIDF_MAX_DF,
+    )
+    log.info("Computed OOD stats from %d training embeddings", train_embeddings.shape[0])
+
     result = run_evaluation(trainer, test_ds, le, hyperparams)
     wb.log_results(result, list(le.classes_))
     wb.finish()
@@ -157,6 +178,7 @@ def run(
     save_path = Path(request.output_dir) / "final"
     trainer.save_model(str(save_path))
     tokenizer.save_pretrained(str(save_path))
+    save_stats(ood_stats, save_path / "ood_stats.npz")
     log.info("Model saved to %s", save_path)
 
     return trainer, le

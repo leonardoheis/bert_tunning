@@ -1,12 +1,17 @@
-# Out-of-Distribution Detection (Mahalanobis + Cosine Mixture) Implementation Plan
+# Out-of-Distribution Detection (Mahalanobis χ² p-value + Cosine z-score, Dual-Signal OR) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Detect documents that belong to none of the trained classes (e.g. a payment document run through a model trained only on decreto/ordenanza/resolución/etc.) instead of letting the softmax classifier confidently force them into the nearest known class.
 
-**Architecture:** After training, extract the `[CLS]` embedding for every training document, PCA-reduce it, and compute per-class centroids plus a shared (tied) covariance matrix. At inference time, project a new document's embedding into the same PCA space and score it by (a) Mahalanobis distance to the nearest class centroid and (b) cosine distance to the nearest class centroid. Combine both into one z-scored mixture score. If the score exceeds a threshold, the document is flagged `in_distribution=False` regardless of what the softmax classifier says. This runs alongside the existing classifier — no retraining of the classification head, no change to the 5 already-trained models' weights.
+**Architecture:** After training, extract the `[CLS]` embedding for every training document, PCA-reduce it, and compute per-class centroids plus a shared (tied) covariance matrix. At inference time, project a new document's embedding into the same PCA space and compute two **separate, independently-scored** signals:
 
-**Tech Stack:** NumPy, scikit-learn (`PCA`, already a dependency), PyTorch/Transformers (reused from the existing `BertTunningClassifier`), Pydantic v2 for the stats schema.
+1. **Mahalanobis — chi-squared p-value.** The squared Mahalanobis distance to the nearest class centroid, evaluated as a p-value under the theoretical assumption that class-conditional embeddings are multivariate Gaussian (the same assumption Mahalanobis distance itself relies on): the squared Mahalanobis distance of a genuinely in-distribution point follows a **chi-squared distribution with `df` = the PCA-reduced dimensionality**. A **low** p-value (e.g. `< 0.01`) means the document is unlikely to be in-distribution. This replaces an earlier empirical z-score (mean/std over the training set's own distances) with the theoretically correct distribution for this specific metric — no empirical calibration constants needed for the Mahalanobis side at all.
+2. **Cosine — empirical z-score.** No equivalent theoretical distribution exists for cosine distance, so this remains a z-score against the training set's own cosine distances (mean/std), as before.
+
+**Both values are kept separate** (`mahalanobis_p_value`, `cosine_z` on `PredictResult`) rather than combined into one number — an early design combined both into a single weighted mixture score, but that risks a strong signal on one axis being diluted by a weak signal on the other. The final decision is an **OR**, but note the comparison **direction differs per signal**: the document is flagged `in_distribution=False` if `mahalanobis_p_value < OOD_MAHALANOBIS_P_THRESHOLD` (low p-value = anomalous) **or** `cosine_z > OOD_COSINE_THRESHOLD` (high z-score = anomalous) — regardless of what the softmax classifier says. This runs alongside the existing classifier — no retraining of the classification head, no change to the 5 already-trained models' weights. Because both signals are exposed separately, a human reviewing predictions later can see *which* metric fired and why, instead of a single opaque score.
+
+**Tech Stack:** NumPy, SciPy (`scipy.stats.chi2`, new direct dependency — previously only available transitively via scikit-learn), scikit-learn (`PCA`, already a dependency), PyTorch/Transformers (reused from the existing `BertTunningClassifier`), Pydantic v2 for the stats schema.
 
 ## Global Constraints
 
@@ -15,7 +20,11 @@
 - `uv run poe check` (lint + typecheck + test) must pass before every commit
 - No change to the training loop, model architecture, or any of the 5 already-trained model checkpoints — this is purely additive
 - New artifact (`ood_stats.npz`) is optional at load time — `BertTunningClassifier` must work unchanged for any model directory that doesn't have one (backward compatibility with existing checkpoints)
-- The OOD threshold cannot be statistically validated without labeled out-of-category documents (this is a known limitation for a thesis PoC with no negative-class corpus) — Task 6 documents this explicitly rather than pretending the default threshold is validated
+- `OOD_COSINE_THRESHOLD` cannot be statistically validated without labeled out-of-category documents (this is a known limitation for a thesis PoC with no negative-class corpus) — Task 8 documents this explicitly rather than pretending the default is validated. `OOD_MAHALANOBIS_P_THRESHOLD` has a defensible theoretical default (a standard significance level, e.g. `0.01`) since it's grounded in the chi-squared distribution rather than empirical calibration, but still benefits from tuning against real novel documents as they're encountered.
+- `mahalanobis_p_value` and `cosine_z` are kept as **separate** fields, never combined into one score — this is a deliberate revision after Task 1/2 initially shipped a single weighted mixture (`ood_score`), then an intermediate revision split it into two z-scores (`mahalanobis_z`/`cosine_z`) before the Mahalanobis side was further refined to use the theoretically-grounded chi-squared p-value instead of an empirical z-score
+- **`mahalanobis_p_value` and `cosine_z` use opposite comparison directions** — low p-value is anomalous, high z-score is anomalous. Any code computing the OR flag must not assume both signals point the same way.
+- **Committing and pushing is the human's duty, not the agentic worker's**, by default. A worker implementing a task should apply the changes, run `uv run poe check`, and report the task ready — then stop. It must not run `git commit`, `git push`, or `gh pr create`/`gh pr edit` unless the human explicitly asks for that specific action in that session.
+- **Every generated PR should be reviewed** — dispatch an agent using the repo's code-review skill to evaluate it and post comments only if something is worth flagging (per repo `CLAUDE.md` Git Workflow section).
 
 ---
 
@@ -23,12 +32,13 @@
 
 | File | Responsibility |
 |---|---|
-| `src/inference/ood.py` (new) | All OOD math: PCA reduction, Mahalanobis distance, cosine distance, mixture score, batched embedding extraction, save/load of stats to `.npz` |
-| `src/schema.py` (modify) | Add `ClassEmbeddingStats` (the artifact schema) and extend `PredictResult` with `ood_score`/`in_distribution` fields |
-| `src/settings.py` (modify) | Add `OOD_PCA_COMPONENTS`, `OOD_MAHALANOBIS_WEIGHT`, `OOD_THRESHOLD` |
-| `src/inference/classify.py` (modify) | `BertTunningClassifier` lazy-loads `ood_stats.npz` next to the model; `predict_text` computes and attaches the OOD fields in the same forward pass |
+| `src/inference/ood.py` (new) | All OOD math: PCA reduction, Mahalanobis distance, cosine distance, separate z-score functions, batched embedding extraction, save/load of stats to `.npz` |
+| `src/schema.py` (modify) | Add `ClassEmbeddingStats` (the artifact schema) and extend `PredictResult` with `mahalanobis_p_value`/`cosine_z`/`in_distribution` fields |
+| `src/settings.py` (modify) | Add `OOD_PCA_COMPONENTS`, `OOD_MAHALANOBIS_P_THRESHOLD`, `OOD_COSINE_THRESHOLD` |
+| `src/inference/classify.py` (modify) | `BertTunningClassifier` lazy-loads `ood_stats.npz` next to the model; `predict_text` computes both z-scores and attaches them (plus the OR-based `in_distribution` flag) in the same forward pass |
 | `src/training/pipeline.py` (modify) | After `trainer.train()`, extract training-set embeddings and persist `ood_stats.npz` next to the saved model |
 | `src/cli/ood_stats.py` (new) | Standalone `compute-ood-stats` command — backfills `ood_stats.npz` for the 5 already-trained models without retraining |
+| `src/cli/ood_calibration.py` (new) | Standalone `evaluate-ood-calibration` command — measures the empirical false-positive rate of the OOD thresholds against the model's own test split, no retraining |
 | `main.py` (modify) | Register `compute-ood-stats` command |
 | `src/cli/predict.py` (modify) | Print the OOD fields in `predict_cmd` output |
 | `src/api/routes/predict/schemas.py`, `src/api/routes/predict/endpoints.py` (modify) | Surface `oodScore`/`inDistribution` on `PredictResponse` |
@@ -47,35 +57,44 @@
 - Test: `tests/inference/test_ood.py` (new)
 
 **Interfaces:**
-- Produces: `ClassEmbeddingStats` (Pydantic model in `src/schema.py`) with fields `class_names: list[str]`, `pca_mean: npt.NDArray[np.float64]`, `pca_components: npt.NDArray[np.float64]`, `centroids: npt.NDArray[np.float64]`, `covariance_inv: npt.NDArray[np.float64]`, `maha_calibration_mean: float`, `maha_calibration_std: float`, `cosine_calibration_mean: float`, `cosine_calibration_std: float`
-- Produces: `compute_class_stats(embeddings: npt.NDArray[np.float64], labels: list[int], class_names: list[str], *, n_components: int = 64, covariance_epsilon: float = 1e-6) -> ClassEmbeddingStats`
-- Produces: `mahalanobis_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float`
+- Produces: `ClassEmbeddingStats` (Pydantic model in `src/schema.py`) with fields `class_names: list[str]`, `pca_mean: Float64Array`, `pca_components: Float64Array`, `centroids: Float64Array`, `covariance_inv: Float64Array`, `cosine_calibration_mean: float`, `cosine_calibration_std: float` — no Mahalanobis calibration fields; the chi-squared distribution needs no empirical mean/std. Array fields use `Float64Array` (`Annotated[npt.NDArray[np.float64], BeforeValidator(...)]`, defined in `src/schema.py`), which coerces/validates dtype at construction instead of relying on `arbitrary_types_allowed=True`'s bare `isinstance` pass-through
+- Produces: `compute_class_stats(embeddings: npt.NDArray[np.float64], labels: list[int], class_names: list[str], *, n_components: int = 64, covariance_epsilon: float = 1e-6) -> ClassEmbeddingStats` — internally uses a private `_PcaReduction` Pydantic model (not exported) instead of an undocumented 3-tuple return from `_reduce_dimensionality`
+- Produces: `mahalanobis_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float` — returns the **squared** Mahalanobis distance (no `sqrt`), which is exactly the test statistic the chi-squared distribution expects
 - Produces: `cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float`
-- Produces: `ood_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats, *, mahalanobis_weight: float = 0.7) -> float`
+- Produces: `mahalanobis_p_value(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float` — probability that a genuinely in-distribution point would be at least this far from its nearest centroid, computed via `scipy.stats.chi2.cdf` with `df` = the PCA-reduced dimensionality. **Low p-value = anomalous** (opposite direction from a z-score)
+- Produces: `cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float` — cosine distance to the nearest centroid, z-scored against the training set's own distances. **High z-score = anomalous**
 - Produces: `save_stats(stats: ClassEmbeddingStats, path: Path) -> None` and `load_stats(path: Path) -> ClassEmbeddingStats`
 - Produces: `extract_embeddings(model: torch.nn.Module, tokenizer: PreTrainedTokenizerBase, texts: list[str], *, max_length: int, device: str, batch_size: int = 16) -> npt.NDArray[np.float64]`
+
+**Revision note:** this task went through two revisions. (1) The original version shipped a single `ood_score()` function combining both signals into one weighted average — replaced with two separate functions per the dual-signal OR design (see top-level Architecture note). (2) The Mahalanobis side then went from an empirical z-score (`mahalanobis_z_score()`, using `maha_calibration_mean`/`std` computed from the training set) to a theoretically-grounded chi-squared p-value (`mahalanobis_p_value()`) — since the squared Mahalanobis distance of a genuinely in-distribution (multivariate Gaussian) point follows a chi-squared distribution with `df` = dimensionality, no empirical calibration is needed for this signal at all. The `maha_calibration_mean`/`maha_calibration_std` fields were removed from `ClassEmbeddingStats` as dead weight. Cosine keeps its z-score, since no equivalent theoretical distribution exists for that metric.
+
+**New dependency:** `scipy>=1.13.0` added to `pyproject.toml` — previously only available transitively via `scikit-learn`, but `ood.py` now imports `scipy.stats.chi2` directly.
 
 - [ ] **Step 1: Write the failing tests**
 
 Create `tests/inference/test_ood.py`:
 
 ```python
-import numpy as np
-import torch
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import numpy as np
+import numpy.typing as npt
+import torch
 
 from src.inference.ood import (
     compute_class_stats,
     cosine_min_distance,
+    cosine_z_score,
     extract_embeddings,
-    mahalanobis_min_distance,
-    ood_score,
-    save_stats,
     load_stats,
+    mahalanobis_min_distance,
+    mahalanobis_p_value,
+    save_stats,
 )
 
 
-def _synthetic_embeddings() -> tuple[np.ndarray, list[int], list[str]]:
+def _synthetic_embeddings() -> tuple[npt.NDArray[np.float64], list[int], list[str]]:
     rng = np.random.default_rng(42)
     class_a = rng.normal(loc=0.0, scale=0.1, size=(20, 16))
     class_b = rng.normal(loc=5.0, scale=0.1, size=(20, 16))
@@ -105,21 +124,47 @@ def test_in_distribution_point_has_lower_cosine_distance_than_far_point() -> Non
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
     known_point = embeddings[0]
-    far_point = np.full(16, -100.0)
+    # A uniform far_point (e.g. all -100) projects almost entirely onto PC1 — the
+    # axis separating the two synthetic classes, since they differ by a uniform
+    # shift across all dims — which makes it MORE cosine-aligned with a centroid
+    # than an in-distribution point (whose direction is perturbed by noise on the
+    # other PCA axes). An alternating-sign vector is off that axis and genuinely
+    # far in cosine terms.
+    far_point = np.array([100.0 if i % 2 == 0 else -100.0 for i in range(16)])
     known_distance = cosine_min_distance(known_point, stats)
     far_distance = cosine_min_distance(far_point, stats)
     assert far_distance > known_distance
 
 
-def test_ood_score_is_higher_for_far_point() -> None:
+def test_mahalanobis_p_value_is_lower_for_far_point() -> None:
+    # A low p-value means "unlikely to be in-distribution" — the far point should
+    # score LOWER (more anomalous), not higher, unlike a distance/z-score metric.
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
     known_point = embeddings[0]
     far_point = np.full(16, 100.0)
-    assert ood_score(far_point, stats) > ood_score(known_point, stats)
+    assert mahalanobis_p_value(far_point, stats) < mahalanobis_p_value(known_point, stats)
 
 
-def test_save_and_load_stats_roundtrip(tmp_path) -> None:
+def test_mahalanobis_p_value_is_bounded_between_zero_and_one() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    known_point = embeddings[0]
+    far_point = np.full(16, 100.0)
+    for point in (known_point, far_point):
+        p_value = mahalanobis_p_value(point, stats)
+        assert 0.0 <= p_value <= 1.0
+
+
+def test_cosine_z_score_is_higher_for_far_point() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
+    known_point = embeddings[0]
+    far_point = np.array([100.0 if i % 2 == 0 else -100.0 for i in range(16)])
+    assert cosine_z_score(far_point, stats) > cosine_z_score(known_point, stats)
+
+
+def test_save_and_load_stats_roundtrip(tmp_path: Path) -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8)
     path = tmp_path / "ood_stats.npz"
@@ -128,7 +173,7 @@ def test_save_and_load_stats_roundtrip(tmp_path) -> None:
     assert loaded.class_names == stats.class_names
     np.testing.assert_allclose(loaded.centroids, stats.centroids)
     np.testing.assert_allclose(loaded.covariance_inv, stats.covariance_inv)
-    assert loaded.maha_calibration_mean == stats.maha_calibration_mean
+    assert loaded.cosine_calibration_mean == stats.cosine_calibration_mean
 
 
 def test_extract_embeddings_returns_correct_shape() -> None:
@@ -151,28 +196,47 @@ def test_extract_embeddings_returns_correct_shape() -> None:
 Run: `uv run pytest tests/inference/test_ood.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.inference.ood'`
 
-- [ ] **Step 3: Add `ClassEmbeddingStats` to `src/schema.py`**
+- [ ] **Step 3: Add `scipy` dependency, `Float64Array`, and `ClassEmbeddingStats`**
 
-Add this class after `EvaluationResult` (which ends at line 43) and before `class Hyperparams(BaseModel):`:
+Add to `pyproject.toml`'s `dependencies` list (after `"scikit-learn>=1.4.0",`):
+
+```toml
+    "scipy>=1.13.0",
+```
+
+Add to `src/schema.py` near the top of the file (after the imports), and the class after `EvaluationResult`:
 
 ```python
+from typing import Annotated
+
+import numpy as np
+import numpy.typing as npt
+from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic.alias_generators import to_camel
+
+
+def _as_float64_array(value: object) -> npt.NDArray[np.float64]:
+    return np.asarray(value, dtype=np.float64)
+
+
+# Coerces/validates to a float64 ndarray at construction time — arbitrary_types_allowed=True
+# alone only checks isinstance(value, np.ndarray), silently accepting any dtype/shape.
+Float64Array = Annotated[npt.NDArray[np.float64], BeforeValidator(_as_float64_array)]
+
+
 class ClassEmbeddingStats(BaseModel):
     """Per-class embedding centroids + shared covariance for Mahalanobis/cosine OOD scoring."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     class_names: list[str]
-    pca_mean: npt.NDArray[np.float64]
-    pca_components: npt.NDArray[np.float64]
-    centroids: npt.NDArray[np.float64]
-    covariance_inv: npt.NDArray[np.float64]
-    maha_calibration_mean: float
-    maha_calibration_std: float
+    pca_mean: Float64Array
+    pca_components: Float64Array
+    centroids: Float64Array
+    covariance_inv: Float64Array
     cosine_calibration_mean: float
     cosine_calibration_std: float
 ```
-
-`np`/`npt` are already imported at the top of `src/schema.py` (used by `EvaluationResult`), so no new imports are needed there.
 
 - [ ] **Step 4: Write `src/inference/ood.py`**
 
@@ -182,22 +246,34 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import torch
+from pydantic import BaseModel, ConfigDict
+from scipy.stats import chi2
 from sklearn.decomposition import PCA
 from transformers import PreTrainedTokenizerBase
 
-from src.schema import ClassEmbeddingStats
+from src.schema import ClassEmbeddingStats, Float64Array
 
 
-def _reduce_dimensionality(
-    embeddings: npt.NDArray[np.float64], n_components: int
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+class _PcaReduction(BaseModel):
+    """Internal return type for _reduce_dimensionality — not part of the public schema."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    reduced: Float64Array
+    mean: Float64Array
+    components: Float64Array
+
+
+def _reduce_dimensionality(embeddings: npt.NDArray[np.float64], n_components: int) -> _PcaReduction:
     capped = min(n_components, embeddings.shape[0] - 1, embeddings.shape[1])
     pca = PCA(n_components=capped)
     reduced = pca.fit_transform(embeddings)
-    return reduced, pca.mean_.astype(np.float64), pca.components_.astype(np.float64)
+    return _PcaReduction(reduced=reduced, mean=pca.mean_, components=pca.components_)
 
 
-def _project(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> npt.NDArray[np.float64]:
+def _project(
+    embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
+) -> npt.NDArray[np.float64]:
     return (embedding - stats.pca_mean) @ stats.pca_components.T
 
 
@@ -228,41 +304,34 @@ def compute_class_stats(
     n_components: int = 64,
     covariance_epsilon: float = 1e-6,
 ) -> ClassEmbeddingStats:
-    reduced, pca_mean, pca_components = _reduce_dimensionality(embeddings, n_components)
+    pca_result = _reduce_dimensionality(embeddings, n_components)
+    reduced = pca_result.reduced
     labels_arr = np.asarray(labels)
 
-    centroids = np.stack(
-        [reduced[labels_arr == k].mean(axis=0) for k in range(len(class_names))]
-    )
+    centroids = np.stack([reduced[labels_arr == k].mean(axis=0) for k in range(len(class_names))])
     centered = reduced - centroids[labels_arr]
     covariance = (centered.T @ centered) / reduced.shape[0]
     covariance_reg = covariance + covariance_epsilon * np.eye(covariance.shape[0])
     covariance_inv = np.linalg.inv(covariance_reg)
 
-    maha_scores = np.array(
-        [
-            _mahalanobis_min_distance_raw(reduced[i], centroids, covariance_inv)
-            for i in range(reduced.shape[0])
-        ]
-    )
     cosine_scores = np.array(
         [_cosine_min_distance_raw(reduced[i], centroids) for i in range(reduced.shape[0])]
     )
 
     return ClassEmbeddingStats(
         class_names=class_names,
-        pca_mean=pca_mean,
-        pca_components=pca_components,
+        pca_mean=pca_result.mean,
+        pca_components=pca_result.components,
         centroids=centroids,
         covariance_inv=covariance_inv,
-        maha_calibration_mean=float(maha_scores.mean()),
-        maha_calibration_std=float(maha_scores.std() + 1e-9),
         cosine_calibration_mean=float(cosine_scores.mean()),
         cosine_calibration_std=float(cosine_scores.std() + 1e-9),
     )
 
 
-def mahalanobis_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
+def mahalanobis_min_distance(
+    embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
+) -> float:
     point = _project(embedding, stats)
     return _mahalanobis_min_distance_raw(point, stats.centroids, stats.covariance_inv)
 
@@ -272,17 +341,21 @@ def cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddin
     return _cosine_min_distance_raw(point, stats.centroids)
 
 
-def ood_score(
-    embedding: npt.NDArray[np.float64],
-    stats: ClassEmbeddingStats,
-    *,
-    mahalanobis_weight: float = 0.7,
-) -> float:
-    maha_raw = mahalanobis_min_distance(embedding, stats)
+def mahalanobis_p_value(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
+    """Probability a genuinely in-distribution point would be at least this far from its
+    nearest class centroid, under the standard assumption (the same one Mahalanobis distance
+    itself relies on) that class-conditional embeddings are multivariate Gaussian: the squared
+    Mahalanobis distance of such a point follows a chi-squared distribution with `df` equal to
+    the embedding dimensionality. A LOW p-value means the document is anomalous."""
+    squared_distance = mahalanobis_min_distance(embedding, stats)
+    degrees_of_freedom = stats.centroids.shape[1]
+    return float(1.0 - chi2.cdf(squared_distance, df=degrees_of_freedom))
+
+
+def cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
+    """Cosine distance to the nearest centroid, z-scored against the training set."""
     cosine_raw = cosine_min_distance(embedding, stats)
-    maha_z = (maha_raw - stats.maha_calibration_mean) / stats.maha_calibration_std
-    cosine_z = (cosine_raw - stats.cosine_calibration_mean) / stats.cosine_calibration_std
-    return mahalanobis_weight * maha_z + (1 - mahalanobis_weight) * cosine_z
+    return (cosine_raw - stats.cosine_calibration_mean) / stats.cosine_calibration_std
 
 
 def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
@@ -293,8 +366,6 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
         pca_components=stats.pca_components,
         centroids=stats.centroids,
         covariance_inv=stats.covariance_inv,
-        maha_calibration_mean=stats.maha_calibration_mean,
-        maha_calibration_std=stats.maha_calibration_std,
         cosine_calibration_mean=stats.cosine_calibration_mean,
         cosine_calibration_std=stats.cosine_calibration_std,
     )
@@ -308,8 +379,6 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         pca_components=data["pca_components"],
         centroids=data["centroids"],
         covariance_inv=data["covariance_inv"],
-        maha_calibration_mean=float(data["maha_calibration_mean"]),
-        maha_calibration_std=float(data["maha_calibration_std"]),
         cosine_calibration_mean=float(data["cosine_calibration_mean"]),
         cosine_calibration_std=float(data["cosine_calibration_std"]),
     )
@@ -346,7 +415,7 @@ def extract_embeddings(
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/inference/test_ood.py -v`
-Expected: PASS (all 7 tests)
+Expected: PASS (all 8 tests)
 
 - [ ] **Step 6: Run full check**
 
@@ -356,8 +425,8 @@ Expected: PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/inference/ood.py src/schema.py tests/inference/test_ood.py
-git commit -m "feat: add Mahalanobis/cosine OOD scoring math module"
+git add pyproject.toml uv.lock src/inference/ood.py src/schema.py tests/inference/test_ood.py
+git commit -m "feat: add Mahalanobis chi-squared p-value + cosine z-score OOD math module"
 ```
 
 ---
@@ -371,8 +440,10 @@ git commit -m "feat: add Mahalanobis/cosine OOD scoring math module"
 
 **Interfaces:**
 - Consumes: nothing new
-- Produces: `Settings.OOD_PCA_COMPONENTS: int` (default `64`), `Settings.OOD_MAHALANOBIS_WEIGHT: float` (default `0.7`), `Settings.OOD_THRESHOLD: float` (default `2.5`)
-- Produces: `PredictResult.ood_score: float | None = None`, `PredictResult.in_distribution: bool | None = None`
+- Produces: `Settings.OOD_PCA_COMPONENTS: int` (default `64`), `Settings.OOD_MAHALANOBIS_P_THRESHOLD: float` (default `0.01`), `Settings.OOD_COSINE_THRESHOLD: float` (default `2.5`)
+- Produces: `PredictResult.mahalanobis_p_value: float | None = None`, `PredictResult.cosine_z: float | None = None`, `PredictResult.in_distribution: bool | None = None`
+
+**Revision note:** this task went through two revisions. (1) Originally added a single `Settings.OOD_THRESHOLD`/`OOD_MAHALANOBIS_WEIGHT` pair and a single `PredictResult.ood_score` field; replaced with two independently-thresholded z-score fields (`mahalanobis_z`, `cosine_z`) per the Option D (dual-signal OR) design. (2) `OOD_MAHALANOBIS_THRESHOLD` (a z-score cutoff, default `2.5`) and `PredictResult.mahalanobis_z` were then renamed to `OOD_MAHALANOBIS_P_THRESHOLD` (a **p-value** cutoff, default `0.01`) and `PredictResult.mahalanobis_p_value`, matching Task 1's move to the chi-squared p-value. **The comparison direction is opposite for this field**: low p-value is anomalous, so the decision rule is `mahalanobis_p_value < OOD_MAHALANOBIS_P_THRESHOLD`, not `>`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -385,13 +456,14 @@ from src.settings import Settings
 
 def test_ood_settings_have_expected_defaults() -> None:
     assert Settings.OOD_PCA_COMPONENTS == 64
-    assert Settings.OOD_MAHALANOBIS_WEIGHT == 0.7
-    assert Settings.OOD_THRESHOLD == 2.5
+    assert Settings.OOD_MAHALANOBIS_P_THRESHOLD == 0.01
+    assert Settings.OOD_COSINE_THRESHOLD == 2.5
 
 
 def test_predict_result_ood_fields_default_to_none() -> None:
     result = PredictResult(label="decreto", confidence=0.9, certain=True)
-    assert result.ood_score is None
+    assert result.mahalanobis_p_value is None
+    assert result.cosine_z is None
     assert result.in_distribution is None
 ```
 
@@ -406,13 +478,13 @@ Add these three lines after `PREDICT_CONFIDENCE: float = 0.0` (line 63):
 
 ```python
     OOD_PCA_COMPONENTS: int = 64
-    OOD_MAHALANOBIS_WEIGHT: float = 0.7
-    OOD_THRESHOLD: float = 2.5
+    OOD_MAHALANOBIS_P_THRESHOLD: float = 0.01
+    OOD_COSINE_THRESHOLD: float = 2.5
 ```
 
 - [ ] **Step 4: Add fields to `PredictResult` in `src/schema.py`**
 
-Modify the `PredictResult` class to add two fields after `error: str = ""`:
+Modify the `PredictResult` class to add three fields after `error: str = ""`:
 
 ```python
 class PredictResult(BaseModel):
@@ -426,7 +498,8 @@ class PredictResult(BaseModel):
     all_scores: dict[str, float] = {}
     filename: str = ""
     error: str = ""
-    ood_score: float | None = None
+    mahalanobis_p_value: float | None = None
+    cosine_z: float | None = None
     in_distribution: bool | None = None
 ```
 
@@ -444,7 +517,7 @@ Expected: PASS
 
 ```bash
 git add src/settings.py src/schema.py tests/test_settings_ood.py
-git commit -m "feat: add OOD settings and PredictResult fields"
+git commit -m "feat: add OOD settings and PredictResult fields (mahalanobis_p_value, cosine_z)"
 ```
 
 ---
@@ -752,8 +825,8 @@ Replace `<..._output_dir>` with the actual `OUTPUT_DIR` used for each run (check
 - Test: `tests/inference/test_pipeline.py` (existing file, despite testing `classify.py` — matches the codebase's current, if misleadingly named, convention)
 
 **Interfaces:**
-- Consumes: `ClassEmbeddingStats`, `load_stats`, `ood_score` from Task 1; `Settings.OOD_MAHALANOBIS_WEIGHT`, `Settings.OOD_THRESHOLD` from Task 2
-- Produces: `BertTunningClassifier.predict_text` populates `ood_score`/`in_distribution` on the returned `PredictResult` when stats are available; both stay `None` when no `ood_stats.npz` exists next to `model_path` (backward compatible with the 5 already-trained models, none of which have this artifact yet)
+- Consumes: `ClassEmbeddingStats`, `load_stats`, `mahalanobis_p_value`, `cosine_z_score` from Task 1; `Settings.OOD_MAHALANOBIS_P_THRESHOLD`, `Settings.OOD_COSINE_THRESHOLD` from Task 2
+- Produces: `BertTunningClassifier.predict_text` populates `mahalanobis_p_value`/`cosine_z`/`in_distribution` on the returned `PredictResult` when stats are available; all three stay `None` when no `ood_stats.npz` exists next to `model_path` (backward compatible with the 5 already-trained models, none of which have this artifact yet). `in_distribution` is `False` if `mahalanobis_p_value < OOD_MAHALANOBIS_P_THRESHOLD` **or** `cosine_z > OOD_COSINE_THRESHOLD` (OR, not averaged — note the opposite comparison direction per signal).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -770,8 +843,6 @@ def _make_stats() -> ClassEmbeddingStats:
         pca_components=np.eye(8),
         centroids=np.array([[0.0] * 8, [5.0] * 8]),
         covariance_inv=np.eye(8),
-        maha_calibration_mean=0.0,
-        maha_calibration_std=1.0,
         cosine_calibration_mean=0.0,
         cosine_calibration_std=1.0,
     )
@@ -783,7 +854,8 @@ def test_predict_text_without_stats_leaves_ood_fields_none() -> None:
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         clf.model.return_value.hidden_states = [torch.zeros(1, 512, 8)]
         result = clf.predict_text("anything")
-    assert result.ood_score is None
+    assert result.mahalanobis_p_value is None
+    assert result.cosine_z is None
     assert result.in_distribution is None
 
 
@@ -793,7 +865,8 @@ def test_predict_text_with_stats_populates_ood_fields() -> None:
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         clf.model.return_value.hidden_states = [torch.zeros(1, 512, 8)]
         result = clf.predict_text("anything")
-    assert isinstance(result.ood_score, float)
+    assert isinstance(result.mahalanobis_p_value, float)
+    assert isinstance(result.cosine_z, float)
     assert isinstance(result.in_distribution, bool)
 ```
 
@@ -817,7 +890,7 @@ import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from src.ingestion.extract import clean_text
-from src.inference.ood import ClassEmbeddingStats, load_stats, ood_score
+from src.inference.ood import ClassEmbeddingStats, cosine_z_score, load_stats, mahalanobis_p_value
 from src.schema import PredictResult
 from src.settings import Settings
 
@@ -881,13 +954,17 @@ class BertTunningClassifier:
         if self._ood_stats is None:
             return result
 
-        score = ood_score(
-            cls_embedding, self._ood_stats, mahalanobis_weight=Settings.OOD_MAHALANOBIS_WEIGHT
+        maha_p = mahalanobis_p_value(cls_embedding, self._ood_stats)
+        cosine_z = cosine_z_score(cls_embedding, self._ood_stats)
+        # Comparison directions differ: a LOW p-value is anomalous, a HIGH z-score is anomalous.
+        out_of_distribution = (
+            maha_p < Settings.OOD_MAHALANOBIS_P_THRESHOLD or cosine_z > Settings.OOD_COSINE_THRESHOLD
         )
         return result.model_copy(
             update={
-                "ood_score": round(score, 4),
-                "in_distribution": score <= Settings.OOD_THRESHOLD,
+                "mahalanobis_p_value": round(maha_p, 4),
+                "cosine_z": round(cosine_z, 4),
+                "in_distribution": not out_of_distribution,
             }
         )
 ```
@@ -906,7 +983,7 @@ Expected: PASS
 
 ```bash
 git add src/inference/classify.py tests/inference/test_pipeline.py
-git commit -m "feat: score OOD at inference time via Mahalanobis/cosine mixture"
+git commit -m "feat: score OOD at inference time via separate Mahalanobis/cosine z-scores (OR flag)"
 ```
 
 ---
@@ -920,8 +997,8 @@ git commit -m "feat: score OOD at inference time via Mahalanobis/cosine mixture"
 - Test: `tests/cli/test_commands.py`, `tests/api/test_predict.py` (existing files)
 
 **Interfaces:**
-- Consumes: `PredictResult.ood_score`/`in_distribution` (Task 2/4)
-- Produces: `predict_cmd` prints `OOD Score` / `In Distribution` lines; `PredictResponse.ood_score: float | None`, `PredictResponse.in_distribution: bool | None`
+- Consumes: `PredictResult.mahalanobis_p_value`/`cosine_z`/`in_distribution` (Task 2/4)
+- Produces: `predict_cmd` prints `Mahalanobis p` / `Cosine Z` / `In-Dist.` lines; `PredictResponse.mahalanobis_p_value: float | None`, `PredictResponse.cosine_z: float | None`, `PredictResponse.in_distribution: bool | None`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -934,14 +1011,15 @@ def test_predict_response_has_ood_fields() -> None:
     response = PredictResponse(
         filename="doc.pdf", label="decreto", confidence=0.9, certain=True
     )
-    assert response.ood_score is None
+    assert response.mahalanobis_p_value is None
+    assert response.cosine_z is None
     assert response.in_distribution is None
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/api/test_predict.py -v`
-Expected: FAIL — `AttributeError: 'PredictResponse' object has no attribute 'ood_score'`
+Expected: FAIL — `AttributeError: 'PredictResponse' object has no attribute 'mahalanobis_p_value'`
 
 - [ ] **Step 3: Modify `src/api/routes/predict/schemas.py`**
 
@@ -958,7 +1036,8 @@ class PredictResponse(BaseSchema):
     certain: bool
     all_scores: dict[str, float] = Field(default_factory=dict)
     error: str | None = None
-    ood_score: float | None = None
+    mahalanobis_p_value: float | None = None
+    cosine_z: float | None = None
     in_distribution: bool | None = None
 ```
 
@@ -987,7 +1066,8 @@ to:
         certain=data["certain"],
         all_scores=data["all_scores"],
         error=data["error"] or None,
-        ood_score=data["ood_score"],
+        mahalanobis_p_value=data["mahalanobis_p_value"],
+        cosine_z=data["cosine_z"],
         in_distribution=data["in_distribution"],
     )
 ```
@@ -1018,9 +1098,10 @@ to:
     click.echo(f"  Label     : {result.label}")
     click.echo(f"  Confidence: {result.confidence:.2%}")
     click.echo(f"  Certain   : {result.certain}")
-    if result.ood_score is not None:
-        click.echo(f"  OOD Score : {result.ood_score:.4f}")
-        click.echo(f"  In-Dist.  : {result.in_distribution}")
+    if result.mahalanobis_p_value is not None:
+        click.echo(f"  Mahalanobis p: {result.mahalanobis_p_value:.4f}")
+        click.echo(f"  Cosine Z     : {result.cosine_z:.4f}")
+        click.echo(f"  In-Dist.     : {result.in_distribution}")
     click.echo("\n  All scores:")
 ```
 
@@ -1038,8 +1119,223 @@ Expected: PASS
 
 ```bash
 git add src/cli/predict.py src/api/routes/predict/schemas.py src/api/routes/predict/endpoints.py tests/api/test_predict.py
-git commit -m "feat: surface OOD score and in-distribution flag in CLI and API output"
+git commit -m "feat: surface Mahalanobis/cosine z-scores and in-distribution flag in CLI and API"
 ```
+
+---
+
+## Task 6: Empirical OOD threshold calibration report
+
+**Motivation:** `OOD_MAHALANOBIS_P_THRESHOLD=0.01` is a *theoretical* significance level — it's only a trustworthy false-positive rate if the training embeddings are actually well-approximated by a multivariate Gaussian (the assumption the chi-squared distribution depends on). `OOD_COSINE_THRESHOLD=2.5` has no theoretical grounding at all. Neither has been checked against real data. This task adds a standalone command that measures the *actual* false-positive rate of both thresholds using data already available: the model's own held-out test split, which is known in-distribution by construction (it's real training documents, just excluded from the train split). This does **not** require retraining — it reuses the same split-reconstruction trick as Task 3b (same cache file + `seed` → same `train_test_split` result), runs the already-trained model + already-computed `ood_stats.npz` over the test split, and reports the empirical false-positive rate plus a suggested empirically-calibrated threshold.
+
+**Files:**
+- Create: `src/cli/ood_calibration.py`
+- Modify: `main.py` (register the command)
+- Test: `tests/cli/test_ood_calibration.py` (new)
+
+**Interfaces:**
+- Consumes: `mahalanobis_p_value`, `cosine_z_score`, `extract_embeddings`, `load_stats` from `src/inference/ood.py` (Task 1); `make_split` from `src/training/split.py`; `prepare_text` from `src/training/tokenize.py`; `get_model_config` from `src/training/models`; `Settings.OOD_MAHALANOBIS_P_THRESHOLD`/`OOD_COSINE_THRESHOLD` (Task 2) — the same dependencies Task 3b already has, since this command is structurally similar (reconstruct the split, load the model, run OOD scoring — no training loop)
+- Produces: an `evaluate-ood-calibration` CLI command that logs the empirical false-positive rate at the current thresholds, plus a suggested empirical threshold for a target false-positive rate
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/cli/test_ood_calibration.py`:
+
+```python
+from click.testing import CliRunner
+
+from src.cli.ood_calibration import evaluate_ood_calibration_cmd
+
+
+def test_evaluate_ood_calibration_cmd_help() -> None:
+    result = CliRunner().invoke(evaluate_ood_calibration_cmd, ["--help"])
+    assert result.exit_code == 0
+    assert "calibrat" in result.output.lower() or "false-positive" in result.output.lower()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/cli/test_ood_calibration.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'src.cli.ood_calibration'`
+
+- [ ] **Step 3: Write `src/cli/ood_calibration.py`**
+
+```python
+import logging
+from pathlib import Path
+
+import click
+import numpy as np
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
+from sklearn.preprocessing import LabelEncoder
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import pandas as pd
+
+from src.inference.ood import cosine_z_score, extract_embeddings, load_stats, mahalanobis_p_value
+from src.logger import setup_logging
+from src.settings import Settings
+from src.training.models import get_model_config
+from src.training.split import make_split
+from src.training.tokenize import prepare_text
+
+log = logging.getLogger(__name__)
+
+
+class OodCalibrationOptions(BaseModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        frozen=True,
+        populate_by_name=True,
+    )
+
+    model_path: str
+    model_key: str
+    cache_path: str
+    chunk_strategy: str = Settings.CHUNK_STRATEGY
+    seed: int = Settings.SEED
+    target_fp_rate: float = 0.01
+    debug: bool = False
+
+
+def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
+    log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    log.info("Logging to %s", log_file)
+
+    model_cfg = get_model_config(opts.model_key)
+    df = pd.read_parquet(opts.cache_path)
+
+    le = LabelEncoder()
+    df["label_id"] = le.fit_transform(df["label"])
+
+    # Same split-reconstruction as Task 3b — the test split is known in-distribution
+    # by construction, since it's real training documents held out from the train split.
+    _train_df, _val_df, test_df = make_split(df, seed=opts.seed)
+    log.info("Reconstructed test split: %d docs (known in-distribution)", len(test_df))
+
+    stats_path = Path(opts.model_path) / "ood_stats.npz"
+    if not stats_path.exists():
+        msg = f"No ood_stats.npz found at {stats_path} — run compute-ood-stats first"
+        raise click.ClickException(msg)
+    stats = load_stats(stats_path)
+
+    tokenizer = AutoTokenizer.from_pretrained(opts.model_path)
+    model = AutoModelForSequenceClassification.from_pretrained(opts.model_path)
+    model.eval()
+
+    texts = [prepare_text(t, tokenizer, opts.chunk_strategy) for t in test_df["text"]]
+    embeddings = extract_embeddings(
+        model, tokenizer, texts, max_length=model_cfg.max_tokens, device=str(model.device)
+    )
+
+    p_values = np.array([mahalanobis_p_value(e, stats) for e in embeddings])
+    z_scores = np.array([cosine_z_score(e, stats) for e in embeddings])
+
+    fp_rate_maha = float(np.mean(p_values < Settings.OOD_MAHALANOBIS_P_THRESHOLD))
+    fp_rate_cosine = float(np.mean(z_scores > Settings.OOD_COSINE_THRESHOLD))
+
+    suggested_maha_threshold = float(np.percentile(p_values, opts.target_fp_rate * 100))
+    suggested_cosine_threshold = float(np.percentile(z_scores, (1 - opts.target_fp_rate) * 100))
+
+    log.info("=" * 60)
+    log.info("OOD threshold calibration — %s", opts.model_path)
+    log.info("=" * 60)
+    log.info(
+        "Mahalanobis — current threshold=%.4f, empirical false-positive rate=%.2f%%",
+        Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        fp_rate_maha * 100,
+    )
+    log.info(
+        "Mahalanobis — suggested threshold for %.1f%% target FP rate: %.6f",
+        opts.target_fp_rate * 100,
+        suggested_maha_threshold,
+    )
+    log.info(
+        "Cosine — current threshold=%.4f, empirical false-positive rate=%.2f%%",
+        Settings.OOD_COSINE_THRESHOLD,
+        fp_rate_cosine * 100,
+    )
+    log.info(
+        "Cosine — suggested threshold for %.1f%% target FP rate: %.4f",
+        opts.target_fp_rate * 100,
+        suggested_cosine_threshold,
+    )
+
+
+@click.command("evaluate-ood-calibration")
+@click.option("--model-path", required=True, help="Path to an already-trained model directory")
+@click.option(
+    "--model",
+    "model_key",
+    required=True,
+    help="Model registry key used for that model (e.g. beto, xlm-roberta, minilm)",
+)
+@click.option(
+    "--cache-path", required=True, help="Path to the exact parquet cache used to train that model"
+)
+@click.option("--chunk-strategy", default=Settings.CHUNK_STRATEGY, show_default=True)
+@click.option(
+    "--seed",
+    default=Settings.SEED,
+    show_default=True,
+    help="Must match the seed used for the original training run",
+)
+@click.option(
+    "--target-fp-rate",
+    default=0.01,
+    show_default=True,
+    help="Target false-positive rate used to compute the suggested threshold",
+)
+@click.option("--debug", is_flag=True, default=False)
+def evaluate_ood_calibration_cmd(**kwargs: str | float | bool) -> None:
+    """Measure the empirical false-positive rate of OOD thresholds against the test split,
+    and suggest better-calibrated thresholds if the current ones don't match your target."""
+    _run_ood_calibration(OodCalibrationOptions.model_validate(kwargs))
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `uv run pytest tests/cli/test_ood_calibration.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Register the command in `main.py`**
+
+Add the import:
+
+```python
+from src.cli.ood_calibration import evaluate_ood_calibration_cmd
+```
+
+Add the registration line alongside `compute-ood-stats`:
+
+```python
+cli.add_command(evaluate_ood_calibration_cmd, name="evaluate-ood-calibration")
+```
+
+- [ ] **Step 6: Run full check**
+
+Run: `uv run poe check`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/cli/ood_calibration.py main.py tests/cli/test_ood_calibration.py
+git commit -m "feat: add evaluate-ood-calibration command to measure empirical false-positive rate"
+```
+
+- [ ] **Step 8: Manual verification against an already-trained model**
+
+Requires `ood_stats.npz` already present (via Task 3b's `compute-ood-stats` for existing models, or automatically for future ones via Task 3):
+
+```powershell
+uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model_beto_v2/final --model beto --cache-path ./data/bert_tunning_cache_300.parquet
+```
+
+Expected output: the empirical false-positive rate at the current thresholds for both signals, plus a suggested threshold for a 1% target. If the empirical rate is far from 1% (e.g., 8% or 0.01%), that's direct evidence the chi-squared/Gaussian assumption doesn't hold well for this model's embeddings, and `Settings.OOD_MAHALANOBIS_P_THRESHOLD` should be updated to the suggested empirical value instead of the theoretical default.
+
+**No retraining required** — this task only reads an already-trained model, an already-computed `ood_stats.npz`, and the original training cache file. Same reasoning as Task 3b.
 
 ---
 
@@ -1129,7 +1425,7 @@ class ExtractionMetadata(BaseModel):
     char_count: int
 ```
 
-Add two fields to `PredictResult` (after `error: str = ""`, or after the `ood_score`/`in_distribution` fields if Task 2/4 already landed):
+Add two fields to `PredictResult` (after `error: str = ""`, or after the `mahalanobis_p_value`/`cosine_z`/`in_distribution` fields if Task 2/4 already landed):
 
 ```python
     extracted_text: str = ""
@@ -1349,27 +1645,45 @@ git commit -m "feat: capture and expose extraction metadata (extractor used, ext
 
 **Interfaces:**
 - Consumes: nothing (documentation only)
-- Produces: nothing new — describes what Tasks 1-5 and 7 built
+- Produces: nothing new — describes what Tasks 1-7 built
 
 - [ ] **Step 1: Update `CLAUDE.md`**
 
 Add a new subsection under "Key Technical Decisions" (after the "OCR thread safety via double-checked locking" entry):
 
 ```markdown
-**Mahalanobis/cosine OOD detection alongside the softmax classifier**
+**Mahalanobis chi-squared p-value + cosine z-score OOD detection, dual-signal OR, alongside the softmax classifier**
 Softmax classifiers always output a label — there is no "I don't know."
 `ood_stats.npz` (generated at training time from the training set's `[CLS]`
 embeddings, PCA-reduced) stores per-class centroids and a shared covariance
-matrix. At inference, `BertTunningClassifier.predict_text` computes a mixture
-of Mahalanobis distance and cosine distance to the nearest centroid and
-attaches `ood_score`/`in_distribution` to `PredictResult`. This is separate
-from `certain` (softmax-confidence-based) — a document can be `certain=True`
-(the softmax is confident) and `in_distribution=False` (the document doesn't
-resemble anything the model was trained on) at the same time, which is
-exactly the payment-document failure mode this was built to catch.
-`OOD_THRESHOLD` (default `2.5`, a z-score-like cutoff) has **not** been
-statistically validated against a labeled out-of-category corpus — there
-is no such corpus for this project. Treat it as a starting point requiring
+matrix. At inference, `BertTunningClassifier.predict_text` computes **two
+separate, independently-scored** signals: (1) the squared Mahalanobis distance
+to the nearest class centroid, evaluated as a p-value under a chi-squared
+distribution with `df` = the PCA-reduced dimensionality — the theoretically
+correct distribution for this metric, assuming class-conditional embeddings
+are multivariate Gaussian (the same assumption Mahalanobis distance itself
+relies on) — needing no empirical calibration; and (2) cosine distance to the
+nearest centroid, z-scored against the training set's own distances (no
+equivalent theoretical distribution exists for cosine, so this stays
+empirical). Both are attached to `PredictResult` as
+`mahalanobis_p_value`/`cosine_z`/`in_distribution`. The two scores are
+deliberately **not combined**: `in_distribution=False` is raised if
+`mahalanobis_p_value < OOD_MAHALANOBIS_P_THRESHOLD` (a LOW p-value is
+anomalous) **or** `cosine_z > OOD_COSINE_THRESHOLD` (a HIGH z-score is
+anomalous) — note the comparison directions are opposite. An earlier version
+of this design combined both signals into one weighted mixture score, but
+that risks a strong signal on one axis being diluted by a weak signal on the
+other; the OR rule and separately-exposed values also let a human reviewing
+predictions later see which metric fired. This is independent of `certain`
+(softmax-confidence-based) — a document can be `certain=True` (the softmax
+is confident) and `in_distribution=False` (the document doesn't resemble
+anything the model was trained on) at the same time, which is exactly the
+payment-document failure mode this was built to catch.
+`OOD_MAHALANOBIS_P_THRESHOLD` (default `0.01`, a standard significance level)
+has a defensible theoretical grounding since it's a genuine p-value.
+`OOD_COSINE_THRESHOLD` (default `2.5`, a z-score cutoff) has **not** been
+statistically validated against a labeled out-of-category corpus — there is
+no such corpus for this project. Treat both as starting points requiring
 manual calibration against real novel documents as they're encountered.
 ```
 
@@ -1377,8 +1691,8 @@ Add to the Settings table:
 
 ```markdown
 | `OOD_PCA_COMPONENTS` | `64` | Dimensionality the `[CLS]` embedding is reduced to before Mahalanobis/cosine scoring |
-| `OOD_MAHALANOBIS_WEIGHT` | `0.7` | Weight given to the Mahalanobis z-score vs. cosine z-score in the mixture (`1 - this` goes to cosine) |
-| `OOD_THRESHOLD` | `2.5` | Mixture score above which a document is flagged `in_distribution=False` — uncalibrated, see note above |
+| `OOD_MAHALANOBIS_P_THRESHOLD` | `0.01` | Mahalanobis chi-squared p-value below which a document is flagged `in_distribution=False` (low p-value = anomalous) |
+| `OOD_COSINE_THRESHOLD` | `2.5` | Cosine z-score above which a document is flagged `in_distribution=False` — uncalibrated, see note above |
 ```
 
 - [ ] **Step 2: Update `README.md`**
@@ -1389,23 +1703,29 @@ Add a new subsection after "### Classify":
 ### Out-of-distribution detection
 
 If the loaded model directory contains `ood_stats.npz` (generated automatically
-during `train`), predictions include two extra fields:
+during `train`), predictions include three extra fields:
 
 ```json
 {
   "label": "boletines",
   "confidence": 0.9429,
-  "oodScore": 4.1,
+  "mahalanobisPValue": 0.0003,
+  "cosineZ": 1.1,
   "inDistribution": false
 }
 ```
 
-`inDistribution: false` means the document doesn't resemble anything in the
-training set, even though the classifier still picked its best guess for
-`label`/`confidence`. Treat `inDistribution: false` as "do not trust `label`
-for this document" regardless of how high `confidence` is — this is the
-mechanism that catches documents (e.g. payment receipts) that were never in
-any training class, including `otro`.
+`mahalanobisPValue`/`cosineZ` are reported separately rather than combined
+into one score — note they point in **opposite directions**: a LOW
+`mahalanobisPValue` (below `OOD_MAHALANOBIS_P_THRESHOLD`, default `0.01`) is
+anomalous, while a HIGH `cosineZ` (above `OOD_COSINE_THRESHOLD`) is anomalous.
+Either one alone is enough to set `inDistribution: false`. This means
+`inDistribution: false` doesn't hide *which* signal fired: a human reviewing
+predictions can see whether Mahalanobis, cosine, or both flagged the document.
+Treat `inDistribution: false` as "do not trust `label` for this document"
+regardless of how high `confidence` is — this is the mechanism that catches
+documents (e.g. payment receipts) that were never in any training class,
+including `otro`.
 ```
 
 Add a new subsection right after it, documenting the extraction-metadata feature from Task 7:
@@ -1444,15 +1764,19 @@ git commit -m "docs: document Mahalanobis/cosine OOD detection and extraction me
 
 **Spec coverage:**
 - Mahalanobis distance instead of pure cosine → Task 1 (`mahalanobis_min_distance`)
-- "Or maybe a mixture" → Task 1 (`ood_score` combines both via weighted z-score)
-- Approve per PR each of those changes → 8 independently mergeable tasks (1, 2, 3, 3b, 4, 5, 7, 8), each ending in a commit; each maps 1:1 to a worktree + PR in this project's existing git workflow
+- "Or maybe a mixture" → Task 1 originally shipped `ood_score()` (weighted mixture); superseded by the dual-signal OR design (`mahalanobis_p_value`, `cosine_z_score`, OR-based `in_distribution`) after the user identified that averaging can hide a strong signal on one axis — see Architecture note and each task's Revision note
+- Approve per PR each of those changes → 9 independently mergeable tasks (1, 2, 3, 3b, 4, 5, 6, 7, 8), each ending in a commit (by the human — see note below); each maps 1:1 to a worktree + PR in this project's existing git workflow
 - Never knowing the true universe of out-of-category documents → the design doesn't try to enumerate negative classes; it flags "far from everything known," which generalizes to unseen document types by construction, unlike expanding the `otro` class
 - No retraining of existing 5 models → confirmed, Tasks 1/2 add no training-time behavior; Task 3 only affects *future* training runs; Tasks 4/5 gracefully no-op (`None` fields) for model directories without `ood_stats.npz`
 - What about the 4 other already-trained models (not just BETO v1) → Task 3b backfills `ood_stats.npz` for all 5 existing checkpoints (xlm-roberta v1/v2, beto v1/v2, minilm v1) by reconstructing each run's exact train split via the confirmed-constant `SEED`, with no retraining
 - Store the OCR/MarkItDown extraction metadata alongside classification results, to see what was extracted from a predicted document → Task 7 (`extract_pdf_with_metadata`, `PredictResult.extracted_text`/`extractor_used`, surfaced in CSV, API, and CLI output)
+- "Is there another way to represent the same standardization?" (chi-squared p-value option) → Task 1's Mahalanobis side further revised from an empirical z-score to `mahalanobis_p_value()`, the theoretically-grounded choice for this specific metric (squared Mahalanobis distance of Gaussian data follows a chi-squared distribution); `PredictResult.mahalanobis_z` renamed to `mahalanobis_p_value`, `OOD_MAHALANOBIS_THRESHOLD` renamed to `OOD_MAHALANOBIS_P_THRESHOLD` with default flipped from `2.5` (z-score) to `0.01` (p-value, low = anomalous)
+- "How do I know if a predicted document's OOD flag is a false positive?" (following up on external research comparing pointwise novelty detection vs. batch distribution-drift detection — MMD/C2ST/Hotelling's T² solve a different problem, monitoring whether the whole incoming population has shifted, not whether one prediction is a false positive) → Task 6, which empirically measures the false-positive rate of both thresholds against the model's own held-out test split (known in-distribution by construction) and suggests better-calibrated thresholds — no retraining required, reuses Task 3b's split-reconstruction approach
 
 **Placeholder scan:** no TBD/TODO, no "add error handling" placeholders — all code blocks are complete and runnable as written. Task 3b's manual verification step has `<..._output_dir>` placeholders, but those are explicitly called out as values the user must substitute from their own run records (not tracked in git since `models/` is git-ignored) — not a plan placeholder.
 
-**Type consistency:** `ClassEmbeddingStats`, `compute_class_stats`, `mahalanobis_min_distance`, `cosine_min_distance`, `ood_score`, `save_stats`, `load_stats`, `extract_embeddings` are defined once in Task 1 and referenced with identical names/signatures in Tasks 3, 3b, and 4. `PredictResult.ood_score`/`in_distribution` defined in Task 2, consumed identically in Task 4 (classify.py) and Task 5 (CLI/API). Task 3b's `_run_compute_ood_stats` reconstructs the exact same `le.fit_transform` / `make_split` / `prepare_text` sequence that `training/pipeline.py`'s `run()` uses, so the two code paths produce consistent `label_id` ordering and text preprocessing. `ExtractionMetadata`/`extract_pdf_with_metadata` defined once in Task 7 and consumed identically by `predict_pdf`/`predict_folder`; `extract_pdf`'s existing signature and behavior are untouched, so `src/ingestion/scan.py` (unrelated to this plan) needs no changes.
+**Type consistency:** `ClassEmbeddingStats`, `compute_class_stats`, `mahalanobis_min_distance`, `cosine_min_distance`, `mahalanobis_p_value`, `cosine_z_score`, `save_stats`, `load_stats`, `extract_embeddings` are defined once in Task 1 and referenced with identical names/signatures in Tasks 3, 3b, 4, and 6. `PredictResult.mahalanobis_p_value`/`cosine_z`/`in_distribution` defined in Task 2, consumed identically in Task 4 (classify.py) and Task 5 (CLI/API). Task 3b's `_run_compute_ood_stats` and Task 6's `_run_ood_calibration` both reconstruct the exact same `le.fit_transform` / `make_split` / `prepare_text` sequence that `training/pipeline.py`'s `run()` uses, so all three code paths produce consistent `label_id` ordering and text preprocessing. `ExtractionMetadata`/`extract_pdf_with_metadata` defined once in Task 7 and consumed identically by `predict_pdf`/`predict_folder`; `extract_pdf`'s existing signature and behavior are untouched, so `src/ingestion/scan.py` (unrelated to this plan) needs no changes.
 
-**Task ordering / merge-conflict note:** Task 7 deliberately modifies the same functions (`endpoints.py`'s `predict()`, `predict.py`'s `predict_cmd()`, `PredictResponse`) that Task 5 modifies. Task 7 is written to run **after** Task 5 is merged, so its diff is additive on top of Task 5's OOD fields rather than a parallel conflicting edit. Tasks 1 and 2 have no code overlap (different classes within `schema.py`, no shared imports) and can run in parallel. Tasks 3 and 3b both depend on Tasks 1+2 being merged (they import `src.inference.ood`) but don't overlap each other's files (`training/pipeline.py` vs. new `cli/ood_stats.py` + `main.py`), so they can also run in parallel once 1+2 land. Task 4 depends on 1+2. Task 5 depends on 4. Task 7 depends on 5. Task 8 depends on everything.
+**Task ordering / merge-conflict note:** Task 7 deliberately modifies the same functions (`endpoints.py`'s `predict()`, `predict.py`'s `predict_cmd()`, `PredictResponse`) that Task 5 modifies. Task 7 is written to run **after** Task 5 is merged, so its diff is additive on top of Task 5's OOD fields rather than a parallel conflicting edit. Tasks 1 and 2 have no code overlap (different classes within `schema.py`, no shared imports) and can run in parallel. Tasks 3, 3b, and 6 all depend on Tasks 1+2 being merged (they import `src.inference.ood`) but don't overlap each other's files (`training/pipeline.py` vs. new `cli/ood_stats.py` + `main.py` vs. new `cli/ood_calibration.py` + `main.py` — the latter two both touch `main.py` but at non-overlapping registration lines, low conflict risk), so they can also run in parallel once 1+2 land, alongside Task 4 (also only depends on 1+2, touches only `inference/classify.py`). Task 5 depends on Task 4. Task 6 has no dependents. Task 7 depends on Task 5. Task 8 depends on everything.
+
+**Ownership of commit/push:** every task's final "Commit" step (`git add` + `git commit`, and by extension `git push`/`gh pr create`) is the **human's duty by default, not the agentic worker's**. An agentic worker implementing this plan should apply the file changes, run `uv run poe check`, and report that the task is ready — then stop. It must not run `git commit`, `git push`, or open/update a PR on its own initiative. The human may explicitly delegate any of these actions for a given task or session ("commit this," "push it," "open the PR") — only then should the worker perform that specific action, and only that one.

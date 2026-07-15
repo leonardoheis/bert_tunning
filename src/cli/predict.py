@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 import click
 import pandas as pd
@@ -7,7 +8,9 @@ from pydantic.alias_generators import to_camel
 
 from src.inference.pipeline import predict_folder, predict_pdf
 from src.logger import setup_logging
+from src.schema import flatten_predict_result
 from src.settings import Settings
+from src.wandb import log_predict_folder_results
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +27,8 @@ class PredictFolderOptions(BaseModel):
     model_path: str = Settings.default_model_path
     threshold: float = Settings.THRESHOLD
     no_ocr: bool = False
-    output: str = "bert_tunning_predictions.csv"
+    output: str | None = None
+    log_wandb: bool = False
     debug: bool = False
 
 
@@ -54,6 +58,19 @@ def predict_cmd(
     click.echo(f"  Label     : {result.label}")
     click.echo(f"  Confidence: {result.confidence:.2%}")
     click.echo(f"  Certain   : {result.certain}")
+    if result.ood_metrics is not None:
+        m = result.ood_metrics
+        click.echo(f"  Mahalanobis p: {m.mahalanobis_p_value:.6f}")
+        click.echo(f"  Mahalanobis p (chi2, theoretical): {m.mahalanobis_p_value_theoretical:.6f}")
+        click.echo(f"  Cosine Z     : {m.cosine_z:.4f}")
+        click.echo(f"  k-NN dist    : {m.knn_distance:.4f}")
+        click.echo(f"  In-Dist.     : {m.in_distribution}")
+    click.echo(f"  Review route : {result.review_route}")
+    if result.foreign_municipality is not None:
+        click.echo(f"  Foreign municipality detected: {result.foreign_municipality}")
+        click.echo(f"    Context: {result.foreign_municipality_context}")
+    click.echo(f"  Extractor : {result.extractor_used or 'n/a'}")
+    click.echo(f"  Extracted text (first 200 chars): {result.extracted_text[:200]!r}")
     click.echo("\n  All scores:")
     for lbl, sc in sorted(result.all_scores.items(), key=lambda x: -x[1]):
         bar = "█" * int(sc * 40)
@@ -67,10 +84,16 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
     results = predict_folder(
         opts.model_path, opts.folder_path, threshold=opts.threshold, use_ocr=not opts.no_ocr
     )
-    df = pd.DataFrame([r.model_dump() for r in results])
+    output = opts.output or str(Path(opts.folder_path) / "bert_tunning_predictions.csv")
+    df = pd.DataFrame([flatten_predict_result(r) for r in results])
     df.insert(1, "model", opts.model_path)
-    df.to_csv(opts.output, index=False)
-    log.info("Results saved to %s", opts.output)
+    df.to_csv(output, index=False)
+    log.info("Results saved to %s", output)
+
+    if opts.log_wandb:
+        log_predict_folder_results(
+            results, model_path=opts.model_path, folder_path=opts.folder_path
+        )
 
 
 @click.command("predict-folder")
@@ -80,8 +103,15 @@ def _run_predict_folder(opts: PredictFolderOptions) -> None:
     "--threshold", default=Settings.THRESHOLD, show_default=True, help="Confidence threshold"
 )
 @click.option("--no-ocr", is_flag=True, default=False)
-@click.option("--output", default="bert_tunning_predictions.csv", show_default=True)
+@click.option(
+    "--output",
+    default=None,
+    help="CSV output path. Defaults to bert_tunning_predictions.csv inside folder_path.",
+)
+@click.option(
+    "--log-wandb", is_flag=True, default=False, help="Log per-document predictions to W&B"
+)
 @click.option("--debug", is_flag=True, default=False)
-def predict_folder_cmd(**kwargs: str | float | bool) -> None:
+def predict_folder_cmd(**kwargs: str | float | bool | None) -> None:
     """Classify all PDFs in a folder and save results to CSV."""
     _run_predict_folder(PredictFolderOptions.model_validate(kwargs))
