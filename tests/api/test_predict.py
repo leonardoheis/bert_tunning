@@ -113,6 +113,7 @@ def test_predict_endpoint_returns_foreign_municipality() -> None:
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()["foreignMunicipality"] == "Cordoba"
+    assert "Municipalidad de Cordoba" in response.json()["foreignMunicipalityContext"]
 
 
 def test_predict_endpoint_returns_review_route() -> None:

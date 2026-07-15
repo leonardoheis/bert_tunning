@@ -62,6 +62,7 @@ def _to_predict_response(result: PredictResult) -> PredictResponse:
         extractor_used=data["extractor_used"],
         review_route=data["review_route"],
         foreign_municipality=data["foreign_municipality"],
+        foreign_municipality_context=data["foreign_municipality_context"],
     )
 
 
@@ -89,12 +90,14 @@ async def predict(
         return _to_predict_response(extraction_failed(file.filename))
 
     result = await asyncio.to_thread(clf.predict_text, extraction.text)
+    foreign_match = detect_foreign_municipality(extraction.text or "")
     result = result.model_copy(
         update={
             "filename": file.filename,
             "extracted_text": extraction.text,
             "extractor_used": extraction.extractor_used or "",
-            "foreign_municipality": detect_foreign_municipality(extraction.text or ""),
+            "foreign_municipality": foreign_match.name if foreign_match else None,
+            "foreign_municipality_context": foreign_match.context if foreign_match else None,
         }
     )
     return _to_predict_response(result)

@@ -19,6 +19,7 @@ _PREDICTION_COLUMNS = [
     "tfidf_cosine_z",
     "in_distribution",
     "foreign_municipality",
+    "foreign_municipality_context",
     "review_route",
     "extractor_used",
     "error",

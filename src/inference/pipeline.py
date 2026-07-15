@@ -26,12 +26,14 @@ def extraction_failed(filename: str) -> PredictResult:
 def _attach_metadata(
     result: PredictResult, filename: str, extraction: ExtractionMetadata
 ) -> PredictResult:
+    foreign_match = detect_foreign_municipality(extraction.text or "")
     return result.model_copy(
         update={
             "filename": filename,
             "extracted_text": extraction.text,
             "extractor_used": extraction.extractor_used or "",
-            "foreign_municipality": detect_foreign_municipality(extraction.text or ""),
+            "foreign_municipality": foreign_match.name if foreign_match else None,
+            "foreign_municipality_context": foreign_match.context if foreign_match else None,
         }
     )
 

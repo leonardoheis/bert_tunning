@@ -68,6 +68,7 @@ def predict_cmd(
     click.echo(f"  Review route : {result.review_route}")
     if result.foreign_municipality is not None:
         click.echo(f"  Foreign municipality detected: {result.foreign_municipality}")
+        click.echo(f"    Context: {result.foreign_municipality_context}")
     click.echo(f"  Extractor : {result.extractor_used or 'n/a'}")
     click.echo(f"  Extracted text (first 200 chars): {result.extracted_text[:200]!r}")
     click.echo("\n  All scores:")
