@@ -1,6 +1,13 @@
 import numpy as np
 
-from src.schema import CalibrationReport, ClassEmbeddingStats, Hyperparams
+from src.schema import (
+    CalibrationReport,
+    ClassEmbeddingStats,
+    Hyperparams,
+    OodMetrics,
+    PredictResult,
+    flatten_predict_result,
+)
 
 
 def test_class_embedding_stats_tfidf_fields_default_to_absent() -> None:
@@ -56,3 +63,41 @@ def test_hyperparams_accepts_snake_case_construction() -> None:
     )
     assert hyperparams.batch_size == 8  # noqa: PLR2004
     assert hyperparams.num_classes == 9  # noqa: PLR2004
+
+
+def test_ood_metrics_tfidf_cosine_z_defaults_to_none() -> None:
+    metrics = OodMetrics(
+        mahalanobis_p_value=0.5,
+        mahalanobis_p_value_theoretical=0.6,
+        cosine_z=1.0,
+        knn_distance=2.0,
+        in_distribution=True,
+    )
+    assert metrics.tfidf_cosine_z is None
+
+
+def test_flatten_predict_result_merges_ood_metrics_to_top_level() -> None:
+    result = PredictResult(
+        filename="a.pdf",
+        label="decreto",
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.5,
+            mahalanobis_p_value_theoretical=0.6,
+            cosine_z=1.0,
+            knn_distance=2.0,
+            in_distribution=True,
+        ),
+    )
+    row = flatten_predict_result(result)
+    assert row["mahalanobis_p_value"] == 0.5  # noqa: PLR2004
+    assert row["knn_distance"] == 2.0  # noqa: PLR2004
+    assert row["in_distribution"] is True
+    assert "ood_metrics" not in row
+
+
+def test_flatten_predict_result_fills_none_when_ood_metrics_absent() -> None:
+    result = PredictResult(filename="a.pdf", label="decreto")
+    row = flatten_predict_result(result)
+    assert row["mahalanobis_p_value"] is None
+    assert row["knn_distance"] is None
+    assert row["in_distribution"] is None
