@@ -133,6 +133,7 @@ data/**
 *.csv
 *.tsv
 *.parquet
+!data/*.parquet
 *.feather
 *.h5
 *.hdf5
@@ -226,7 +227,6 @@ models/bert_tunning_model_*/
 # Now committed instead, alongside the model checkpoint it belongs to, so it can't vanish.
 
 # Cache / data
-data/
 bert_tunning_predictions.csv
 
 #Sample files
