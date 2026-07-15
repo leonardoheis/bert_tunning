@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.routes.predict.schemas import PredictResponse
-from src.schema import ExtractionMetadata, PredictResult
+from src.schema import ExtractionMetadata, OodMetrics, PredictResult
 
 
 def test_health_endpoint() -> None:
@@ -28,16 +28,9 @@ def test_predict_rejects_non_pdf() -> None:
     assert "PDF" in response.json()["detail"]
 
 
-def test_predict_response_has_ood_fields() -> None:
+def test_predict_response_has_ood_metrics_field() -> None:
     response = PredictResponse(filename="doc.pdf", label="decreto", confidence=0.9, certain=True)
-    assert response.mahalanobis_p_value is None
-    assert response.cosine_z is None
-    assert response.in_distribution is None
-
-
-def test_predict_response_has_knn_field() -> None:
-    response = PredictResponse(filename="doc.pdf", label="decreto", confidence=0.9, certain=True)
-    assert response.knn_distance is None
+    assert response.ood_metrics is None
 
 
 def test_predict_endpoint_returns_extraction_metadata() -> None:
@@ -66,12 +59,21 @@ def test_predict_endpoint_returns_extraction_metadata() -> None:
     assert body["extractorUsed"] == "OCRExtractor"
 
 
-def test_predict_endpoint_returns_knn_distance() -> None:
+def test_predict_endpoint_returns_ood_metrics() -> None:
     expected_knn_distance = 4.2
     app = create_app(model_path="fake/path")
     mock_clf = MagicMock()
     mock_clf.predict_text.return_value = PredictResult(
-        label="decreto", confidence=0.9, certain=True, knn_distance=expected_knn_distance
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.5,
+            mahalanobis_p_value_theoretical=0.6,
+            cosine_z=1.0,
+            knn_distance=expected_knn_distance,
+            in_distribution=True,
+        ),
     )
     app.state.clf = mock_clf
 
@@ -88,7 +90,32 @@ def test_predict_endpoint_returns_knn_distance() -> None:
         )
 
     assert response.status_code == HTTPStatus.OK
-    assert response.json()["knnDistance"] == expected_knn_distance
+    assert response.json()["oodMetrics"]["knnDistance"] == expected_knn_distance
+
+
+def test_predict_endpoint_returns_foreign_municipality() -> None:
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.return_value = PredictResult(
+        label="decreto", confidence=0.9, certain=True
+    )
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="Municipalidad de Cordoba informa", extractor_used="OCRExtractor", char_count=30
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["foreignMunicipality"] == "Cordoba"
+    assert "Municipalidad de Cordoba" in response.json()["foreignMunicipalityContext"]
 
 
 def test_predict_endpoint_returns_review_route() -> None:
@@ -140,7 +167,13 @@ def test_predict_endpoint_returns_theoretical_mahalanobis_p_value() -> None:
         label="decreto",
         confidence=0.9,
         certain=True,
-        mahalanobis_p_value_theoretical=expected_theoretical_p,
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.5,
+            mahalanobis_p_value_theoretical=expected_theoretical_p,
+            cosine_z=1.0,
+            knn_distance=2.0,
+            in_distribution=True,
+        ),
     )
     app.state.clf = mock_clf
 
@@ -157,7 +190,7 @@ def test_predict_endpoint_returns_theoretical_mahalanobis_p_value() -> None:
         )
 
     assert response.status_code == HTTPStatus.OK
-    assert response.json()["mahalanobisPValueTheoretical"] == expected_theoretical_p
+    assert response.json()["oodMetrics"]["mahalanobisPValueTheoretical"] == expected_theoretical_p
 
 
 def test_predict_endpoint_rejects_upload_exceeding_max_size() -> None:

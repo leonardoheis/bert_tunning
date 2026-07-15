@@ -6,9 +6,11 @@ import numpy as np
 import numpy.typing as npt
 from scipy.stats import chi2
 from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_distances
 
 from src.exceptions import BertTunningError
+from src.ingestion.extract import clean_text
 from src.schema import ClassEmbeddingStats
 from src.settings import Settings
 
@@ -23,6 +25,17 @@ class _PcaReduction(NamedTuple):
     reduced: npt.NDArray[np.float64]
     mean: npt.NDArray[np.float64]
     components: npt.NDArray[np.float64]
+
+
+class _TfidfStats(NamedTuple):
+    """Internal return type for compute_tfidf_stats -- merged into ClassEmbeddingStats by
+    the caller (compute_class_stats), same convention as _PcaReduction."""
+
+    vocabulary_terms: list[str]
+    idf: npt.NDArray[np.float64]
+    centroids: npt.NDArray[np.float64]
+    cosine_calibration_mean: float
+    cosine_calibration_std: float
 
 
 def _reduce_dimensionality(embeddings: npt.NDArray[np.float64], n_components: int) -> _PcaReduction:
@@ -44,18 +57,22 @@ def _cosine_min_distance_raw(
     return float(cosine_distances(point.reshape(1, -1), centroids).min())
 
 
-def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size are an optional
-    # identity fingerprint threaded through at the two call sites (training/pipeline.py,
-    # cli/ood_stats.py); bundling them into a NamedTuple for two rarely-varying trailing
-    # kwargs would be more ceremony than the limit is worth here.
+def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size/texts/
+    # max_tfidf_features/max_tfidf_max_df are optional trailing kwargs threaded through from
+    # the two call sites (training/pipeline.py, cli/ood_stats.py); bundling them into a
+    # NamedTuple for rarely-varying trailing kwargs would be more ceremony than the limit is
+    # worth here.
     embeddings: npt.NDArray[np.float64],
     labels: list[int],
     class_names: list[str],
     *,
+    texts: list[str],
     n_components: int = 64,
     covariance_epsilon: float = 1e-6,
     model_type: str | None = None,
     model_hidden_size: int | None = None,
+    max_tfidf_features: int = 5000,
+    max_tfidf_max_df: float = 0.5,
 ) -> ClassEmbeddingStats:
     pca_result = _reduce_dimensionality(embeddings, n_components)
     reduced = pca_result.reduced
@@ -70,6 +87,9 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size are an
     cosine_scores = np.array(
         [_cosine_min_distance_raw(reduced[i], centroids) for i in range(reduced.shape[0])]
     )
+    tfidf = compute_tfidf_stats(
+        texts, labels, class_names, max_features=max_tfidf_features, max_df=max_tfidf_max_df
+    )
 
     return ClassEmbeddingStats(
         class_names=class_names,
@@ -83,7 +103,69 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size are an
         knn_train_labels=labels_arr.tolist(),
         model_type=model_type,
         model_hidden_size=model_hidden_size,
+        tfidf_vocabulary_terms=tfidf.vocabulary_terms,
+        tfidf_idf=tfidf.idf,
+        tfidf_centroids=tfidf.centroids,
+        tfidf_cosine_calibration_mean=tfidf.cosine_calibration_mean,
+        tfidf_cosine_calibration_std=tfidf.cosine_calibration_std,
     )
+
+
+def compute_tfidf_stats(
+    texts: list[str],
+    labels: list[int],
+    class_names: list[str],
+    *,
+    max_features: int = 5000,
+    max_df: float = 0.5,
+) -> _TfidfStats:
+    """Fits a TF-IDF vectorizer + per-class centroids on raw training text -- a signal
+    independent of compute_class_stats' BERT-embedding space, operating on surface
+    vocabulary instead. Catches lexical divergence (e.g. a different municipality's name)
+    that a shared document-type "shape" in embedding space cannot separate. max_df excludes
+    terms above that document-frequency fraction from the vocabulary entirely -- without it,
+    shared legal boilerplate dominates the 5000-feature budget and dilutes the cosine
+    distance a rare, genuinely distinguishing term (like a city name) could otherwise carry."""
+    cleaned = [clean_text(t) for t in texts]
+    vectorizer = TfidfVectorizer(max_features=max_features, max_df=max_df)
+    X = vectorizer.fit_transform(cleaned).toarray()
+    labels_arr = np.asarray(labels)
+
+    centroids = np.stack([X[labels_arr == k].mean(axis=0) for k in range(len(class_names))])
+    cosine_scores = np.array([_cosine_min_distance_raw(X[i], centroids) for i in range(X.shape[0])])
+
+    return _TfidfStats(
+        vocabulary_terms=vectorizer.get_feature_names_out().tolist(),
+        idf=vectorizer.idf_,
+        centroids=centroids,
+        cosine_calibration_mean=float(cosine_scores.mean()),
+        cosine_calibration_std=float(cosine_scores.std() + 1e-9),
+    )
+
+
+def build_tfidf_vectorizer(stats: ClassEmbeddingStats) -> TfidfVectorizer | None:
+    """Reconstructs a fixed-vocabulary TfidfVectorizer from the two arrays load_stats/
+    save_stats round-trip through ood_stats.npz -- verified to produce bit-identical
+    .transform() output to the originally-fitted vectorizer. Returns None when this
+    model's ood_stats.npz predates the TF-IDF signal (tfidf_vocabulary_terms is empty),
+    so callers can treat the signal as disabled rather than crash on missing data."""
+    if not stats.tfidf_vocabulary_terms:  # empty list = not fitted, see Task 1's field comment
+        return None
+    vocabulary = {term: i for i, term in enumerate(stats.tfidf_vocabulary_terms)}
+    vectorizer = TfidfVectorizer(vocabulary=vocabulary)
+    vectorizer.idf_ = stats.tfidf_idf
+    return vectorizer
+
+
+def tfidf_cosine_z_score(
+    text: str, stats: ClassEmbeddingStats, vectorizer: TfidfVectorizer
+) -> float:
+    """Cosine distance to the nearest TF-IDF centroid, z-scored against the training set --
+    same technique as cosine_z_score, different vector space. Caller must have already
+    confirmed build_tfidf_vectorizer(stats) is not None."""
+    point = vectorizer.transform([clean_text(text)]).toarray()[0]
+    cosine_raw = _cosine_min_distance_raw(point, stats.tfidf_centroids)
+    return (cosine_raw - stats.tfidf_cosine_calibration_mean) / stats.tfidf_cosine_calibration_std
 
 
 def mahalanobis_min_distance(
@@ -230,6 +312,7 @@ class OodThresholds(NamedTuple):
     mahalanobis_p: float
     cosine_z: float
     knn_distance: float
+    tfidf_cosine_z: float = Settings.OOD_TFIDF_COSINE_THRESHOLD
 
 
 def resolve_ood_thresholds(stats: ClassEmbeddingStats) -> OodThresholds:
@@ -246,6 +329,9 @@ def resolve_ood_thresholds(stats: ClassEmbeddingStats) -> OodThresholds:
         knn_distance=stats.knn_distance_threshold
         if stats.knn_distance_threshold is not None
         else Settings.OOD_KNN_DISTANCE_THRESHOLD,
+        tfidf_cosine_z=stats.tfidf_threshold
+        if stats.tfidf_threshold is not None
+        else Settings.OOD_TFIDF_COSINE_THRESHOLD,
     )
 
 
@@ -262,6 +348,7 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
     # threshold floats above -- npz has no native optional-scalar support.
     model_type = "" if stats.model_type is None else stats.model_type
     model_hidden_size = -1 if stats.model_hidden_size is None else stats.model_hidden_size
+    tfidf_threshold = np.nan if stats.tfidf_threshold is None else stats.tfidf_threshold
 
     # Write to a temp file first, verify it actually loads back, then atomically replace the
     # real path -- np.savez writing directly to `path` left a window where a crash, disk-full,
@@ -291,6 +378,12 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
                 model_type=model_type,
                 model_hidden_size=model_hidden_size,
                 mahalanobis_threshold_status=stats.mahalanobis_threshold_status,
+                tfidf_vocabulary_terms=np.array(stats.tfidf_vocabulary_terms),
+                tfidf_idf=stats.tfidf_idf,
+                tfidf_centroids=stats.tfidf_centroids,
+                tfidf_cosine_calibration_mean=stats.tfidf_cosine_calibration_mean,
+                tfidf_cosine_calibration_std=stats.tfidf_cosine_calibration_std,
+                tfidf_threshold=tfidf_threshold,
             )
         load_stats(tmp_path)  # fail fast on a corrupt/incomplete write, before touching `path`
         tmp_path.replace(path)
@@ -356,4 +449,28 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         mahalanobis_threshold_status=_threshold_status(data["mahalanobis_threshold_status"])
         if "mahalanobis_threshold_status" in data.files
         else "not_calibrated",
+        tfidf_vocabulary_terms=(
+            data["tfidf_vocabulary_terms"].tolist()
+            if "tfidf_vocabulary_terms" in data.files
+            else []
+        ),
+        tfidf_idf=(data["tfidf_idf"] if "tfidf_idf" in data.files else np.zeros(0)),
+        tfidf_centroids=(
+            data["tfidf_centroids"] if "tfidf_centroids" in data.files else np.zeros((0, 0))
+        ),
+        tfidf_cosine_calibration_mean=(
+            float(data["tfidf_cosine_calibration_mean"])
+            if "tfidf_cosine_calibration_mean" in data.files
+            else 0.0
+        ),
+        tfidf_cosine_calibration_std=(
+            float(data["tfidf_cosine_calibration_std"])
+            if "tfidf_cosine_calibration_std" in data.files
+            else 1.0
+        ),
+        tfidf_threshold=(
+            _optional_threshold(data["tfidf_threshold"])
+            if "tfidf_threshold" in data.files
+            else None
+        ),
     )

@@ -2,7 +2,13 @@ import logging
 
 import wandb
 from src.ood import OodThresholds
-from src.schema import CalibrationReport, EvaluationResult, Hyperparams, PredictResult
+from src.schema import (
+    CalibrationReport,
+    EvaluationResult,
+    Hyperparams,
+    PredictResult,
+    flatten_predict_result,
+)
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -16,7 +22,10 @@ _PREDICTION_COLUMNS = [
     "mahalanobis_p_value_theoretical",
     "cosine_z",
     "knn_distance",
+    "tfidf_cosine_z",
     "in_distribution",
+    "foreign_municipality",
+    "foreign_municipality_context",
     "review_route",
     "extractor_used",
     "error",
@@ -78,7 +87,7 @@ def log_predict_folder_results(
     )
     table = wandb.Table(columns=_PREDICTION_COLUMNS)
     for r in results:
-        row = r.model_dump()
+        row = flatten_predict_result(r)
         table.add_data(*(row[col] for col in _PREDICTION_COLUMNS))
     wandb.log({"predictions": table})
     wandb.finish()
@@ -118,6 +127,7 @@ def log_ood_calibration_results(
             "current_mahalanobis_threshold": thresholds.mahalanobis_p,
             "current_cosine_threshold": thresholds.cosine_z,
             "current_knn_threshold": thresholds.knn_distance,
+            "current_tfidf_threshold": thresholds.tfidf_cosine_z,
         },
     )
     wandb.log(
@@ -128,6 +138,8 @@ def log_ood_calibration_results(
             "ood/suggested_cosine_threshold": report.suggested_cosine_threshold,
             "ood/fp_rate_knn": report.fp_rate_knn,
             "ood/suggested_knn_threshold": report.suggested_knn_threshold,
+            "ood/fp_rate_tfidf": report.fp_rate_tfidf,
+            "ood/suggested_tfidf_threshold": report.suggested_tfidf_threshold,
         }
     )
     wandb.finish()

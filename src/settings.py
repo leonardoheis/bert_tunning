@@ -91,6 +91,21 @@ class _Settings(BaseSettings):
     # evaluate-ood-calibration if the training corpus changes materially.
     OOD_KNN_DISTANCE_THRESHOLD: float = 26.125
     TARGET_FP_RATE: float = 0.01
+    # Uncalibrated placeholder, matching how OOD_COSINE_THRESHOLD/OOD_KNN_DISTANCE_THRESHOLD
+    # started before their first evaluate-ood-calibration --write-thresholds run. Run that
+    # command for any model using this signal before trusting it in production.
+    OOD_TFIDF_COSINE_THRESHOLD: float = 2.5
+    OOD_TFIDF_MAX_FEATURES: int = 5000
+    # Excludes terms appearing in over half the training corpus (shared legal boilerplate --
+    # "considerando", "por cuanto", etc.) from the TF-IDF vocabulary, so cosine distance isn't
+    # diluted by tokens every document has regardless of municipality or type.
+    OOD_TFIDF_MAX_DF: float = 0.5
+    # The corpus is mono-jurisdictional -- every training document is from this municipality.
+    # detect_foreign_municipality() flags a document as anomalous when it explicitly names a
+    # DIFFERENT one ("Municipalidad de <Name>" where Name != this), independent of the
+    # embedding/lexical OOD signals above, which a single mismatched proper noun can't
+    # reliably move (see the TF-IDF known-limitation note in CLAUDE.md).
+    OOD_TRAINED_MUNICIPALITY: str = "rosario"
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
@@ -15,6 +15,26 @@ def _as_float64_array(value: object) -> npt.NDArray[np.float64]:
 # Coerces/validates to a float64 ndarray at construction time — arbitrary_types_allowed=True
 # alone only checks isinstance(value, np.ndarray), silently accepting any dtype/shape.
 Float64Array = Annotated[npt.NDArray[np.float64], BeforeValidator(_as_float64_array)]
+
+
+class OodMetrics(BaseModel):
+    """Out-of-distribution scoring results — only present when a model has ood_stats.npz
+    loaded. Nested on PredictResult (rather than five flat Optional fields) so that
+    PredictResult.ood_metrics is None means exactly one thing — no ood_stats.npz loaded
+    for this model — and tfidf_cosine_z's own None means exactly one different thing —
+    this specific stats file predates the TF-IDF signal — instead of both reasons
+    colliding on the same flat None. See
+    docs/superpowers/specs/2026-07-15-ood-metrics-nesting-design.md for the full
+    rationale (found via a /stop-using-none audit)."""
+
+    model_config = ConfigDict(alias_generator=to_camel, frozen=True, populate_by_name=True)
+
+    mahalanobis_p_value: float
+    mahalanobis_p_value_theoretical: float
+    cosine_z: float
+    knn_distance: float
+    tfidf_cosine_z: float | None = None
+    in_distribution: bool
 
 
 class PredictResult(BaseModel):
@@ -33,14 +53,37 @@ class PredictResult(BaseModel):
     all_scores: dict[str, float] = {}
     filename: str = ""
     error: str = ""
-    mahalanobis_p_value: float | None = None
-    mahalanobis_p_value_theoretical: float | None = None
-    cosine_z: float | None = None
-    knn_distance: float | None = None
-    in_distribution: bool | None = None
+    ood_metrics: OodMetrics | None = None
     extracted_text: str = ""
     extractor_used: str = ""
     review_route: str = ""
+    foreign_municipality: str | None = None
+    foreign_municipality_context: str | None = None
+
+
+_OOD_METRIC_FIELDS = (
+    "mahalanobis_p_value",
+    "mahalanobis_p_value_theoretical",
+    "cosine_z",
+    "knn_distance",
+    "tfidf_cosine_z",
+    "in_distribution",
+)
+
+
+def flatten_predict_result(result: PredictResult) -> dict[str, object]:
+    """Flattens PredictResult.ood_metrics back into individual top-level keys, for
+    consumers that need one flat row per prediction (the predict-folder CSV, the W&B
+    predictions table) rather than a nested object -- pandas/wandb.Table don't
+    recursively flatten a nested dict column/cell, so without this every OOD score would
+    collapse into one unreadable stringified-dict value. None-fills every OOD field when
+    ood_metrics itself is None (no ood_stats.npz loaded), matching the same shape a
+    caller would have seen from the flat fields this replaced."""
+    row = result.model_dump(exclude={"ood_metrics"})
+    metrics = result.ood_metrics.model_dump() if result.ood_metrics is not None else {}
+    for field in _OOD_METRIC_FIELDS:
+        row[field] = metrics.get(field)
+    return row
 
 
 class CalibrationReport(BaseModel):
@@ -54,6 +97,8 @@ class CalibrationReport(BaseModel):
     suggested_maha_threshold: float
     suggested_cosine_threshold: float
     suggested_knn_threshold: float
+    fp_rate_tfidf: float = 0.0
+    suggested_tfidf_threshold: float = 0.0
 
 
 class ExtractionMetadata(BaseModel):
@@ -132,6 +177,30 @@ class ClassEmbeddingStats(BaseModel):
     mahalanobis_threshold_status: Literal["not_calibrated", "calibrated", "refused_degenerate"] = (
         "not_calibrated"
     )
+    # TF-IDF cosine-centroid signal (added 2026-07-14) -- a fourth OOD signal, independent
+    # of the three above, operating on raw lexical vocabulary instead of BERT-embedding
+    # space. Catches divergence the embedding-based signals structurally cannot (e.g. a
+    # document naming a different municipality but sharing the same document-type shape).
+    # An empty vocabulary/idf/centroids together means "this ood_stats.npz predates this
+    # feature" -- a real fitted vectorizer always has >=1 term, so empty is an unambiguous
+    # "not fitted" sentinel (no None needed: see stop-using-none's "Nothing here" case).
+    # The signal is skipped entirely in is_out_of_distribution, not treated as anomalous.
+    tfidf_vocabulary_terms: list[str] = []  # ordered; index = TF-IDF feature id
+    tfidf_idf: Float64Array = Field(default_factory=lambda: np.zeros(0))
+    tfidf_centroids: Float64Array = Field(default_factory=lambda: np.zeros((0, 0)))
+    # These two are plain floats (0.0/1.0 sentinels), NOT Optional, unlike tfidf_threshold
+    # below -- they're always produced together with tfidf_vocabulary_terms/tfidf_idf/
+    # tfidf_centroids in one compute_tfidf_stats() call, never independently set or
+    # independently checked, so a None here would just be a second, redundant way to
+    # express what tfidf_vocabulary_terms' emptiness already expresses (see stop-using-none:
+    # a reason nobody branches on isn't worth modeling). tfidf_threshold differs because
+    # it's set independently, later, by a separate calibration step.
+    tfidf_cosine_calibration_mean: float = 0.0
+    tfidf_cosine_calibration_std: float = 1.0  # never 0.0 -- avoids a divide-by-zero if
+    # ever read ungated, though every real caller already gates on tfidf_vocabulary_terms
+    # Per-model calibrated threshold, same role as cosine_threshold/knn_distance_threshold --
+    # no degenerate-guard status field needed, since that guard only ever applies to Mahalanobis.
+    tfidf_threshold: float | None = None
 
 
 class Hyperparams(BaseModel):

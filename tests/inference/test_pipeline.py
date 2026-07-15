@@ -17,7 +17,7 @@ from src.inference.classify import (
     is_out_of_distribution,
 )
 from src.inference.pipeline import predict_pdf
-from src.ood import save_stats
+from src.ood import compute_tfidf_stats, save_stats
 from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
 from src.settings import Settings
 
@@ -172,6 +172,36 @@ def test_is_out_of_distribution_true_when_knn_distance_is_nan() -> None:
     assert is_out_of_distribution(scores, thresholds) is True
 
 
+def test_is_out_of_distribution_false_when_tfidf_signal_absent_and_others_pass() -> None:
+    # tfidf_cosine_z=nan (signal not available for this model) must not make the document
+    # anomalous by itself -- NaN here means "skip, fail open," the OPPOSITE of
+    # knn_distance's NaN, which means "fail closed, treat as anomalous." The two NaNs
+    # represent different situations (whole-model signal absence vs. one document's
+    # predicted class having zero training points) and are handled with opposite polarity
+    # on purpose -- see the Global Constraints note in this plan.
+    scores = OodScores(
+        mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=float("nan")
+    )
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    assert is_out_of_distribution(scores, thresholds) is False
+
+
+def test_is_out_of_distribution_true_when_tfidf_z_exceeds_threshold() -> None:
+    scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=10.0)
+    thresholds = OodThresholds(
+        mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0, tfidf_cosine_z=2.5
+    )
+    assert is_out_of_distribution(scores, thresholds) is True
+
+
+def test_is_out_of_distribution_false_when_tfidf_z_below_threshold() -> None:
+    scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=1.0)
+    thresholds = OodThresholds(
+        mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0, tfidf_cosine_z=2.5
+    )
+    assert is_out_of_distribution(scores, thresholds) is False
+
+
 def test_confidence_tier_from_confidence_at_or_above_threshold_is_confident() -> None:
     assert ConfidenceTier.from_confidence(0.70, 0.70) is ConfidenceTier.CONFIDENT
     assert ConfidenceTier.from_confidence(0.90, 0.70) is ConfidenceTier.CONFIDENT
@@ -249,9 +279,7 @@ def test_predict_text_without_stats_leaves_ood_fields_none() -> None:
     clf = _make_mock_classifier()
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
-    assert result.mahalanobis_p_value is None
-    assert result.cosine_z is None
-    assert result.in_distribution is None
+    assert result.ood_metrics is None
 
 
 def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
@@ -272,11 +300,7 @@ def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
     )
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
-    assert result.mahalanobis_p_value is None
-    assert result.mahalanobis_p_value_theoretical is None
-    assert result.cosine_z is None
-    assert result.knn_distance is None
-    assert result.in_distribution is None
+    assert result.ood_metrics is None
 
 
 def test_predict_text_with_stats_populates_ood_fields() -> None:
@@ -284,10 +308,43 @@ def test_predict_text_with_stats_populates_ood_fields() -> None:
     clf._ood_stats = _make_stats()  # noqa: SLF001
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
-    assert isinstance(result.mahalanobis_p_value, float)
-    assert isinstance(result.mahalanobis_p_value_theoretical, float)
-    assert isinstance(result.cosine_z, float)
-    assert isinstance(result.in_distribution, bool)
+    assert result.ood_metrics is not None
+    assert isinstance(result.ood_metrics.mahalanobis_p_value, float)
+    assert isinstance(result.ood_metrics.mahalanobis_p_value_theoretical, float)
+    assert isinstance(result.ood_metrics.cosine_z, float)
+    assert isinstance(result.ood_metrics.in_distribution, bool)
+
+
+def test_predict_text_attaches_tfidf_cosine_z_when_available() -> None:
+    clf = _make_mock_classifier()
+    texts = ["decreto rosario municipal"] * 5 + ["ordenanza cordoba concejo"] * 5
+    labels = [0] * 5 + [1] * 5
+    tfidf = compute_tfidf_stats(texts, labels, ["decreto", "ordenanza"], max_features=20)
+    clf._ood_stats = _make_stats().model_copy(  # noqa: SLF001
+        update={
+            "tfidf_vocabulary_terms": tfidf.vocabulary_terms,
+            "tfidf_idf": tfidf.idf,
+            "tfidf_centroids": tfidf.centroids,
+            "tfidf_cosine_calibration_mean": tfidf.cosine_calibration_mean,
+            "tfidf_cosine_calibration_std": tfidf.cosine_calibration_std,
+        }
+    )
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("decreto rosario municipal")
+    # OodMetrics.tfidf_cosine_z stays Optional -- predict_text is where the internal NaN
+    # sentinel translates back to None, same as save_stats/load_stats already do at the
+    # .npz storage boundary for the scalar threshold fields.
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.tfidf_cosine_z is not None
+
+
+def test_predict_text_leaves_tfidf_cosine_z_none_when_stats_predate_feature() -> None:
+    clf = _make_mock_classifier()
+    clf._ood_stats = _make_stats()  # noqa: SLF001 -- tfidf_vocabulary_terms defaults to []
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.tfidf_cosine_z is None
 
 
 def test_predict_text_mahalanobis_p_value_is_empirical() -> None:
@@ -298,7 +355,8 @@ def test_predict_text_mahalanobis_p_value_is_empirical() -> None:
     # distance >= 0).
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
-    assert result.mahalanobis_p_value == pytest.approx(1.0)
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.mahalanobis_p_value == pytest.approx(1.0)
 
 
 def test_predict_text_in_distribution_when_matching_a_centroid_exactly() -> None:
@@ -308,7 +366,8 @@ def test_predict_text_in_distribution_when_matching_a_centroid_exactly() -> None
     # first centroid in _make_stats() — i.e. a perfectly in-distribution point.
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
-    assert result.in_distribution is True
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.in_distribution is True
     assert result.review_route == "accept"
 
 
@@ -322,7 +381,8 @@ def test_predict_text_review_route_llm_judge_when_uncertain_and_in_distribution(
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.certain is False
-    assert result.in_distribution is True
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.in_distribution is True
     assert result.review_route == "llm_judge"
 
 
@@ -330,7 +390,7 @@ def test_predict_text_review_route_accept_without_ood_stats() -> None:
     clf = _make_mock_classifier()
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
-    assert result.in_distribution is None
+    assert result.ood_metrics is None
     assert result.review_route == "accept"
 
 
@@ -340,7 +400,7 @@ def test_predict_text_review_route_llm_judge_without_ood_stats_when_uncertain() 
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.certain is False
-    assert result.in_distribution is None
+    assert result.ood_metrics is None
     assert result.review_route == "llm_judge"
 
 
@@ -356,11 +416,10 @@ def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         clf.model.return_value.hidden_states = [far_embedding]
         result = clf.predict_text("anything")
-    assert result.mahalanobis_p_value is not None
-    assert result.cosine_z is not None
-    assert result.mahalanobis_p_value < Settings.OOD_MAHALANOBIS_P_THRESHOLD
-    assert result.cosine_z <= Settings.OOD_COSINE_THRESHOLD
-    assert result.in_distribution is False
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.mahalanobis_p_value < Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    assert result.ood_metrics.cosine_z <= Settings.OOD_COSINE_THRESHOLD
+    assert result.ood_metrics.in_distribution is False
     assert result.review_route == "human_review"
 
 
@@ -376,11 +435,10 @@ def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         clf.model.return_value.hidden_states = [embedding]
         result = clf.predict_text("anything")
-    assert result.mahalanobis_p_value is not None
-    assert result.cosine_z is not None
-    assert result.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
-    assert result.cosine_z > Settings.OOD_COSINE_THRESHOLD
-    assert result.in_distribution is False
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    assert result.ood_metrics.cosine_z > Settings.OOD_COSINE_THRESHOLD
+    assert result.ood_metrics.in_distribution is False
     assert result.review_route == "human_review"
 
 
@@ -392,13 +450,11 @@ def test_predict_text_flags_out_of_distribution_via_knn_only() -> None:
     # points are stored far away ([50]*8), so only the k-NN signal should fire.
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
-    assert result.mahalanobis_p_value is not None
-    assert result.cosine_z is not None
-    assert result.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
-    assert result.cosine_z <= Settings.OOD_COSINE_THRESHOLD
-    assert result.knn_distance is not None
-    assert result.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
-    assert result.in_distribution is False
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    assert result.ood_metrics.cosine_z <= Settings.OOD_COSINE_THRESHOLD
+    assert result.ood_metrics.knn_distance > Settings.OOD_KNN_DISTANCE_THRESHOLD
+    assert result.ood_metrics.in_distribution is False
     assert result.review_route == "human_review"
 
 
@@ -411,9 +467,9 @@ def test_predict_text_flags_out_of_distribution_when_knn_distance_is_nan() -> No
     # silently pass as in-distribution; it must instead be treated as anomalous (fail safe).
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
-    assert result.knn_distance is not None
-    assert np.isnan(result.knn_distance)
-    assert result.in_distribution is False
+    assert result.ood_metrics is not None
+    assert np.isnan(result.ood_metrics.knn_distance)
+    assert result.ood_metrics.in_distribution is False
     assert result.review_route == "human_review"
 
 

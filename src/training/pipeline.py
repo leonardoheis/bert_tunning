@@ -162,9 +162,12 @@ def run(
         train_embeddings,
         train_df["label_id"].tolist(),
         list(le.classes_),
+        texts=train_df["text"].tolist(),
         n_components=Settings.OOD_PCA_COMPONENTS,
         model_type=model.config.model_type,
         model_hidden_size=model.config.hidden_size,
+        max_tfidf_features=Settings.OOD_TFIDF_MAX_FEATURES,
+        max_tfidf_max_df=Settings.OOD_TFIDF_MAX_DF,
     )
     log.info("Computed OOD stats from %d training embeddings", train_embeddings.shape[0])
 
