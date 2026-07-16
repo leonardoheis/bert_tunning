@@ -48,10 +48,15 @@ Two fields, not one, because the user explicitly wants a ready-to-filter compari
 Computed once, right after `svm_scores_result` (already computed today, before either `decide_review_route()` call):
 
 ```python
-svm_predicted_label = svm_top_label(svm_scores_result) if svm_scores_result is not None else None
-svm_agrees_with_prediction = svm_predicted_label is None or svm_predicted_label == label
+if svm_scores_result is None:
+    svm_predicted_label, svm_agrees_with_prediction = None, True
+else:
+    svm_predicted_label = svm_top_label(svm_scores_result)
+    svm_agrees_with_prediction = svm_predicted_label == label
 classifier_disagreement = not svm_agrees_with_prediction
 ```
+
+One `None` check, not two — the earlier version checked "does SVM data exist" twice, via two different sentinels (`svm_scores_result is not None`, then `svm_predicted_label is None`) for what's really the same underlying fact. Branching once on the actual source of truth (`svm_scores_result`) makes that explicit instead of re-deriving it from a value computed one line later.
 
 **Both** `decide_review_route()` call sites inside `predict_text()` need `classifier_disagreement` passed through — not just the second one. The first call (before OOD stats are even checked) is what actually gets returned when `self._ood_stats is None`; missing it there would silently drop the disagreement signal for any model without `ood_stats.npz`.
 
