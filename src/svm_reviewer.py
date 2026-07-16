@@ -82,3 +82,10 @@ def svm_scores(embedding: npt.NDArray[np.float64], classifiers: dict[str, SVC]) 
     downstream Classiflow agent to weigh itself."""
     point = embedding.reshape(1, -1)
     return {name: float(svc.decision_function(point)[0]) for name, svc in classifiers.items()}
+
+
+def svm_top_label(scores: dict[str, float]) -> str:
+    """The class whose one-vs-rest SVM scored this embedding highest -- the SVM
+    reviewer's own "prediction," for comparison against softmax's argmax. See
+    docs/superpowers/specs/2026-07-16-svm-softmax-disagreement-design.md."""
+    return max(scores, key=lambda name: scores[name])

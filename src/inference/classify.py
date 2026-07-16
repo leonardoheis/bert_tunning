@@ -33,7 +33,7 @@ from src.ood import (
 )
 from src.schema import ClassEmbeddingStats, OodMetrics, PredictResult
 from src.settings import Settings
-from src.svm_reviewer import load_svm_classifiers
+from src.svm_reviewer import load_svm_classifiers, svm_top_label
 from src.svm_reviewer import svm_scores as compute_svm_scores
 
 log = logging.getLogger(__name__)
@@ -121,16 +121,26 @@ def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool
     return maha_anomalous or cosine_anomalous or knn_anomalous or tfidf_anomalous
 
 
-def decide_review_route(*, confidence_tier: ConfidenceTier, ood_evidence: OodEvidence) -> str:
+def decide_review_route(
+    *,
+    confidence_tier: ConfidenceTier,
+    ood_evidence: OodEvidence,
+    classifier_disagreement: bool = False,
+) -> str:
     """Route a prediction to "accept", "llm_judge", or "human_review".
 
     An OOD signal firing (ANOMALOUS) always wins and routes to a human -- an LLM judge
-    can't be trusted to catch what already fooled the classifier itself. Otherwise the
-    softmax confidence tier alone decides: confident predictions are accepted, uncertain
-    ones get a cheap LLM-judge second opinion. See "Review routing" in README.md for the
-    full decision table and rationale.
+    can't be trusted to catch what already fooled the classifier itself. A classifier
+    disagreement (the SVM reviewer's top pick doesn't match softmax's) is a second,
+    independent trigger for the same lane -- a different failure mode than OOD (the
+    document IS a known class, the two classifiers just disagree which one), but the
+    same "route to a human regardless of confidence" rationale applies: a confident-but-
+    wrong prediction is the dangerous case either way. Otherwise the softmax confidence
+    tier alone decides: confident predictions are accepted, uncertain ones get a cheap
+    LLM-judge second opinion. See "Review routing" in README.md for the full decision
+    table and rationale.
     """
-    if ood_evidence is OodEvidence.ANOMALOUS:
+    if ood_evidence is OodEvidence.ANOMALOUS or classifier_disagreement:
         return "human_review"
     return "accept" if confidence_tier is ConfidenceTier.CONFIDENT else "llm_judge"
 
@@ -337,20 +347,27 @@ class BertTunningClassifier:
 
         confidence_tier = ConfidenceTier.from_confidence(confidence, self.threshold)
         certain = confidence_tier is ConfidenceTier.CONFIDENT
-        svm_scores_result = (
-            compute_svm_scores(cls_embedding, self._svm_classifiers)
-            if self._svm_classifiers is not None
-            else None
-        )
+        if self._svm_classifiers is None:
+            svm_scores_result: dict[str, float] = {}
+            svm_predicted_label, svm_agrees_with_prediction = "", True
+        else:
+            svm_scores_result = compute_svm_scores(cls_embedding, self._svm_classifiers)
+            svm_predicted_label = svm_top_label(svm_scores_result)
+            svm_agrees_with_prediction = svm_predicted_label == label
+        classifier_disagreement = not svm_agrees_with_prediction
         result = PredictResult(
             label=label,
             confidence=round(confidence, 4),
             certain=certain,
             all_scores={id2label[i]: round(float(p), 4) for i, p in enumerate(probs)},
             review_route=decide_review_route(
-                confidence_tier=confidence_tier, ood_evidence=OodEvidence.NOT_ANOMALOUS
+                confidence_tier=confidence_tier,
+                ood_evidence=OodEvidence.NOT_ANOMALOUS,
+                classifier_disagreement=classifier_disagreement,
             ),
             svm_scores=svm_scores_result,
+            svm_predicted_label=svm_predicted_label,
+            svm_agrees_with_prediction=svm_agrees_with_prediction,
         )
 
         if self._ood_stats is None:
@@ -400,6 +417,7 @@ class BertTunningClassifier:
                 "review_route": decide_review_route(
                     confidence_tier=confidence_tier,
                     ood_evidence=OodEvidence.from_in_distribution(in_distribution=in_distribution),
+                    classifier_disagreement=classifier_disagreement,
                 ),
             }
         )

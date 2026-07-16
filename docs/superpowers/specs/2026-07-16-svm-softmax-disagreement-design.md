@@ -32,14 +32,19 @@ Pure function, no I/O, same placement rationale as `svm_scores()` itself.
 
 ### New `PredictResult` fields (`src/schema.py`)
 
+**Revised 2026-07-16, same day as the original draft below:** initially specified as `svm_predicted_label: str | None = None`. Reviewed against `/stop-using-none` a second time, harder — the question raised was "why not a `Literal` of class names plus a sentinel, instead of `None`?" That's not achievable here: the class list isn't fixed at type-checking time (it varies per trained model — 8 classes for one checkpoint, 9 for another), so the field's static type has to stay a general `str` regardless of which sentinel is chosen. Given that, a same-typed string sentinel (e.g. `"not_a_class"`) is strictly worse than `None`: it loses `mypy`'s type-level distinction between "absent" and "a real value" (both are just `str` to the type checker), and it risks colliding with a genuine future class name sharing that string. An **empty string** (`""`) avoids both problems — it's structurally impossible as a real class name (folder-derived, never empty) — so the field landed on a plain, non-Optional `str` with `""` as the empty-signal value, not `None` and not a named sentinel:
+
 ```python
-svm_predicted_label: str | None = None
+svm_scores: dict[str, float] = {}
+svm_predicted_label: str = ""
 svm_agrees_with_prediction: bool = True
 ```
 
-`svm_predicted_label` is `None` when `svm_scores` itself is `None` (no `svm_classifiers.joblib` loaded) — same graceful-degradation pattern as every other optional signal in this schema, a genuine single-meaning artifact-presence boundary.
+`svm_scores` itself was also revised from `dict[str, float] | None` — "no scores" has a natural empty-collection representation (an empty dict), the same reasoning `all_scores` (already non-`Optional` in this exact class) already followed; there's no information lost by dropping `None` here, since `{}` is unambiguous and no caller needs a third state.
 
-`svm_agrees_with_prediction` is deliberately a **plain `bool`, not `bool | None`.** A tri-state here would be a field encoding two different questions at once: "was there SVM evidence at all" and "did it agree." The first question already has an owner — `svm_predicted_label`/`svm_scores` being `None` — so `svm_agrees_with_prediction` doesn't need to also carry it. Nothing in this design branches differently on "no signal" vs. "agreed" (both mean "don't flag a disagreement"), which is exactly the test for whether a `None` state is earning its complexity: no caller does anything different for that reason, so it isn't a reason worth its own state. Defaults to `True` (no disagreement) when there's no SVM signal — the same permissive-default-on-missing-artifact pattern already used everywhere else in this codebase (`OodEvidence.from_in_distribution(None)` → `NOT_ANOMALOUS`).
+`svm_predicted_label` is `""` when `svm_scores` itself is `{}` (no `svm_classifiers.joblib` loaded) — same graceful-degradation *meaning* as before, just represented without `None`.
+
+`svm_agrees_with_prediction` is deliberately a **plain `bool`, not `bool | None`.** A tri-state here would be a field encoding two different questions at once: "was there SVM evidence at all" and "did it agree." The first question already has an owner — `svm_predicted_label` being `""` — so `svm_agrees_with_prediction` doesn't need to also carry it. Nothing in this design branches differently on "no signal" vs. "agreed" (both mean "don't flag a disagreement"), which is exactly the test for whether a `None` state is earning its complexity: no caller does anything different for that reason, so it isn't a reason worth its own state. Defaults to `True` (no disagreement) when there's no SVM signal — the same permissive-default-on-missing-artifact pattern already used everywhere else in this codebase (`OodEvidence.from_in_distribution(None)` → `NOT_ANOMALOUS`).
 
 Two fields, not one, because the user explicitly wants a ready-to-filter comparison column (`svm_agrees_with_prediction`) *and* wants to see what the SVM thought instead when it disagrees (`svm_predicted_label`) — mirrors the existing `foreign_municipality` + `foreign_municipality_context` pairing (a flag/value plus its supporting detail).
 
@@ -48,15 +53,17 @@ Two fields, not one, because the user explicitly wants a ready-to-filter compari
 Computed once, right after `svm_scores_result` (already computed today, before either `decide_review_route()` call):
 
 ```python
-if svm_scores_result is None:
-    svm_predicted_label, svm_agrees_with_prediction = None, True
+if self._svm_classifiers is None:
+    svm_scores_result: dict[str, float] = {}
+    svm_predicted_label, svm_agrees_with_prediction = "", True
 else:
+    svm_scores_result = compute_svm_scores(cls_embedding, self._svm_classifiers)
     svm_predicted_label = svm_top_label(svm_scores_result)
     svm_agrees_with_prediction = svm_predicted_label == label
 classifier_disagreement = not svm_agrees_with_prediction
 ```
 
-One `None` check, not two — the earlier version checked "does SVM data exist" twice, via two different sentinels (`svm_scores_result is not None`, then `svm_predicted_label is None`) for what's really the same underlying fact. Branching once on the actual source of truth (`svm_scores_result`) makes that explicit instead of re-deriving it from a value computed one line later.
+Branches on `self._svm_classifiers is None` (the actual artifact-presence source of truth) — one check, not several. An earlier draft of this same snippet checked "does SVM data exist" twice, via two different sentinels (`svm_scores_result is not None`, then `svm_predicted_label is None`) for what's really the same underlying fact; branching once on the actual source of truth avoided re-deriving it from a value computed a line later. That reasoning still holds even though `svm_scores_result`/`svm_predicted_label` no longer use `None` at all — `self._svm_classifiers` (which does stay `dict[str, SVC] | None`, a genuine artifact-presence boundary) is the one fact everything else in this block derives from.
 
 **Both** `decide_review_route()` call sites inside `predict_text()` need `classifier_disagreement` passed through — not just the second one. The first call (before OOD stats are even checked) is what actually gets returned when `self._ood_stats is None`; missing it there would silently drop the disagreement signal for any model without `ood_stats.npz`.
 
@@ -90,7 +97,7 @@ Defaults to `False` so existing callers/tests that don't pass it see no behavior
 ### API, CLI, W&B plumbing
 
 - `PredictResponse` (`src/api/routes/predict/schemas.py`): add `svm_predicted_label`/`svm_agrees_with_prediction`; wire through `_to_predict_response()` in `endpoints.py`.
-- `predict-folder` CSV: both fields are scalars (`str | None`, `bool`), so — unlike `svm_scores` (a dict) — they flow into the CSV automatically via `flatten_predict_result()`'s full `model_dump()`. **No special case needed there.**
+- `predict-folder` CSV: both fields are scalars (`str`, `bool`), so they flow into the CSV automatically via `flatten_predict_result()`'s full `model_dump()`. **No special case needed there.**
 - `predict-folder --log-wandb` table: **does need explicit plumbing** — add both to `_PREDICTION_COLUMNS` in `src/wandb.py`. This is the exact gap already found and fixed once for `svm_scores` in this session; the CSV and the W&B table do not share one automatic path, only the CSV does.
 - `predict` CLI single-document output (`src/cli/predict.py`): print alongside the existing "SVM reviewer" section, e.g. a line noting disagreement when `not svm_agrees_with_prediction`.
 
@@ -104,7 +111,7 @@ Defaults to `False` so existing callers/tests that don't pass it see no behavior
 
 - `svm_top_label()`: returns the correct max-margin class.
 - `decide_review_route()`: `classifier_disagreement=True` forces `human_review` regardless of `confidence_tier`/`ood_evidence` (including when both would otherwise say `accept`); `classifier_disagreement=False` preserves all existing routing behavior (regression guard for the default-value backward-compatibility claim above).
-- `predict_text()`: `svm_predicted_label` populated when SVM classifiers are loaded, `None` when absent (and `svm_agrees_with_prediction` correctly defaults `True` in that absent case — regression guard for the no-tri-state decision above); disagreement forces `human_review` even when `certain=True` and `in_distribution=True`; agreement doesn't suppress an OOD-driven `human_review` (OOD and disagreement are independent triggers for the same lane, not mutually exclusive).
+- `predict_text()`: `svm_predicted_label` populated when SVM classifiers are loaded, `""` when absent (and `svm_agrees_with_prediction` correctly defaults `True` in that absent case — regression guard for the no-tri-state decision above); disagreement forces `human_review` even when `certain=True` and `in_distribution=True`; agreement doesn't suppress an OOD-driven `human_review` (OOD and disagreement are independent triggers for the same lane, not mutually exclusive).
 - API test: response includes both new camelCase fields.
 - `src/wandb.py`: both new fields present in the `predict-folder --log-wandb` table (the same regression pattern used to catch `svm_scores`' earlier omission).
 

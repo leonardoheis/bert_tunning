@@ -61,11 +61,20 @@ class PredictResult(BaseModel):
     foreign_municipality_context: str | None = None
     # Per-class one-vs-rest SVM decision-function margins, independent of ood_metrics --
     # not an OOD signal, evidence about per-class membership for the downstream Classiflow
-    # agent. None when svm_classifiers.joblib isn't present next to the loaded model, same
-    # as ood_metrics itself is None when ood_stats.npz is missing. Not nested inside
-    # OodMetrics since it doesn't share that model's None-disambiguation reason. See
-    # docs/superpowers/specs/2026-07-15-svm-independent-reviewer-design.md.
-    svm_scores: dict[str, float] | None = None
+    # agent. Empty dict, not None, when svm_classifiers.joblib isn't present next to the
+    # loaded model -- "nothing here" has a natural empty-collection representation, same as
+    # all_scores above. See docs/superpowers/specs/2026-07-15-svm-independent-reviewer-design.md.
+    svm_scores: dict[str, float] = {}
+    # The SVM reviewer's own top pick (max-margin class) -- "" only when svm_scores itself
+    # is empty (no svm_classifiers.joblib); a real class name is never empty, so "" cannot
+    # collide with genuine data. svm_agrees_with_prediction is a plain bool, not bool | None:
+    # "was there SVM evidence at all" already has an owner (this field being ""), so the
+    # agreement flag doesn't need to also carry that meaning -- it defaults to True (no
+    # disagreement) when there's no SVM signal, the same permissive-default-on-missing-
+    # artifact pattern as OodEvidence.from_in_distribution(None). See
+    # docs/superpowers/specs/2026-07-16-svm-softmax-disagreement-design.md.
+    svm_predicted_label: str = ""
+    svm_agrees_with_prediction: bool = True
 
 
 _OOD_METRIC_FIELDS = (

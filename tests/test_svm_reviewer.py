@@ -10,6 +10,7 @@ from src.svm_reviewer import (
     load_svm_classifiers,
     save_svm_classifiers,
     svm_scores,
+    svm_top_label,
 )
 
 
@@ -45,6 +46,10 @@ def test_svm_scores_prefers_the_class_the_point_actually_resembles() -> None:
     # than for ordenanza (centered at 5).
     scores = svm_scores(np.zeros(8), classifiers)
     assert scores["decreto"] > scores["ordenanza"]
+
+
+def test_svm_top_label_returns_the_max_margin_class() -> None:
+    assert svm_top_label({"decreto": -0.5, "ordenanza": 1.2, "otro": 0.1}) == "ordenanza"
 
 
 def test_evaluate_svm_classifiers_returns_one_score_per_class() -> None:

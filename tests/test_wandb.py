@@ -167,6 +167,31 @@ def test_log_predict_folder_results_table_includes_svm_scores_column() -> None:
     assert _logged_row(mock_table_cls, mock_table)["svm_scores"] == expected_svm_scores
 
 
+def test_log_predict_folder_results_table_includes_svm_disagreement_columns() -> None:
+    results = [
+        PredictResult(
+            filename="a.pdf",
+            label="decreto",
+            confidence=0.9,
+            certain=True,
+            svm_predicted_label="ordenanza",
+            svm_agrees_with_prediction=False,
+        ),
+    ]
+    mock_table = MagicMock()
+    with (
+        patch("src.wandb.wandb.init"),
+        patch("src.wandb.wandb.Table", return_value=mock_table) as mock_table_cls,
+        patch("src.wandb.wandb.log"),
+        patch("src.wandb.wandb.finish"),
+    ):
+        log_predict_folder_results(results, model_path="fake/model", folder_path="fake/folder")
+
+    row = _logged_row(mock_table_cls, mock_table)
+    assert row["svm_predicted_label"] == "ordenanza"
+    assert row["svm_agrees_with_prediction"] is False
+
+
 def test_log_predict_folder_results_table_includes_theoretical_mahalanobis_column() -> None:
     expected_theoretical_p = 0.1708
     results = [

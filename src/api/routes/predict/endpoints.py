@@ -60,6 +60,8 @@ def _to_predict_response(result: PredictResult) -> PredictResponse:
         foreign_municipality=data["foreign_municipality"],
         foreign_municipality_context=data["foreign_municipality_context"],
         svm_scores=data["svm_scores"],
+        svm_predicted_label=data["svm_predicted_label"],
+        svm_agrees_with_prediction=data["svm_agrees_with_prediction"],
     )
 
 

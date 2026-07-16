@@ -10,14 +10,18 @@ from src.schema import (
 )
 
 
-def test_predict_result_svm_scores_defaults_to_none() -> None:
-    assert PredictResult(label="decreto", confidence=0.9, certain=True).svm_scores is None
+def test_predict_result_svm_scores_defaults_to_empty_dict() -> None:
+    assert PredictResult(label="decreto", confidence=0.9, certain=True).svm_scores == {}
+
+
+def test_predict_result_svm_predicted_label_defaults_to_empty_string() -> None:
+    assert PredictResult(label="decreto", confidence=0.9, certain=True).svm_predicted_label == ""
 
 
 def test_predict_result_svm_scores_populates_via_snake_case_kwarg() -> None:
     # Regression guard: PredictResult has alias_generator=to_camel -- without
     # populate_by_name=True, a snake_case svm_scores= kwarg would silently drop to the
-    # default (None) instead of raising. See CLAUDE.md's populate_by_name gotcha.
+    # default ({}) instead of raising. See CLAUDE.md's populate_by_name gotcha.
     result = PredictResult(
         label="decreto", confidence=0.9, certain=True, svm_scores={"decreto": 1.2}
     )

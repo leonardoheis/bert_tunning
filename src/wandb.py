@@ -30,6 +30,8 @@ _PREDICTION_COLUMNS = [
     "extractor_used",
     "error",
     "svm_scores",
+    "svm_predicted_label",
+    "svm_agrees_with_prediction",
 ]
 
 

@@ -17,4 +17,6 @@ class PredictResponse(BaseSchema):
     review_route: str = ""
     foreign_municipality: str | None = None
     foreign_municipality_context: str | None = None
-    svm_scores: dict[str, float] | None = None
+    svm_scores: dict[str, float] = Field(default_factory=dict)
+    svm_predicted_label: str = ""
+    svm_agrees_with_prediction: bool = True
