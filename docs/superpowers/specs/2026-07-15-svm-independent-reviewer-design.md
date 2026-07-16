@@ -63,6 +63,8 @@ A twin of `_validate_ood_stats_class_mapping()` for the SVM classifiers dict, ch
 
 **`predict`/`predict-folder` CLI output** (`src/cli/predict.py`): print/export `svm_scores` the same way `all_scores` is already handled.
 
+**CSV and W&B — no extra plumbing needed.** `flatten_predict_result()` (`src/schema.py`) is the single function that builds both the `predict-folder` CSV row and the `predict-folder --log-wandb` table row — it does `result.model_dump(exclude={"ood_metrics"})`, so any new top-level `PredictResult` field, including `svm_scores`, flows into both automatically once added to the schema. No change needed to `flatten_predict_result()` itself, `src/wandb.py`, or the CSV export path.
+
 **API** (`src/api/routes/predict/schemas.py`): add `svmScores` (camelCase alias) to the response schema. Remember the `populate_by_name=True` gotcha already documented in `CLAUDE.md` for any Pydantic model with `alias_generator=to_camel` constructed via snake_case kwargs.
 
 ## Out of scope
