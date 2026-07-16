@@ -85,7 +85,7 @@ Defaults to `False` so existing callers/tests that don't pass it see no behavior
 ### API, CLI, W&B plumbing
 
 - `PredictResponse` (`src/api/routes/predict/schemas.py`): add `svm_predicted_label`/`svm_agrees_with_prediction`; wire through `_to_predict_response()` in `endpoints.py`.
-- `predict-folder` CSV: both fields are scalars (`str | None`, `bool | None`), so — unlike `svm_scores` (a dict) — they flow into the CSV automatically via `flatten_predict_result()`'s full `model_dump()`. **No special case needed there.**
+- `predict-folder` CSV: both fields are scalars (`str | None`, `bool`), so — unlike `svm_scores` (a dict) — they flow into the CSV automatically via `flatten_predict_result()`'s full `model_dump()`. **No special case needed there.**
 - `predict-folder --log-wandb` table: **does need explicit plumbing** — add both to `_PREDICTION_COLUMNS` in `src/wandb.py`. This is the exact gap already found and fixed once for `svm_scores` in this session; the CSV and the W&B table do not share one automatic path, only the CSV does.
 - `predict` CLI single-document output (`src/cli/predict.py`): print alongside the existing "SVM reviewer" section, e.g. a line noting disagreement when `not svm_agrees_with_prediction`.
 
