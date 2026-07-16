@@ -29,6 +29,9 @@ _PREDICTION_COLUMNS = [
     "review_route",
     "extractor_used",
     "error",
+    "svm_scores",
+    "svm_predicted_label",
+    "svm_agrees_with_prediction",
 ]
 
 
@@ -69,10 +72,68 @@ class WandbLogger:
             }
         )
 
+    def log_svm_results(
+        self, svm_val_accuracy: dict[str, float], train_class_counts: dict[str, int]
+    ) -> None:
+        """Logs into the training run already opened by init() -- unlike
+        log_svm_classifiers_results below, which is compute-svm-classifiers' standalone,
+        one-shot equivalent (its own init/finish, no prior training run to attach to)."""
+        if not self._enabled:
+            return
+        wandb.log(_svm_results_payload(svm_val_accuracy, train_class_counts))
+
     def finish(self) -> None:
         if not self._enabled:
             return
         wandb.finish()
+
+
+def _svm_results_payload(
+    svm_val_accuracy: dict[str, float], train_class_counts: dict[str, int]
+) -> dict[str, object]:
+    """Shared by WandbLogger.log_svm_results (a training run's already-open W&B run) and
+    log_svm_classifiers_results (compute-svm-classifiers' own one-shot run) -- same
+    per-class table + scalar metrics either way, so a dashboard comparing a `train` run
+    against a `compute-svm-classifiers` backfill run for the same model sees identical
+    shapes. train_class_counts sits alongside the accuracy in the same table because a low
+    accuracy is only explainable next to how many training examples that class actually
+    had -- an unexplained number invites the wrong conclusion (e.g. "the SVM is bad at this
+    class") when the real story is "this class had 37 training documents."""
+    table = wandb.Table(columns=["class", "train_samples", "held_out_balanced_accuracy"])
+    for class_name, accuracy in svm_val_accuracy.items():
+        table.add_data(class_name, train_class_counts[class_name], accuracy)
+    payload: dict[str, object] = {
+        "svm/per_class_accuracy": table,
+        "svm/mean_balanced_accuracy": sum(svm_val_accuracy.values()) / len(svm_val_accuracy),
+        "svm/min_balanced_accuracy": min(svm_val_accuracy.values()),
+    }
+    payload.update({f"svm/balanced_accuracy/{name}": acc for name, acc in svm_val_accuracy.items()})
+    return payload
+
+
+def log_svm_classifiers_results(
+    *,
+    model_path: str,
+    cache_path: str,
+    model_key: str,
+    svm_val_accuracy: dict[str, float],
+    train_class_counts: dict[str, int],
+) -> None:
+    """Log a compute-svm-classifiers backfill run's per-class held-out balanced accuracy
+    (and training sample counts, for context) to W&B."""
+    wandb.init(
+        entity=Settings.WANDB_ENTITY,
+        project=Settings.WANDB_PROJECT,
+        job_type="compute-svm-classifiers",
+        config={"model_path": model_path, "cache_path": cache_path, "model_key": model_key},
+    )
+    wandb.log(_svm_results_payload(svm_val_accuracy, train_class_counts))
+    wandb.finish()
+    log.info(
+        "Logged SVM reviewer results to W&B (%s/%s)",
+        Settings.WANDB_ENTITY,
+        Settings.WANDB_PROJECT,
+    )
 
 
 def log_predict_folder_results(

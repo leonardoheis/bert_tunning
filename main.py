@@ -6,6 +6,7 @@ from src.cli.clean import clean_cmd
 from src.cli.ood_calibration import evaluate_ood_calibration_cmd
 from src.cli.ood_stats import compute_ood_stats_cmd
 from src.cli.predict import predict_cmd, predict_folder_cmd
+from src.cli.svm_classifiers import compute_svm_classifiers_cmd
 from src.cli.train import train_cmd
 from src.settings import Settings
 
@@ -21,6 +22,7 @@ cli.add_command(predict_folder_cmd, name="predict-folder")
 cli.add_command(clean_cmd, name="clean")
 cli.add_command(compute_ood_stats_cmd, name="compute-ood-stats")
 cli.add_command(evaluate_ood_calibration_cmd, name="evaluate-ood-calibration")
+cli.add_command(compute_svm_classifiers_cmd, name="compute-svm-classifiers")
 
 
 @cli.command("serve")

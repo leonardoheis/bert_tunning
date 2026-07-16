@@ -178,15 +178,18 @@ Lower Mahalanobis/higher cosine/higher k-NN thresholds are stricter (fewer false
 
 ### Review routing
 
-`PredictResult.review_route` turns the confidence (`certain`) and OOD (`in_distribution`) signals into one of three actionable lanes, so a human doesn't have to eyeball every field on every prediction to decide what to do with it:
+`PredictResult.review_route` turns the confidence (`certain`), OOD (`in_distribution`), and SVM-agreement (`svm_agrees_with_prediction`) signals into one of three actionable lanes, so a human doesn't have to eyeball every field on every prediction to decide what to do with it:
 
-| `certain` | `in_distribution` | `review_route` | Rationale |
-|---|---|---|---|
-| — | `False` | `human_review` | An OOD signal fired — the document doesn't resemble anything the model trained on. An LLM judge can't be trusted to catch what already fooled the classifier, so this always routes to a human, regardless of how confident the softmax was. |
-| `True` | `True` or `None` (no `ood_stats.npz`) | `accept` | Confident, and no evidence the document is out of distribution. Auto-accept. |
-| `False` | `True` or `None` | `llm_judge` | The document looks like a known type, but the model itself is unsure which one — a cheap LLM second opinion is proportionate to the ambiguity. |
+| `certain` | `in_distribution` | SVM agrees | `review_route` | Rationale |
+|---|---|---|---|---|
+| — | `False` | — | `human_review` | An OOD signal fired — the document doesn't resemble anything the model trained on. An LLM judge can't be trusted to catch what already fooled the classifier, so this always routes to a human, regardless of how confident the softmax was. |
+| — | `True`/`None` | `False` | `human_review` | The document IS in-distribution, but the independent SVM reviewer's own top pick disagrees with softmax's — a different failure mode than OOD (misclassification *among* known classes, not "this isn't any known class"), routed to the same lane for the same reason: a confident-but-wrong prediction is the dangerous case either way. |
+| `True` | `True`/`None` | `True`/no signal | `accept` | Confident, in-distribution, and (if an SVM reviewer is loaded) the two classifiers agree. Auto-accept. |
+| `False` | `True`/`None` | `True`/no signal | `llm_judge` | The document looks like a known type, but the model itself is unsure which one — a cheap LLM second opinion is proportionate to the ambiguity. |
 
 `decide_review_route()` (`src/inference/classify.py`) implements this and is unit-tested directly. It's attached to every `PredictResult`, so it shows up in the `predict-folder` CSV, the single-`predict` CLI output, the `/predict` API response, and the W&B predictions table with no extra flags needed. An unreadable/unextractable document (empty text) always gets `human_review` — there's no prediction to be confident about.
+
+**OOD and SVM disagreement are independent triggers for the same `human_review` lane, not mutually exclusive** — either one alone is enough, and both can fire together. `svm_agrees_with_prediction` defaults to `True` (no signal, don't trigger) when no `svm_classifiers.joblib` is loaded, so a model without the SVM reviewer sees no change in behavior.
 
 **This routing rule is intentionally coarse** (3 lanes from a boolean AND a boolean) — it doesn't distinguish "barely crossed one OOD threshold" from "every signal fired hard." If you need finer-grained triage within `human_review`, count how many of the three raw signals fired (0–3) as an ordinal severity score for queue ordering; that's not currently computed anywhere, so you'd read `mahalanobis_p_value`/`cosine_z`/`knn_distance` directly against their thresholds from the CSV/API output.
 
@@ -202,15 +205,16 @@ src/
 ├── ood.py              OOD math — compute_class_stats, mahalanobis_p_value, cosine_z_score, knn_mean_distance, compute_tfidf_stats/tfidf_cosine_z_score, save_stats/load_stats.
 │                       Lives at top level, not under training/ or inference/, since it's used by both (training-time stats computation, inference-time scoring)
 ├── embeddings.py       LoadedModel, extract_embeddings, extract_embeddings_and_predictions — the model forward pass that produces [CLS] embeddings. Split out of ood.py so ood.py's stats/persistence functions don't pull in torch/transformers
+├── svm_reviewer.py     fit_svm_classifiers/save_svm_classifiers/load_svm_classifiers/svm_scores — a fifth, independent signal (per-class one-vs-rest SVM on the raw [CLS] embedding), never folded into the OOD ensemble. Top-level for the same reason as ood.py/embeddings.py: fit at training time, scored at inference time
 ├── exceptions.py      BertTunningError base
 ├── logger.py          setup_logging() — per-run timestamped log file
 ├── ingestion/         extract.py (extract_pdf_with_metadata) · scan.py · cache.py · pipeline.py · _text.py (detect_foreign_municipality) · extractors/ (markitdown.py · ocr.py · _factory.py · _base.py)
 ├── training/
 │   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
 │   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py · reporting.py
-├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN/TF-IDF scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
+├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN/TF-IDF/SVM scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
 ├── api/               app.py · schema.py · __init__.py · __main__.py · error_handlers/ · routes/predict/ · routes/health/
-└── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · _ood_common.py (shared helpers) · clean.py
+└── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · svm_classifiers.py (compute-svm-classifiers) · _ood_common.py (shared helpers) · clean.py
 
 Dockerfile             multi-stage: uv builder + python:3.10-slim-bookworm runtime
 main.py                Click CLI entry point
@@ -436,6 +440,98 @@ threshold for each if the defaults don't match your target:
 uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
 ```
 
+### SVM independent reviewer
+
+A fifth signal, **deliberately separate from the OOD ensemble above** — it never
+affects `inDistribution`, or in_distribution's own contribution to `reviewRoute`.
+If the loaded model directory contains `svm_classifiers.joblib` (generated
+automatically during `train`, or backfilled below), predictions include three
+extra fields:
+
+```json
+{
+  "label": "boletines",
+  "confidence": 0.9429,
+  "svmScores": {
+    "boletines": 2.1,
+    "decreto": -0.8,
+    "ordenanza": -1.3
+  },
+  "svmPredictedLabel": "boletines",
+  "svmAgreesWithPrediction": true
+}
+```
+
+`svmScores` is one one-vs-rest SVM's decision-function margin per class,
+trained on the raw (non-PCA-reduced) `[CLS]` embedding — positive means inside
+that class's boundary, negative means outside. It is **not** a probability
+and **not** calibrated against any threshold — this repo's job is to produce
+the evidence, not decide what a given margin *means*. It's designed for
+**Classiflow**, a downstream agentic workflow that weighs this alongside the
+OOD signals and the softmax scores itself. `{}` (empty object), not `null`,
+when `svm_classifiers.joblib` isn't present next to the loaded model — "no
+scores" has a natural empty-collection representation, same as `allScores`.
+
+`svmPredictedLabel` (the SVM reviewer's own top pick — the class with the
+highest `svmScores` margin) and `svmAgreesWithPrediction` (whether that pick
+matches `label`, softmax's own pick) **are** used for one decision: a
+disagreement routes `reviewRoute` to `human_review`, regardless of confidence
+— see "Review routing" above. This is the one exception to "SVM evidence
+doesn't decide anything here": comparing the SVM's pick against softmax's is
+answering a different question than any OOD signal (misclassification
+*among* known classes, not "is this any known class at all"), so it gets its
+own, independent trigger for the same lane rather than being folded into
+`inDistribution`. `svmPredictedLabel` is `""` (empty string), not `null`, when
+`svm_classifiers.joblib` isn't loaded — a real class name is never empty, so
+this can't collide with genuine data. `svmAgreesWithPrediction` then defaults
+to `true` (no signal, don't trigger) rather than being nullable — see
+`PredictResult.svm_agrees_with_prediction`'s docstring in `src/schema.py` for
+why a tri-state here would encode two different questions in one field.
+
+In `predict-folder`'s CSV, `svm_scores` (like `all_scores`) is a Python
+dict *repr* string in each cell — parse it with `ast.literal_eval`, not
+`json.loads` (the repr uses single quotes, not valid JSON):
+
+```python
+import ast
+df["svm_scores"] = df["svm_scores"].apply(ast.literal_eval)
+```
+
+`predict-folder --log-wandb`'s predictions table also includes an
+`svm_scores` column (added to `_PREDICTION_COLUMNS` in `src/wandb.py`) — note
+this is a *separate* column list from the CSV's, which is built from every
+field on `PredictResult` automatically; the W&B table isn't, so any new field
+meant to appear there needs adding to `_PREDICTION_COLUMNS` explicitly.
+
+Both `train` and `compute-svm-classifiers` log each class's **held-out
+balanced accuracy** (scored against the val split, not the training data the
+classifiers were fit on) right after fitting, so you can see how well each
+class's boundary actually generalizes:
+
+```
+SVM reviewer held-out balanced accuracy (val split): {'decreto': 0.9231, 'ordenanza': 0.8765, ...}
+```
+
+Pass `--log-wandb` to `compute-svm-classifiers` (or run `train` with W&B
+enabled, its default) to also send this to Weights & Biases — a
+`svm/per_class_accuracy` table with **class, training-sample count, and
+held-out balanced accuracy side by side**, so a low score is explainable
+(e.g. `otro` scoring low next to its 37 training documents) rather than an
+unexplained number, plus `svm/mean_balanced_accuracy`/`svm/min_balanced_accuracy`
+summary metrics and one `svm/balanced_accuracy/<class>` scalar per class for
+charting across runs:
+
+```powershell
+uv run python main.py compute-svm-classifiers --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet --log-wandb
+```
+
+Backfill `svm_classifiers.joblib` for an already-trained model (no retraining,
+independent of `compute-ood-stats`):
+
+```powershell
+uv run python main.py compute-svm-classifiers --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
+```
+
 ### Logging predictions and calibration runs to W&B
 
 Both `predict-folder` and `evaluate-ood-calibration` accept `--log-wandb` to
@@ -525,12 +621,19 @@ API docs at `http://localhost:8000/docs` (Swagger UI).
   "tfidfCosineZ": 0.31,
   "inDistribution": true,
   "foreignMunicipality": null,
+  "svmScores": {
+    "decreto": 1.4,
+    "ordenanza": -0.6,
+    "resolucion": -0.9
+  },
+  "svmPredictedLabel": "decreto",
+  "svmAgreesWithPrediction": true,
   "extractedText": "DECRETO N° 123/2026...",
   "extractorUsed": "MarkItDownExtractor"
 }
 ```
 
-`mahalanobisPValue`/`cosineZ`/`knnDistance`/`tfidfCosineZ`/`inDistribution` are only present (non-null) when the loaded model directory has an `ood_stats.npz` — see "Out-of-distribution detection" above. `foreignMunicipality` is computed independently of `ood_stats.npz` and is always present (`null` when no foreign jurisdiction phrase is found).
+`mahalanobisPValue`/`cosineZ`/`knnDistance`/`tfidfCosineZ`/`inDistribution` are only present (non-null) when the loaded model directory has an `ood_stats.npz` — see "Out-of-distribution detection" above. `foreignMunicipality` is computed independently of `ood_stats.npz` and is always present (`null` when no foreign jurisdiction phrase is found). `svmScores` is `{}` and `svmPredictedLabel` is `""` (neither is nullable — see "SVM independent reviewer" above for why), and `svmAgreesWithPrediction` defaults to `true`, when no `svm_classifiers.joblib` is loaded.
 
 ### Clean state
 

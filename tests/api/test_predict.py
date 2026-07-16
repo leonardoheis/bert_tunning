@@ -33,6 +33,12 @@ def test_predict_response_has_ood_metrics_field() -> None:
     assert response.ood_metrics is None
 
 
+def test_predict_response_has_svm_scores_field() -> None:
+    response = PredictResponse(filename="doc.pdf", label="decreto", confidence=0.9, certain=True)
+    assert response.svm_scores == {}
+    assert response.svm_predicted_label == ""
+
+
 def test_predict_endpoint_returns_extraction_metadata() -> None:
     app = create_app(model_path="fake/path")
     mock_clf = MagicMock()
@@ -91,6 +97,69 @@ def test_predict_endpoint_returns_ood_metrics() -> None:
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()["oodMetrics"]["knnDistance"] == expected_knn_distance
+
+
+def test_predict_endpoint_returns_svm_scores() -> None:
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.return_value = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        svm_scores={"decreto": 1.2, "ordenanza": -0.5},
+    )
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["svmScores"] == {"decreto": 1.2, "ordenanza": -0.5}
+
+
+def test_predict_endpoint_returns_svm_disagreement_fields() -> None:
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.return_value = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        svm_scores={"decreto": -0.5, "ordenanza": 1.2},
+        svm_predicted_label="ordenanza",
+        svm_agrees_with_prediction=False,
+    )
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["svmPredictedLabel"] == "ordenanza"
+    assert body["svmAgreesWithPrediction"] is False
+
+
+def test_predict_response_svm_agrees_with_prediction_defaults_to_true() -> None:
+    response = PredictResponse(filename="doc.pdf", label="decreto", confidence=0.9, certain=True)
+    assert response.svm_agrees_with_prediction is True
 
 
 def test_predict_endpoint_returns_foreign_municipality() -> None:

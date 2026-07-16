@@ -75,6 +75,15 @@ def predict_cmd(
     for lbl, sc in sorted(result.all_scores.items(), key=lambda x: -x[1]):
         bar = "█" * int(sc * 40)
         click.echo(f"    {lbl:<38} {sc:.4f}  {bar}")
+    if result.svm_scores:
+        click.echo("\n  SVM reviewer (per-class decision margin, independent signal):")
+        for lbl, sc in sorted(result.svm_scores.items(), key=lambda x: -x[1]):
+            click.echo(f"    {lbl:<38} {sc:+.4f}")
+        if not result.svm_agrees_with_prediction:
+            click.echo(
+                f"  WARNING: SVM disagrees with prediction: SVM picks "
+                f"{result.svm_predicted_label!r}, softmax picked {result.label!r}"
+            )
 
 
 def _run_predict_folder(opts: PredictFolderOptions) -> None:

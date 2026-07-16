@@ -20,6 +20,7 @@ from src.inference.pipeline import predict_pdf
 from src.ood import compute_tfidf_stats, save_stats
 from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
 from src.settings import Settings
+from src.svm_reviewer import fit_svm_classifiers, save_svm_classifiers
 
 
 def _make_stats() -> ClassEmbeddingStats:
@@ -97,6 +98,17 @@ def _make_stats_with_no_knn_training_data_for_decreto() -> ClassEmbeddingStats:
         knn_train_embeddings=np.array([[5.0] * 8] * 5),
         knn_train_labels=[1] * 5,
     )
+
+
+def _make_svm_classifiers() -> dict[str, object]:
+    rng = np.random.default_rng(42)
+    class_names = ["decreto", "ordenanza"]
+    n_per_class = 10
+    decreto = rng.normal(loc=0.0, scale=0.1, size=(n_per_class, 8))
+    ordenanza = rng.normal(loc=5.0, scale=0.1, size=(n_per_class, 8))
+    embeddings = np.vstack([decreto, ordenanza])
+    labels = [0] * n_per_class + [1] * n_per_class
+    return fit_svm_classifiers(embeddings, labels, class_names)
 
 
 def _make_mock_classifier() -> BertTunningClassifier:
@@ -252,6 +264,38 @@ def test_decide_review_route_human_review_when_anomalous_regardless_of_confidenc
     )
 
 
+def test_decide_review_route_human_review_when_classifiers_disagree_regardless_of_confidence() -> (
+    None
+):
+    assert (
+        decide_review_route(
+            confidence_tier=ConfidenceTier.CONFIDENT,
+            ood_evidence=OodEvidence.NOT_ANOMALOUS,
+            classifier_disagreement=True,
+        )
+        == "human_review"
+    )
+    assert (
+        decide_review_route(
+            confidence_tier=ConfidenceTier.UNCERTAIN,
+            ood_evidence=OodEvidence.NOT_ANOMALOUS,
+            classifier_disagreement=True,
+        )
+        == "human_review"
+    )
+
+
+def test_decide_review_route_classifier_disagreement_defaults_to_false() -> None:
+    # Regression guard: classifier_disagreement must default to False so pre-existing
+    # callers/tests that don't pass it see no behavior change.
+    assert (
+        decide_review_route(
+            confidence_tier=ConfidenceTier.CONFIDENT, ood_evidence=OodEvidence.NOT_ANOMALOUS
+        )
+        == "accept"
+    )
+
+
 def test_predict_text_returns_expected_keys() -> None:
     clf = _make_mock_classifier()
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
@@ -280,6 +324,94 @@ def test_predict_text_without_stats_leaves_ood_fields_none() -> None:
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.ood_metrics is None
+
+
+def test_predict_text_without_svm_classifiers_leaves_svm_scores_empty() -> None:
+    clf = _make_mock_classifier()
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.svm_scores == {}
+    # No SVM signal at all -- svm_predicted_label stays "" (a real class name is never
+    # empty, so this can't collide with genuine data), and the agreement flag defaults to
+    # True (no tri-state; "was there evidence" already has an owner, that field).
+    assert result.svm_predicted_label == ""
+    assert result.svm_agrees_with_prediction is True
+
+
+def _make_disagreeing_svm_classifiers() -> dict[str, object]:
+    # Swapped class centers relative to _make_svm_classifiers(): here "ordenanza" sits at
+    # the origin, where the mock classifier's fixed zero cls_embedding lands, so the SVM
+    # reviewer picks "ordenanza" while the mock's fixed logits ([2.0, 0.5]) always make
+    # softmax pick "decreto" -- a genuine, reproducible disagreement between the two.
+    rng = np.random.default_rng(42)
+    class_names = ["decreto", "ordenanza"]
+    n_per_class = 10
+    decreto = rng.normal(loc=5.0, scale=0.1, size=(n_per_class, 8))
+    ordenanza = rng.normal(loc=0.0, scale=0.1, size=(n_per_class, 8))
+    embeddings = np.vstack([decreto, ordenanza])
+    labels = [0] * n_per_class + [1] * n_per_class
+    return fit_svm_classifiers(embeddings, labels, class_names)
+
+
+def test_predict_text_svm_agrees_with_prediction_when_classifiers_concur() -> None:
+    clf = _make_mock_classifier()
+    clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.svm_predicted_label == "decreto"
+    assert result.svm_agrees_with_prediction is True
+    assert result.review_route == "accept"
+
+
+def test_predict_text_flags_disagreement_and_routes_to_human_review() -> None:
+    clf = _make_mock_classifier()
+    clf._svm_classifiers = _make_disagreeing_svm_classifiers()  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.label == "decreto"  # softmax's pick, unchanged
+    assert result.svm_predicted_label == "ordenanza"  # the SVM's own pick disagrees
+    assert result.svm_agrees_with_prediction is False
+    # Disagreement alone routes to human_review, even though softmax is confident
+    # (fixed logits [2.0, 0.5] => certain=True) and there's no ood_stats.npz at all.
+    assert result.certain is True
+    assert result.ood_metrics is None
+    assert result.review_route == "human_review"
+
+
+def test_predict_text_ood_driven_human_review_survives_svm_agreement() -> None:
+    # OOD and classifier disagreement are independent triggers for the same lane -- an
+    # OOD-anomalous document must still route to human_review even when the two
+    # classifiers agree with each other (agreement doesn't "cancel out" the OOD signal).
+    clf = _make_mock_classifier()
+    clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001 -- agrees with softmax
+    clf._ood_stats = _make_stats_with_isolated_knn_cluster()  # noqa: SLF001 -- k-NN fires
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.svm_agrees_with_prediction is True
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.in_distribution is False
+    assert result.review_route == "human_review"
+
+
+def test_predict_text_with_svm_classifiers_populates_svm_scores() -> None:
+    clf = _make_mock_classifier()
+    clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert set(result.svm_scores.keys()) == {"decreto", "ordenanza"}
+    assert all(isinstance(v, float) for v in result.svm_scores.values())
+
+
+def test_predict_text_svm_scores_independent_of_ood_stats() -> None:
+    # svm_scores must be populated even when there's no ood_stats.npz at all -- it's a
+    # separate artifact, not part of the OOD ensemble.
+    clf = _make_mock_classifier()
+    assert clf._ood_stats is None  # noqa: SLF001
+    clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.ood_metrics is None
+    assert result.svm_scores != {}
 
 
 def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
@@ -621,6 +753,49 @@ def test_classifier_skips_validation_when_no_ood_stats(tmp_path: Path) -> None:
     with patch("torch.cuda.is_available", return_value=False):
         clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
     assert clf._ood_stats is None  # noqa: SLF001
+
+
+def test_classifier_loads_fine_when_svm_classifiers_class_set_matches(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    save_svm_classifiers(_make_svm_classifiers(), tmp_path / "svm_classifiers.joblib")
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._svm_classifiers is not None  # noqa: SLF001
+
+
+def test_classifier_raises_when_svm_classifiers_class_set_mismatches(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    # Model expects a different class set than svm_classifiers.joblib was fit on.
+    model.config.id2label = {0: "resolucion", 1: "boletines"}
+    model.config.max_position_embeddings = 512
+
+    save_svm_classifiers(_make_svm_classifiers(), tmp_path / "svm_classifiers.joblib")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        pytest.raises(BertTunningError, match="do not match"),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+
+def test_classifier_skips_svm_validation_when_no_svm_classifiers(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._svm_classifiers is None  # noqa: SLF001
 
 
 def test_classifier_warns_when_thresholds_fall_back_to_settings(
