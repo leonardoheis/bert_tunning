@@ -59,6 +59,13 @@ class PredictResult(BaseModel):
     review_route: str = ""
     foreign_municipality: str | None = None
     foreign_municipality_context: str | None = None
+    # Per-class one-vs-rest SVM decision-function margins, independent of ood_metrics --
+    # not an OOD signal, evidence about per-class membership for the downstream Classiflow
+    # agent. None when svm_classifiers.joblib isn't present next to the loaded model, same
+    # as ood_metrics itself is None when ood_stats.npz is missing. Not nested inside
+    # OodMetrics since it doesn't share that model's None-disambiguation reason. See
+    # docs/superpowers/specs/2026-07-15-svm-independent-reviewer-design.md.
+    svm_scores: dict[str, float] | None = None
 
 
 _OOD_METRIC_FIELDS = (

@@ -11,6 +11,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreT
 
 if TYPE_CHECKING:
     from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.svm import SVC
 
 from src.exceptions import BertTunningError
 from src.ingestion.extract import clean_text
@@ -32,6 +33,8 @@ from src.ood import (
 )
 from src.schema import ClassEmbeddingStats, OodMetrics, PredictResult
 from src.settings import Settings
+from src.svm_reviewer import load_svm_classifiers
+from src.svm_reviewer import svm_scores as compute_svm_scores
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +159,8 @@ class BertTunningClassifier:
         self._validate_ood_stats_class_mapping()
         self._validate_ood_stats_model_identity()
         self._warn_on_uncalibrated_thresholds()
+        self._svm_classifiers = self._load_svm_classifiers(model_path)
+        self._validate_svm_classifiers_class_mapping()
         log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
 
     @staticmethod
@@ -166,6 +171,19 @@ class BertTunningClassifier:
             return None
         log.info("Loaded OOD stats from %s", stats_path)
         return load_stats(stats_path)
+
+    @staticmethod
+    def _load_svm_classifiers(model_path: str) -> "dict[str, SVC] | None":
+        classifiers_path = Path(model_path) / "svm_classifiers.joblib"
+        classifiers = load_svm_classifiers(classifiers_path)
+        if classifiers is None:
+            log.info(
+                "No svm_classifiers.joblib found at %s — SVM reviewer disabled",
+                classifiers_path,
+            )
+            return None
+        log.info("Loaded SVM reviewer classifiers from %s", classifiers_path)
+        return classifiers
 
     def _validate_ood_stats_class_mapping(self) -> None:
         """ood_stats.npz's class_names must match this model's id2label -- by count AND by
@@ -214,6 +232,28 @@ class BertTunningClassifier:
                 f"model_type={actual_type!r}, hidden_size={actual_hidden_size} -- this "
                 "ood_stats.npz belongs to a different model architecture. Regenerate it for "
                 "this exact model with compute-ood-stats."
+            )
+            raise BertTunningError(msg)
+
+    def _validate_svm_classifiers_class_mapping(self) -> None:
+        """svm_classifiers.joblib's class set must match this model's id2label -- a stale
+        or mismatched artifact (e.g. fit for a corpus with a different class set) would
+        silently produce svm_scores keyed by the wrong classes, or missing some entirely.
+        Unlike ood_stats.npz's class_names (an ordered list indexed positionally by label
+        id, since knn_mean_distance indexes into it directly), svm_classifiers is a dict
+        keyed by class NAME -- only the set needs to match, not the order -- but the same
+        fail-fast-at-construction rationale as _validate_ood_stats_class_mapping applies."""
+        if self._svm_classifiers is None:
+            return
+        id2label: dict[int, str] = self.model.config.id2label
+        expected = set(id2label.values())
+        actual = set(self._svm_classifiers.keys())
+        if actual != expected:
+            msg = (
+                f"svm_classifiers.joblib classes {sorted(actual)} do not match this "
+                f"model's id2label classes {sorted(expected)} -- svm_scores would be "
+                "computed for the wrong classes. Regenerate svm_classifiers.joblib for "
+                "this exact model with compute-svm-classifiers."
             )
             raise BertTunningError(msg)
 
@@ -297,6 +337,11 @@ class BertTunningClassifier:
 
         confidence_tier = ConfidenceTier.from_confidence(confidence, self.threshold)
         certain = confidence_tier is ConfidenceTier.CONFIDENT
+        svm_scores_result = (
+            compute_svm_scores(cls_embedding, self._svm_classifiers)
+            if self._svm_classifiers is not None
+            else None
+        )
         result = PredictResult(
             label=label,
             confidence=round(confidence, 4),
@@ -305,6 +350,7 @@ class BertTunningClassifier:
             review_route=decide_review_route(
                 confidence_tier=confidence_tier, ood_evidence=OodEvidence.NOT_ANOMALOUS
             ),
+            svm_scores=svm_scores_result,
         )
 
         if self._ood_stats is None:

@@ -202,15 +202,16 @@ src/
 ├── ood.py              OOD math — compute_class_stats, mahalanobis_p_value, cosine_z_score, knn_mean_distance, compute_tfidf_stats/tfidf_cosine_z_score, save_stats/load_stats.
 │                       Lives at top level, not under training/ or inference/, since it's used by both (training-time stats computation, inference-time scoring)
 ├── embeddings.py       LoadedModel, extract_embeddings, extract_embeddings_and_predictions — the model forward pass that produces [CLS] embeddings. Split out of ood.py so ood.py's stats/persistence functions don't pull in torch/transformers
+├── svm_reviewer.py     fit_svm_classifiers/save_svm_classifiers/load_svm_classifiers/svm_scores — a fifth, independent signal (per-class one-vs-rest SVM on the raw [CLS] embedding), never folded into the OOD ensemble. Top-level for the same reason as ood.py/embeddings.py: fit at training time, scored at inference time
 ├── exceptions.py      BertTunningError base
 ├── logger.py          setup_logging() — per-run timestamped log file
 ├── ingestion/         extract.py (extract_pdf_with_metadata) · scan.py · cache.py · pipeline.py · _text.py (detect_foreign_municipality) · extractors/ (markitdown.py · ocr.py · _factory.py · _base.py)
 ├── training/
 │   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
 │   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py · reporting.py
-├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN/TF-IDF scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
+├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN/TF-IDF/SVM scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
 ├── api/               app.py · schema.py · __init__.py · __main__.py · error_handlers/ · routes/predict/ · routes/health/
-└── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · _ood_common.py (shared helpers) · clean.py
+└── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · svm_classifiers.py (compute-svm-classifiers) · _ood_common.py (shared helpers) · clean.py
 
 Dockerfile             multi-stage: uv builder + python:3.10-slim-bookworm runtime
 main.py                Click CLI entry point
@@ -434,6 +435,79 @@ threshold for each if the defaults don't match your target:
 
 ```powershell
 uv run python main.py evaluate-ood-calibration --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
+```
+
+### SVM independent reviewer
+
+A fifth signal, **deliberately separate from the OOD ensemble above** — it never
+affects `inDistribution`, `reviewRoute`, or any decision made by this repo. If
+the loaded model directory contains `svm_classifiers.joblib` (generated
+automatically during `train`, or backfilled below), predictions include one
+extra field:
+
+```json
+{
+  "label": "boletines",
+  "confidence": 0.9429,
+  "svmScores": {
+    "boletines": 2.1,
+    "decreto": -0.8,
+    "ordenanza": -1.3
+  }
+}
+```
+
+`svmScores` is one one-vs-rest SVM's decision-function margin per class,
+trained on the raw (non-PCA-reduced) `[CLS]` embedding — positive means inside
+that class's boundary, negative means outside. It is **not** a probability,
+**not** calibrated against any threshold, and **not** combined into a single
+verdict here — this repo's job is to produce the evidence, not decide what it
+means. It's designed for **Classiflow**, a downstream agentic workflow that
+weighs this alongside the OOD signals and the softmax scores itself. `null`
+when `svm_classifiers.joblib` isn't present next to the loaded model.
+
+In `predict-folder`'s CSV, `svm_scores` (like `all_scores`) is a Python
+dict *repr* string in each cell — parse it with `ast.literal_eval`, not
+`json.loads` (the repr uses single quotes, not valid JSON):
+
+```python
+import ast
+df["svm_scores"] = df["svm_scores"].apply(ast.literal_eval)
+```
+
+`predict-folder --log-wandb`'s predictions table also includes an
+`svm_scores` column (added to `_PREDICTION_COLUMNS` in `src/wandb.py`) — note
+this is a *separate* column list from the CSV's, which is built from every
+field on `PredictResult` automatically; the W&B table isn't, so any new field
+meant to appear there needs adding to `_PREDICTION_COLUMNS` explicitly.
+
+Both `train` and `compute-svm-classifiers` log each class's **held-out
+balanced accuracy** (scored against the val split, not the training data the
+classifiers were fit on) right after fitting, so you can see how well each
+class's boundary actually generalizes:
+
+```
+SVM reviewer held-out balanced accuracy (val split): {'decreto': 0.9231, 'ordenanza': 0.8765, ...}
+```
+
+Pass `--log-wandb` to `compute-svm-classifiers` (or run `train` with W&B
+enabled, its default) to also send this to Weights & Biases — a
+`svm/per_class_accuracy` table with **class, training-sample count, and
+held-out balanced accuracy side by side**, so a low score is explainable
+(e.g. `otro` scoring low next to its 37 training documents) rather than an
+unexplained number, plus `svm/mean_balanced_accuracy`/`svm/min_balanced_accuracy`
+summary metrics and one `svm/balanced_accuracy/<class>` scalar per class for
+charting across runs:
+
+```powershell
+uv run python main.py compute-svm-classifiers --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet --log-wandb
+```
+
+Backfill `svm_classifiers.joblib` for an already-trained model (no retraining,
+independent of `compute-ood-stats`):
+
+```powershell
+uv run python main.py compute-svm-classifiers --model-path ./models/bert_tunning_model/final --model xlm-roberta --cache-path ./data/bert_tunning_cache.parquet
 ```
 
 ### Logging predictions and calibration runs to W&B

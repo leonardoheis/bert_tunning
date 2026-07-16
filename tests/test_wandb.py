@@ -2,7 +2,12 @@ from unittest.mock import MagicMock, patch
 
 from src.ood import OodThresholds
 from src.schema import CalibrationReport, OodMetrics, PredictResult
-from src.wandb import log_ood_calibration_results, log_predict_folder_results
+from src.wandb import (
+    WandbLogger,
+    log_ood_calibration_results,
+    log_predict_folder_results,
+    log_svm_classifiers_results,
+)
 
 
 def _logged_row(mock_table_cls: MagicMock, mock_table: MagicMock) -> dict[str, object]:
@@ -139,6 +144,29 @@ def test_log_predict_folder_results_table_includes_review_route_column() -> None
     assert _logged_row(mock_table_cls, mock_table)["review_route"] == "accept"
 
 
+def test_log_predict_folder_results_table_includes_svm_scores_column() -> None:
+    expected_svm_scores = {"decreto": 1.05, "ordenanza": -0.83}
+    results = [
+        PredictResult(
+            filename="a.pdf",
+            label="decreto",
+            confidence=0.9,
+            certain=True,
+            svm_scores=expected_svm_scores,
+        ),
+    ]
+    mock_table = MagicMock()
+    with (
+        patch("src.wandb.wandb.init"),
+        patch("src.wandb.wandb.Table", return_value=mock_table) as mock_table_cls,
+        patch("src.wandb.wandb.log"),
+        patch("src.wandb.wandb.finish"),
+    ):
+        log_predict_folder_results(results, model_path="fake/model", folder_path="fake/folder")
+
+    assert _logged_row(mock_table_cls, mock_table)["svm_scores"] == expected_svm_scores
+
+
 def test_log_predict_folder_results_table_includes_theoretical_mahalanobis_column() -> None:
     expected_theoretical_p = 0.1708
     results = [
@@ -237,3 +265,57 @@ def test_log_ood_calibration_results_logs_summary_metrics() -> None:
         }
     )
     mock_finish.assert_called_once()
+
+
+def test_log_svm_classifiers_results_logs_per_class_table_and_summary() -> None:
+    svm_val_accuracy = {"decreto": 0.95, "otro": 0.6}
+    train_class_counts = {"decreto": 300, "otro": 37}
+    mock_table = MagicMock()
+    with (
+        patch("src.wandb.wandb.init") as mock_init,
+        patch("src.wandb.wandb.Table", return_value=mock_table) as mock_table_cls,
+        patch("src.wandb.wandb.log") as mock_log,
+        patch("src.wandb.wandb.finish") as mock_finish,
+    ):
+        log_svm_classifiers_results(
+            model_path="fake/model",
+            cache_path="fake/cache.parquet",
+            model_key="beto",
+            svm_val_accuracy=svm_val_accuracy,
+            train_class_counts=train_class_counts,
+        )
+
+    mock_init.assert_called_once()
+    assert mock_init.call_args.kwargs["job_type"] == "compute-svm-classifiers"
+    assert mock_table_cls.call_args.kwargs["columns"] == [
+        "class",
+        "train_samples",
+        "held_out_balanced_accuracy",
+    ]
+    assert mock_table.add_data.call_count == len(svm_val_accuracy)
+    # A class with a low training sample count and a low accuracy must be traceable back
+    # to that count from the same logged row -- not just an unexplained low number.
+    mock_table.add_data.assert_any_call("otro", 37, 0.6)
+    payload = mock_log.call_args.args[0]
+    assert payload["svm/per_class_accuracy"] is mock_table
+    assert payload["svm/mean_balanced_accuracy"] == (0.95 + 0.6) / 2
+    assert payload["svm/min_balanced_accuracy"] == 0.6  # noqa: PLR2004
+    assert payload["svm/balanced_accuracy/otro"] == 0.6  # noqa: PLR2004
+    mock_finish.assert_called_once()
+
+
+def test_wandb_logger_log_svm_results_noop_when_disabled() -> None:
+    logger = WandbLogger(enabled=False)
+    with patch("src.wandb.wandb.log") as mock_log:
+        logger.log_svm_results({"decreto": 0.9}, {"decreto": 300})
+    mock_log.assert_not_called()
+
+
+def test_wandb_logger_log_svm_results_logs_when_enabled() -> None:
+    logger = WandbLogger(enabled=True)
+    with (
+        patch("src.wandb.wandb.Table", return_value=MagicMock()),
+        patch("src.wandb.wandb.log") as mock_log,
+    ):
+        logger.log_svm_results({"decreto": 0.9}, {"decreto": 300})
+    mock_log.assert_called_once()

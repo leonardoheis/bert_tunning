@@ -20,6 +20,7 @@ from src.inference.pipeline import predict_pdf
 from src.ood import compute_tfidf_stats, save_stats
 from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
 from src.settings import Settings
+from src.svm_reviewer import fit_svm_classifiers, save_svm_classifiers
 
 
 def _make_stats() -> ClassEmbeddingStats:
@@ -97,6 +98,17 @@ def _make_stats_with_no_knn_training_data_for_decreto() -> ClassEmbeddingStats:
         knn_train_embeddings=np.array([[5.0] * 8] * 5),
         knn_train_labels=[1] * 5,
     )
+
+
+def _make_svm_classifiers() -> dict[str, object]:
+    rng = np.random.default_rng(42)
+    class_names = ["decreto", "ordenanza"]
+    n_per_class = 10
+    decreto = rng.normal(loc=0.0, scale=0.1, size=(n_per_class, 8))
+    ordenanza = rng.normal(loc=5.0, scale=0.1, size=(n_per_class, 8))
+    embeddings = np.vstack([decreto, ordenanza])
+    labels = [0] * n_per_class + [1] * n_per_class
+    return fit_svm_classifiers(embeddings, labels, class_names)
 
 
 def _make_mock_classifier() -> BertTunningClassifier:
@@ -280,6 +292,35 @@ def test_predict_text_without_stats_leaves_ood_fields_none() -> None:
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.ood_metrics is None
+
+
+def test_predict_text_without_svm_classifiers_leaves_svm_scores_none() -> None:
+    clf = _make_mock_classifier()
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.svm_scores is None
+
+
+def test_predict_text_with_svm_classifiers_populates_svm_scores() -> None:
+    clf = _make_mock_classifier()
+    clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.svm_scores is not None
+    assert set(result.svm_scores.keys()) == {"decreto", "ordenanza"}
+    assert all(isinstance(v, float) for v in result.svm_scores.values())
+
+
+def test_predict_text_svm_scores_independent_of_ood_stats() -> None:
+    # svm_scores must be populated even when there's no ood_stats.npz at all -- it's a
+    # separate artifact, not part of the OOD ensemble.
+    clf = _make_mock_classifier()
+    assert clf._ood_stats is None  # noqa: SLF001
+    clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.ood_metrics is None
+    assert result.svm_scores is not None
 
 
 def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
@@ -621,6 +662,49 @@ def test_classifier_skips_validation_when_no_ood_stats(tmp_path: Path) -> None:
     with patch("torch.cuda.is_available", return_value=False):
         clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
     assert clf._ood_stats is None  # noqa: SLF001
+
+
+def test_classifier_loads_fine_when_svm_classifiers_class_set_matches(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    save_svm_classifiers(_make_svm_classifiers(), tmp_path / "svm_classifiers.joblib")
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._svm_classifiers is not None  # noqa: SLF001
+
+
+def test_classifier_raises_when_svm_classifiers_class_set_mismatches(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    # Model expects a different class set than svm_classifiers.joblib was fit on.
+    model.config.id2label = {0: "resolucion", 1: "boletines"}
+    model.config.max_position_embeddings = 512
+
+    save_svm_classifiers(_make_svm_classifiers(), tmp_path / "svm_classifiers.joblib")
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        pytest.raises(BertTunningError, match="do not match"),
+    ):
+        BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+
+
+def test_classifier_skips_svm_validation_when_no_svm_classifiers(tmp_path: Path) -> None:
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = 512
+    model = MagicMock()
+    model.config.id2label = {0: "decreto", 1: "ordenanza"}
+    model.config.max_position_embeddings = 512
+
+    with patch("torch.cuda.is_available", return_value=False):
+        clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
+    assert clf._svm_classifiers is None  # noqa: SLF001
 
 
 def test_classifier_warns_when_thresholds_fall_back_to_settings(

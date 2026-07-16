@@ -59,6 +59,7 @@ def _to_predict_response(result: PredictResult) -> PredictResponse:
         review_route=data["review_route"],
         foreign_municipality=data["foreign_municipality"],
         foreign_municipality_context=data["foreign_municipality_context"],
+        svm_scores=data["svm_scores"],
     )
 
 

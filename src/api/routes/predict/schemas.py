@@ -17,3 +17,4 @@ class PredictResponse(BaseSchema):
     review_route: str = ""
     foreign_municipality: str | None = None
     foreign_municipality_context: str | None = None
+    svm_scores: dict[str, float] | None = None

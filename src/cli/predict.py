@@ -75,6 +75,10 @@ def predict_cmd(
     for lbl, sc in sorted(result.all_scores.items(), key=lambda x: -x[1]):
         bar = "█" * int(sc * 40)
         click.echo(f"    {lbl:<38} {sc:.4f}  {bar}")
+    if result.svm_scores is not None:
+        click.echo("\n  SVM reviewer (per-class decision margin, independent signal):")
+        for lbl, sc in sorted(result.svm_scores.items(), key=lambda x: -x[1]):
+            click.echo(f"    {lbl:<38} {sc:+.4f}")
 
 
 def _run_predict_folder(opts: PredictFolderOptions) -> None:

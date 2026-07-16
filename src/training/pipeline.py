@@ -1,7 +1,9 @@
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import torch
 from sklearn.preprocessing import LabelEncoder
@@ -15,10 +17,14 @@ from transformers import (
     TrainingArguments,
 )
 
+if TYPE_CHECKING:
+    from sklearn.svm import SVC
+
 from src.embeddings import LoadedModel, extract_embeddings
 from src.ood import compute_class_stats, save_stats
 from src.schema import Hyperparams
 from src.settings import Settings
+from src.svm_reviewer import evaluate_svm_classifiers, fit_svm_classifiers, save_svm_classifiers
 from src.training.evaluate import run_evaluation
 from src.training.models import ModelConfig
 from src.training.options import TrainingRequest
@@ -28,6 +34,42 @@ from src.training.trainer import WeightedTrainer, compute_metrics
 from src.wandb import WandbLogger
 
 log = logging.getLogger(__name__)
+
+
+def _fit_svm_reviewer(  # noqa: PLR0913 -- one param per input this needs from run(), all
+    # required; bundling into a NamedTuple purely to dodge the arg-count limit here would
+    # be more ceremony than the limit is worth for a single-caller helper.
+    loaded: LoadedModel,
+    model_cfg: ModelConfig,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    class_names: list[str],
+    train_embeddings: npt.NDArray[np.float64],
+    wb: WandbLogger,
+) -> "dict[str, SVC]":
+    """Fits the SVM reviewer and logs its held-out balanced accuracy (val split, never the
+    training data it was fit on) -- pulled out of run() to keep it under ruff's statement
+    limit, not because this logic is reused elsewhere. Logs into wb's already-open training
+    run (a no-op if wb is disabled), mirroring compute-svm-classifiers' own --log-wandb."""
+    classifiers = fit_svm_classifiers(train_embeddings, train_df["label_id"].tolist(), class_names)
+    val_embeddings = extract_embeddings(
+        loaded,
+        [prepare_text(t, loaded.tokenizer, "first") for t in val_df["text"]],
+        max_length=model_cfg.max_tokens,
+    )
+    svm_val_accuracy = evaluate_svm_classifiers(
+        classifiers, val_embeddings, val_df["label_id"].tolist(), class_names
+    )
+    log.info(
+        "SVM reviewer held-out balanced accuracy (val split): %s",
+        {k: round(v, 4) for k, v in svm_val_accuracy.items()},
+    )
+    train_labels = train_df["label_id"]
+    train_class_counts = {
+        name: int((train_labels == idx).sum()) for idx, name in enumerate(class_names)
+    }
+    wb.log_svm_results(svm_val_accuracy, train_class_counts)
+    return classifiers
 
 
 def run(
@@ -171,6 +213,16 @@ def run(
     )
     log.info("Computed OOD stats from %d training embeddings", train_embeddings.shape[0])
 
+    svm_classifiers = _fit_svm_reviewer(
+        LoadedModel(model=model, tokenizer=tokenizer, device=str(model.device)),
+        model_cfg,
+        train_df,
+        val_df,
+        list(le.classes_),
+        train_embeddings,
+        wb,
+    )
+
     result = run_evaluation(trainer, test_ds, le, hyperparams)
     wb.log_results(result, list(le.classes_))
     wb.finish()
@@ -179,6 +231,7 @@ def run(
     trainer.save_model(str(save_path))
     tokenizer.save_pretrained(str(save_path))
     save_stats(ood_stats, save_path / "ood_stats.npz")
+    save_svm_classifiers(svm_classifiers, save_path / "svm_classifiers.joblib")
     log.info("Model saved to %s", save_path)
 
     return trainer, le
