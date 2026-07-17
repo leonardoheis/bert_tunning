@@ -4,6 +4,7 @@ from typing import Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
+from numpy.lib.npyio import NpzFile
 from scipy.stats import chi2
 from sklearn.decomposition import PCA
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -11,10 +12,21 @@ from sklearn.metrics.pairwise import cosine_distances
 
 from src.exceptions import BertTunningError
 from src.ingestion.extract import clean_text
-from src.schema import ClassEmbeddingStats
+from src.schema import (
+    ArtifactMetadata,
+    CalibratedThresholds,
+    EmbeddingStats,
+    LexicalStats,
+    OodArtifact,
+)
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
+
+# Bumped whenever OodArtifact's section shape changes. 1 is retroactively assigned to mean
+# "no format_version key in the .npz at all" -- every already-committed ood_stats.npz today.
+# See docs/superpowers/specs/2026-07-16-ood-artifact-schema-versioning-design.md.
+CURRENT_OOD_ARTIFACT_VERSION = 2
 
 
 class _PcaReduction(NamedTuple):
@@ -28,7 +40,7 @@ class _PcaReduction(NamedTuple):
 
 
 class _TfidfStats(NamedTuple):
-    """Internal return type for compute_tfidf_stats -- merged into ClassEmbeddingStats by
+    """Internal return type for compute_tfidf_stats -- merged into OodArtifact.lexical by
     the caller (compute_class_stats), same convention as _PcaReduction."""
 
     vocabulary_terms: list[str]
@@ -45,10 +57,8 @@ def _reduce_dimensionality(embeddings: npt.NDArray[np.float64], n_components: in
     return _PcaReduction(reduced=reduced, mean=pca.mean_, components=pca.components_)
 
 
-def _project(
-    embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
-) -> npt.NDArray[np.float64]:
-    return (embedding - stats.pca_mean) @ stats.pca_components.T
+def _project(embedding: npt.NDArray[np.float64], stats: OodArtifact) -> npt.NDArray[np.float64]:
+    return (embedding - stats.embedding.pca_mean) @ stats.embedding.pca_components.T
 
 
 def _cosine_min_distance_raw(
@@ -71,9 +81,9 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size/texts/
     covariance_epsilon: float = 1e-6,
     model_type: str | None = None,
     model_hidden_size: int | None = None,
-    max_tfidf_features: int = 5000,
-    max_tfidf_max_df: float = 0.5,
-) -> ClassEmbeddingStats:
+    max_tfidf_features: int = Settings.OOD_TFIDF_MAX_FEATURES,
+    max_tfidf_max_df: float = Settings.OOD_TFIDF_MAX_DF,
+) -> OodArtifact:
     pca_result = _reduce_dimensionality(embeddings, n_components)
     reduced = pca_result.reduced
     labels_arr = np.asarray(labels)
@@ -91,23 +101,33 @@ def compute_class_stats(  # noqa: PLR0913 -- model_type/model_hidden_size/texts/
         texts, labels, class_names, max_features=max_tfidf_features, max_df=max_tfidf_max_df
     )
 
-    return ClassEmbeddingStats(
+    metadata = (
+        ArtifactMetadata(model_type=model_type, model_hidden_size=model_hidden_size)
+        if model_type is not None and model_hidden_size is not None
+        else None
+    )
+
+    return OodArtifact(
+        format_version=CURRENT_OOD_ARTIFACT_VERSION,
         class_names=class_names,
-        pca_mean=pca_result.mean,
-        pca_components=pca_result.components,
-        centroids=centroids,
-        covariance_inv=covariance_inv,
-        cosine_calibration_mean=float(cosine_scores.mean()),
-        cosine_calibration_std=float(cosine_scores.std() + 1e-9),
-        knn_train_embeddings=reduced,
-        knn_train_labels=labels_arr.tolist(),
-        model_type=model_type,
-        model_hidden_size=model_hidden_size,
-        tfidf_vocabulary_terms=tfidf.vocabulary_terms,
-        tfidf_idf=tfidf.idf,
-        tfidf_centroids=tfidf.centroids,
-        tfidf_cosine_calibration_mean=tfidf.cosine_calibration_mean,
-        tfidf_cosine_calibration_std=tfidf.cosine_calibration_std,
+        embedding=EmbeddingStats(
+            pca_mean=pca_result.mean,
+            pca_components=pca_result.components,
+            centroids=centroids,
+            covariance_inv=covariance_inv,
+            cosine_calibration_mean=float(cosine_scores.mean()),
+            cosine_calibration_std=float(cosine_scores.std() + 1e-9),
+            knn_train_embeddings=reduced,
+            knn_train_labels=labels_arr.tolist(),
+        ),
+        lexical=LexicalStats(
+            vocabulary_terms=tfidf.vocabulary_terms,
+            idf=tfidf.idf,
+            centroids=tfidf.centroids,
+            cosine_calibration_mean=tfidf.cosine_calibration_mean,
+            cosine_calibration_std=tfidf.cosine_calibration_std,
+        ),
+        metadata=metadata,
     )
 
 
@@ -116,8 +136,8 @@ def compute_tfidf_stats(
     labels: list[int],
     class_names: list[str],
     *,
-    max_features: int = 5000,
-    max_df: float = 0.5,
+    max_features: int = Settings.OOD_TFIDF_MAX_FEATURES,
+    max_df: float = Settings.OOD_TFIDF_MAX_DF,
 ) -> _TfidfStats:
     """Fits a TF-IDF vectorizer + per-class centroids on raw training text -- a signal
     independent of compute_class_stats' BERT-embedding space, operating on surface
@@ -143,59 +163,52 @@ def compute_tfidf_stats(
     )
 
 
-def build_tfidf_vectorizer(stats: ClassEmbeddingStats) -> TfidfVectorizer | None:
+def build_tfidf_vectorizer(stats: OodArtifact) -> TfidfVectorizer | None:
     """Reconstructs a fixed-vocabulary TfidfVectorizer from the two arrays load_stats/
     save_stats round-trip through ood_stats.npz -- verified to produce bit-identical
     .transform() output to the originally-fitted vectorizer. Returns None when this
     model's ood_stats.npz predates the TF-IDF signal (tfidf_vocabulary_terms is empty),
     so callers can treat the signal as disabled rather than crash on missing data."""
-    if not stats.tfidf_vocabulary_terms:  # empty list = not fitted, see Task 1's field comment
+    if not stats.lexical.is_fitted():
         return None
-    vocabulary = {term: i for i, term in enumerate(stats.tfidf_vocabulary_terms)}
+    vocabulary = {term: i for i, term in enumerate(stats.lexical.vocabulary_terms)}
     vectorizer = TfidfVectorizer(vocabulary=vocabulary)
-    vectorizer.idf_ = stats.tfidf_idf
+    vectorizer.idf_ = stats.lexical.idf
     return vectorizer
 
 
-def tfidf_cosine_z_score(
-    text: str, stats: ClassEmbeddingStats, vectorizer: TfidfVectorizer
-) -> float:
+def tfidf_cosine_z_score(text: str, stats: OodArtifact, vectorizer: TfidfVectorizer) -> float:
     """Cosine distance to the nearest TF-IDF centroid, z-scored against the training set --
     same technique as cosine_z_score, different vector space. Caller must have already
     confirmed build_tfidf_vectorizer(stats) is not None."""
     point = vectorizer.transform([clean_text(text)]).toarray()[0]
-    cosine_raw = _cosine_min_distance_raw(point, stats.tfidf_centroids)
-    return (cosine_raw - stats.tfidf_cosine_calibration_mean) / stats.tfidf_cosine_calibration_std
+    cosine_raw = _cosine_min_distance_raw(point, stats.lexical.centroids)
+    lexical = stats.lexical
+    return (cosine_raw - lexical.cosine_calibration_mean) / lexical.cosine_calibration_std
 
 
-def mahalanobis_min_distance(
-    embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
-) -> float:
+def mahalanobis_min_distance(embedding: npt.NDArray[np.float64], stats: OodArtifact) -> float:
     point = _project(embedding, stats)
-    diffs = stats.centroids - point
-    distances = np.einsum("kd,de,ke->k", diffs, stats.covariance_inv, diffs)
+    diffs = stats.embedding.centroids - point
+    distances = np.einsum("kd,de,ke->k", diffs, stats.embedding.covariance_inv, diffs)
     return float(np.min(distances))
 
 
-def cosine_min_distance(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
+def cosine_min_distance(embedding: npt.NDArray[np.float64], stats: OodArtifact) -> float:
     point = _project(embedding, stats)
-    return _cosine_min_distance_raw(point, stats.centroids)
+    return _cosine_min_distance_raw(point, stats.embedding.centroids)
 
 
-def mahalanobis_chi2_p_value_from_distance(
-    squared_distance: float, stats: ClassEmbeddingStats
-) -> float:
+def mahalanobis_chi2_p_value_from_distance(squared_distance: float, stats: OodArtifact) -> float:
     """Same as mahalanobis_chi2_p_value, but takes an already-computed squared distance --
     for callers (e.g. BertTunningClassifier.predict_text) that also need
     mahalanobis_empirical_p_value's distance and would otherwise recompute
     mahalanobis_min_distance (a PCA projection + centroid search) twice per call."""
-    degrees_of_freedom = stats.centroids.shape[1]
+    degrees_of_freedom = stats.embedding.centroids.shape[1]
     return float(chi2.sf(squared_distance, df=degrees_of_freedom))
 
 
-def mahalanobis_chi2_p_value(
-    embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats
-) -> float:
+def mahalanobis_chi2_p_value(embedding: npt.NDArray[np.float64], stats: OodArtifact) -> float:
     """Theoretical p-value under the assumption that class-conditional embeddings are
     multivariate Gaussian with one shared covariance matrix: the squared Mahalanobis
     distance of such a point follows a chi-squared distribution with `df` equal to the
@@ -222,7 +235,7 @@ def empirical_survival_p_value(distance: float, reference: npt.NDArray[np.float6
     return (exceed_count + 1) / (len(reference) + 1)
 
 
-def compute_train_mahalanobis_distances(stats: ClassEmbeddingStats) -> npt.NDArray[np.float64]:
+def compute_train_mahalanobis_distances(stats: OodArtifact) -> npt.NDArray[np.float64]:
     """Squared Mahalanobis distance from every training document (stats.knn_train_embeddings,
     already PCA-reduced) to its OWN TRUE class centroid (via stats.knn_train_labels) -- not
     the nearest centroid. This intentionally mirrors compute_class_stats()'s own covariance
@@ -238,18 +251,18 @@ def compute_train_mahalanobis_distances(stats: ClassEmbeddingStats) -> npt.NDArr
     distance is computed at inference time). This asymmetry (reference: true-label
     distance; query: nearest-centroid distance) is intentional -- see "Global Constraints"
     in this plan."""
-    labels_arr = np.asarray(stats.knn_train_labels)
-    distances = np.empty(len(stats.knn_train_embeddings), dtype=np.float64)
-    for i, point in enumerate(stats.knn_train_embeddings):
-        centroid = stats.centroids[labels_arr[i]]
+    labels_arr = np.asarray(stats.embedding.knn_train_labels)
+    distances = np.empty(len(stats.embedding.knn_train_embeddings), dtype=np.float64)
+    for i, point in enumerate(stats.embedding.knn_train_embeddings):
+        centroid = stats.embedding.centroids[labels_arr[i]]
         diff = centroid - point
-        distances[i] = float(diff @ stats.covariance_inv @ diff)
+        distances[i] = float(diff @ stats.embedding.covariance_inv @ diff)
     return distances
 
 
 def mahalanobis_empirical_p_value(
     embedding: npt.NDArray[np.float64],
-    stats: ClassEmbeddingStats,
+    stats: OodArtifact,
     train_distances: npt.NDArray[np.float64],
 ) -> float:
     """Empirical (rank-based) p-value for a query embedding: ranks its Mahalanobis distance
@@ -263,18 +276,19 @@ def mahalanobis_empirical_p_value(
     return empirical_survival_p_value(distance, train_distances)
 
 
-def cosine_z_score(embedding: npt.NDArray[np.float64], stats: ClassEmbeddingStats) -> float:
+def cosine_z_score(embedding: npt.NDArray[np.float64], stats: OodArtifact) -> float:
     """Cosine distance to the nearest centroid, z-scored against the training set."""
     cosine_raw = cosine_min_distance(embedding, stats)
-    return (cosine_raw - stats.cosine_calibration_mean) / stats.cosine_calibration_std
+    mean, std = stats.embedding.cosine_calibration_mean, stats.embedding.cosine_calibration_std
+    return (cosine_raw - mean) / std
 
 
 def knn_mean_distance(
     embedding: npt.NDArray[np.float64],
-    stats: ClassEmbeddingStats,
+    stats: OodArtifact,
     predicted_label_id: int,
     *,
-    k: int = 10,
+    k: int = Settings.OOD_KNN_NEIGHBORS,
 ) -> float:
     """Mean Euclidean distance, in PCA space, to the k nearest training documents that share
     the predicted class. Unlike Mahalanobis (global shared covariance, assumes one Gaussian
@@ -287,8 +301,8 @@ def knn_mean_distance(
     since `nan > threshold` silently evaluates to False in Python and would never flag as
     anomalous."""
     point = _project(embedding, stats)
-    labels_arr = np.array(stats.knn_train_labels)
-    class_points = stats.knn_train_embeddings[labels_arr == predicted_label_id]
+    labels_arr = np.array(stats.embedding.knn_train_labels)
+    class_points = stats.embedding.knn_train_embeddings[labels_arr == predicted_label_id]
     if class_points.shape[0] == 0:
         log.warning(
             "knn_mean_distance: class %d has zero training points — returning NaN",
@@ -315,40 +329,90 @@ class OodThresholds(NamedTuple):
     tfidf_cosine_z: float = Settings.OOD_TFIDF_COSINE_THRESHOLD
 
 
-def resolve_ood_thresholds(stats: ClassEmbeddingStats) -> OodThresholds:
+def resolve_ood_thresholds(stats: OodArtifact) -> OodThresholds:
     """Falls back to Settings.OOD_* per-field, only for whichever threshold
     evaluate-ood-calibration hasn't written yet (None) -- a stats file with all three set
     never touches Settings at all."""
     return OodThresholds(
-        mahalanobis_p=stats.mahalanobis_p_threshold
-        if stats.mahalanobis_p_threshold is not None
+        mahalanobis_p=stats.thresholds.mahalanobis_p
+        if stats.thresholds.mahalanobis_p is not None
         else Settings.OOD_MAHALANOBIS_P_THRESHOLD,
-        cosine_z=stats.cosine_threshold
-        if stats.cosine_threshold is not None
+        cosine_z=stats.thresholds.cosine
+        if stats.thresholds.cosine is not None
         else Settings.OOD_COSINE_THRESHOLD,
-        knn_distance=stats.knn_distance_threshold
-        if stats.knn_distance_threshold is not None
+        knn_distance=stats.thresholds.knn_distance
+        if stats.thresholds.knn_distance is not None
         else Settings.OOD_KNN_DISTANCE_THRESHOLD,
-        tfidf_cosine_z=stats.tfidf_threshold
-        if stats.tfidf_threshold is not None
+        tfidf_cosine_z=stats.thresholds.tfidf_cosine
+        if stats.thresholds.tfidf_cosine is not None
         else Settings.OOD_TFIDF_COSINE_THRESHOLD,
     )
 
 
-def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
+def _embedding_stats_to_npz_dict(embedding: EmbeddingStats) -> dict[str, npt.ArrayLike]:
+    return {
+        "pca_mean": embedding.pca_mean,
+        "pca_components": embedding.pca_components,
+        "centroids": embedding.centroids,
+        "covariance_inv": embedding.covariance_inv,
+        "cosine_calibration_mean": embedding.cosine_calibration_mean,
+        "cosine_calibration_std": embedding.cosine_calibration_std,
+        "knn_train_embeddings": embedding.knn_train_embeddings,
+        "knn_train_labels": np.array(embedding.knn_train_labels),
+    }
+
+
+def _lexical_stats_to_npz_dict(lexical: LexicalStats) -> dict[str, npt.ArrayLike]:
+    return {
+        "tfidf_vocabulary_terms": np.array(lexical.vocabulary_terms),
+        "tfidf_idf": lexical.idf,
+        "tfidf_centroids": lexical.centroids,
+        "tfidf_cosine_calibration_mean": lexical.cosine_calibration_mean,
+        "tfidf_cosine_calibration_std": lexical.cosine_calibration_std,
+    }
+
+
+def _thresholds_to_npz_dict(thresholds: CalibratedThresholds) -> dict[str, npt.ArrayLike]:
     # npz has no native "missing key" for a single scalar the way a dict does, and no None --
     # NaN is the serialization sentinel for "not yet calibrated," round-tripped back to None
     # by load_stats's _optional_threshold.
-    maha_threshold = (
-        np.nan if stats.mahalanobis_p_threshold is None else stats.mahalanobis_p_threshold
-    )
-    cosine_thresh = np.nan if stats.cosine_threshold is None else stats.cosine_threshold
-    knn_thresh = np.nan if stats.knn_distance_threshold is None else stats.knn_distance_threshold
+    return {
+        "mahalanobis_p_threshold": (
+            np.nan if thresholds.mahalanobis_p is None else thresholds.mahalanobis_p
+        ),
+        "cosine_threshold": np.nan if thresholds.cosine is None else thresholds.cosine,
+        "knn_distance_threshold": (
+            np.nan if thresholds.knn_distance is None else thresholds.knn_distance
+        ),
+        "tfidf_threshold": (np.nan if thresholds.tfidf_cosine is None else thresholds.tfidf_cosine),
+        "mahalanobis_threshold_status": thresholds.mahalanobis_status,
+    }
+
+
+def _metadata_to_npz_dict(metadata: ArtifactMetadata | None) -> dict[str, npt.ArrayLike]:
     # "" / -1 are the None-sentinels for a string/int field, the same role NaN plays for the
     # threshold floats above -- npz has no native optional-scalar support.
-    model_type = "" if stats.model_type is None else stats.model_type
-    model_hidden_size = -1 if stats.model_hidden_size is None else stats.model_hidden_size
-    tfidf_threshold = np.nan if stats.tfidf_threshold is None else stats.tfidf_threshold
+    return {
+        "model_type": "" if metadata is None else metadata.model_type,
+        "model_hidden_size": -1 if metadata is None else metadata.model_hidden_size,
+    }
+
+
+def save_stats(stats: OodArtifact, path: Path) -> None:
+    """The .npz file's own keys stay exactly as they've always been -- flat, unnamespaced --
+    this function and load_stats are the only place that know OodArtifact's Python-side
+    shape is nested. Adding a new section only means adding its own _load_*/_*_to_npz_dict
+    pair (mirroring each other, one per OodArtifact field) -- this function itself never
+    needs editing. See "Versioning strategy" in
+    docs/superpowers/specs/2026-07-16-ood-artifact-schema-versioning-design.md."""
+    npz_dict: dict[str, npt.ArrayLike] = {
+        "format_version": stats.format_version,
+        "class_names": np.array(stats.class_names),
+        **_embedding_stats_to_npz_dict(stats.embedding),
+        **_lexical_stats_to_npz_dict(stats.lexical),
+        **_thresholds_to_npz_dict(stats.thresholds),
+        **_metadata_to_npz_dict(stats.metadata),
+    }
 
     # Write to a temp file first, verify it actually loads back, then atomically replace the
     # real path -- np.savez writing directly to `path` left a window where a crash, disk-full,
@@ -361,30 +425,10 @@ def save_stats(stats: ClassEmbeddingStats, path: Path) -> None:
         # string/Path filenames that don't already end in it, which would silently save this
         # as "....npz.tmp.npz" instead of the tmp_path we opened. A handle bypasses that.
         with tmp_path.open("wb") as f:
-            np.savez(
-                f,
-                class_names=np.array(stats.class_names),
-                pca_mean=stats.pca_mean,
-                pca_components=stats.pca_components,
-                centroids=stats.centroids,
-                covariance_inv=stats.covariance_inv,
-                cosine_calibration_mean=stats.cosine_calibration_mean,
-                cosine_calibration_std=stats.cosine_calibration_std,
-                knn_train_embeddings=stats.knn_train_embeddings,
-                knn_train_labels=np.array(stats.knn_train_labels),
-                mahalanobis_p_threshold=maha_threshold,
-                cosine_threshold=cosine_thresh,
-                knn_distance_threshold=knn_thresh,
-                model_type=model_type,
-                model_hidden_size=model_hidden_size,
-                mahalanobis_threshold_status=stats.mahalanobis_threshold_status,
-                tfidf_vocabulary_terms=np.array(stats.tfidf_vocabulary_terms),
-                tfidf_idf=stats.tfidf_idf,
-                tfidf_centroids=stats.tfidf_centroids,
-                tfidf_cosine_calibration_mean=stats.tfidf_cosine_calibration_mean,
-                tfidf_cosine_calibration_std=stats.tfidf_cosine_calibration_std,
-                tfidf_threshold=tfidf_threshold,
-            )
+            # np.savez's stub has a named allow_pickle: bool = True between *args and
+            # **kwds -- mypy can't statically rule out npz_dict containing that key, so it
+            # checks the whole unpack against `bool` and false-positives here.
+            np.savez(f, **npz_dict)  # type: ignore[arg-type]
         load_stats(tmp_path)  # fail fast on a corrupt/incomplete write, before touching `path`
         tmp_path.replace(path)
     finally:
@@ -418,10 +462,8 @@ def _threshold_status(
             raise BertTunningError(msg)
 
 
-def load_stats(path: Path) -> ClassEmbeddingStats:
-    data = np.load(str(path), allow_pickle=False)
-    return ClassEmbeddingStats(
-        class_names=data["class_names"].tolist(),
+def _load_embedding_stats(data: NpzFile) -> EmbeddingStats:
+    return EmbeddingStats(
         pca_mean=data["pca_mean"],
         pca_components=data["pca_components"],
         centroids=data["centroids"],
@@ -430,47 +472,68 @@ def load_stats(path: Path) -> ClassEmbeddingStats:
         cosine_calibration_std=float(data["cosine_calibration_std"]),
         knn_train_embeddings=data["knn_train_embeddings"],
         knn_train_labels=data["knn_train_labels"].tolist(),
-        # "in data.files" -- not data.get() (npz's NpzFile has no .get) -- lets a
-        # pre-this-change ood_stats.npz (missing these keys entirely, not just NaN) still
-        # load instead of KeyError-ing every predict/serve call until it's regenerated.
-        mahalanobis_p_threshold=_optional_threshold(data["mahalanobis_p_threshold"])
+    )
+
+
+def _load_lexical_stats(data: NpzFile) -> LexicalStats:
+    # "in data.files" -- not data.get() (npz's NpzFile has no .get) -- lets a
+    # pre-TF-IDF ood_stats.npz (missing these keys entirely, not just empty) still load
+    # instead of KeyError-ing every predict/serve call until it's regenerated.
+    if "tfidf_vocabulary_terms" not in data.files:
+        return LexicalStats()
+    return LexicalStats(
+        vocabulary_terms=data["tfidf_vocabulary_terms"].tolist(),
+        idf=data["tfidf_idf"],
+        centroids=data["tfidf_centroids"],
+        cosine_calibration_mean=float(data["tfidf_cosine_calibration_mean"]),
+        cosine_calibration_std=float(data["tfidf_cosine_calibration_std"]),
+    )
+
+
+def _load_thresholds(data: NpzFile) -> CalibratedThresholds:
+    return CalibratedThresholds(
+        mahalanobis_p=_optional_threshold(data["mahalanobis_p_threshold"])
         if "mahalanobis_p_threshold" in data.files
         else None,
-        cosine_threshold=_optional_threshold(data["cosine_threshold"])
+        cosine=_optional_threshold(data["cosine_threshold"])
         if "cosine_threshold" in data.files
         else None,
-        knn_distance_threshold=_optional_threshold(data["knn_distance_threshold"])
+        knn_distance=_optional_threshold(data["knn_distance_threshold"])
         if "knn_distance_threshold" in data.files
         else None,
-        model_type=_optional_str(data["model_type"]) if "model_type" in data.files else None,
-        model_hidden_size=_optional_int(data["model_hidden_size"])
-        if "model_hidden_size" in data.files
+        tfidf_cosine=_optional_threshold(data["tfidf_threshold"])
+        if "tfidf_threshold" in data.files
         else None,
-        mahalanobis_threshold_status=_threshold_status(data["mahalanobis_threshold_status"])
+        mahalanobis_status=_threshold_status(data["mahalanobis_threshold_status"])
         if "mahalanobis_threshold_status" in data.files
         else "not_calibrated",
-        tfidf_vocabulary_terms=(
-            data["tfidf_vocabulary_terms"].tolist()
-            if "tfidf_vocabulary_terms" in data.files
-            else []
-        ),
-        tfidf_idf=(data["tfidf_idf"] if "tfidf_idf" in data.files else np.zeros(0)),
-        tfidf_centroids=(
-            data["tfidf_centroids"] if "tfidf_centroids" in data.files else np.zeros((0, 0))
-        ),
-        tfidf_cosine_calibration_mean=(
-            float(data["tfidf_cosine_calibration_mean"])
-            if "tfidf_cosine_calibration_mean" in data.files
-            else 0.0
-        ),
-        tfidf_cosine_calibration_std=(
-            float(data["tfidf_cosine_calibration_std"])
-            if "tfidf_cosine_calibration_std" in data.files
-            else 1.0
-        ),
-        tfidf_threshold=(
-            _optional_threshold(data["tfidf_threshold"])
-            if "tfidf_threshold" in data.files
-            else None
-        ),
+    )
+
+
+def _load_metadata(data: NpzFile) -> ArtifactMetadata | None:
+    if "model_type" not in data.files or "model_hidden_size" not in data.files:
+        return None
+    model_type = _optional_str(data["model_type"])
+    model_hidden_size = _optional_int(data["model_hidden_size"])
+    if model_type is None or model_hidden_size is None:
+        return None
+    return ArtifactMetadata(model_type=model_type, model_hidden_size=model_hidden_size)
+
+
+def load_stats(path: Path) -> OodArtifact:
+    """The .npz file's own keys are flat, exactly as they've always been -- this function
+    (and save_stats) is the only place that translates them into OodArtifact's nested
+    Python shape. format_version is absent on every ood_stats.npz written before this
+    change; those are treated as version 1 and loaded via the same per-field
+    backward-compatibility checks this code has always had (see each _load_* helper
+    above) -- no already-committed artifact needs regenerating because of this refactor."""
+    data = np.load(str(path), allow_pickle=False)
+    format_version = int(data["format_version"]) if "format_version" in data.files else 1
+    return OodArtifact(
+        format_version=format_version,
+        class_names=data["class_names"].tolist(),
+        embedding=_load_embedding_stats(data),
+        lexical=_load_lexical_stats(data),
+        thresholds=_load_thresholds(data),
+        metadata=_load_metadata(data),
     )

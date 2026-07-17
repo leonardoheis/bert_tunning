@@ -17,85 +17,105 @@ from src.inference.classify import (
 from src.inference.ood_scorer import OodScorer, OodScores, is_out_of_distribution
 from src.inference.pipeline import predict_pdf
 from src.ood import OodThresholds, compute_tfidf_stats, save_stats
-from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
+from src.schema import (
+    ArtifactMetadata,
+    EmbeddingStats,
+    ExtractionMetadata,
+    LexicalStats,
+    OodArtifact,
+    PredictResult,
+)
 from src.settings import Settings
 from src.svm_reviewer import fit_svm_classifiers, save_svm_classifiers
 
 
-def _make_stats() -> ClassEmbeddingStats:
+def _make_stats() -> OodArtifact:
     # 700 points/class, not 5 -- the empirical Mahalanobis p-value's minimum possible
     # value is 1/(N+1). OOD_MAHALANOBIS_P_THRESHOLD was recalibrated to 0.001
     # (2026-07-12, BETO v2), so N must exceed ~999 for a query point to ever be able
     # to drop below it regardless of how far away it actually is.
     n_per_class = 700
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        # All points sit exactly on their own class's centroid (distance 0) -- degenerate
-        # but sufficient here, since these tests only need "near" vs. "far" distinguishable.
-        knn_train_embeddings=np.array([[0.0] * 8] * n_per_class + [[5.0] * 8] * n_per_class),
-        knn_train_labels=[0] * n_per_class + [1] * n_per_class,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            # All points sit exactly on their own class's centroid (distance 0) --
+            # degenerate but sufficient here, since these tests only need
+            # "near" vs. "far" distinguishable.
+            knn_train_embeddings=np.array([[0.0] * 8] * n_per_class + [[5.0] * 8] * n_per_class),
+            knn_train_labels=[0] * n_per_class + [1] * n_per_class,
+        ),
     )
 
 
-def _make_tight_cosine_stats() -> ClassEmbeddingStats:
+def _make_tight_cosine_stats() -> OodArtifact:
     # A tighter cosine_calibration_std than _make_stats() — models in practice cluster
     # tightly around their centroid's direction, so a modest directional deviation is
     # already many standard deviations away. Used to isolate a cosine-only anomaly
     # without also tripping the Mahalanobis signal. std is small enough that the fixed
     # raw cosine distance produced by the test embedding still exceeds
     # Settings.OOD_COSINE_THRESHOLD after calibration.
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[5.0] * 8, [-5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=0.001,
-        knn_train_embeddings=np.array([[5.0] * 8] * 5 + [[-5.0] * 8] * 5),
-        knn_train_labels=[0] * 5 + [1] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[5.0] * 8, [-5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=0.001,
+            knn_train_embeddings=np.array([[5.0] * 8] * 5 + [[-5.0] * 8] * 5),
+            knn_train_labels=[0] * 5 + [1] * 5,
+        ),
     )
 
 
-def _make_stats_with_isolated_knn_cluster() -> ClassEmbeddingStats:
+def _make_stats_with_isolated_knn_cluster() -> OodArtifact:
     # Centroids sit exactly where the mocked [CLS] embedding for "decreto" lands (the origin),
     # so Mahalanobis and cosine both see a perfect in-distribution match. But the individual
     # k-NN training points stored for "decreto" are a tight cluster far away from that centroid
-    # — a decoupling that's only possible because ClassEmbeddingStats stores centroids and
+    # — a decoupling that's only possible because EmbeddingStats stores centroids and
     # knn_train_embeddings as independent fields. This isolates the k-NN signal: it should fire
     # even though the other two signals pass.
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.array([[50.0] * 8] * 5 + [[5.0] * 8] * 5),
-        knn_train_labels=[0] * 5 + [1] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.array([[50.0] * 8] * 5 + [[5.0] * 8] * 5),
+            knn_train_labels=[0] * 5 + [1] * 5,
+        ),
     )
 
 
-def _make_stats_with_no_knn_training_data_for_decreto() -> ClassEmbeddingStats:
+def _make_stats_with_no_knn_training_data_for_decreto() -> OodArtifact:
     # "decreto" (label 0) has zero stored k-NN training points, so knn_mean_distance
     # returns NaN for any document predicted as "decreto" — the fail-safe case.
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.array([[5.0] * 8] * 5),
-        knn_train_labels=[1] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.array([[5.0] * 8] * 5),
+            knn_train_labels=[1] * 5,
+        ),
     )
 
 
@@ -419,16 +439,19 @@ def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
     # the same as when _ood_scorer is None, not raise ValueError from downstream ranking code.
     clf = _make_mock_classifier()
     clf._ood_scorer = OodScorer(  # noqa: SLF001
-        ClassEmbeddingStats(
+        OodArtifact(
+            format_version=2,
             class_names=["decreto", "ordenanza"],
-            pca_mean=np.zeros(8),
-            pca_components=np.eye(8),
-            centroids=np.array([[0.0] * 8, [5.0] * 8]),
-            covariance_inv=np.eye(8),
-            cosine_calibration_mean=0.0,
-            cosine_calibration_std=1.0,
-            knn_train_embeddings=np.zeros((0, 8)),
-            knn_train_labels=[],
+            embedding=EmbeddingStats(
+                pca_mean=np.zeros(8),
+                pca_components=np.eye(8),
+                centroids=np.array([[0.0] * 8, [5.0] * 8]),
+                covariance_inv=np.eye(8),
+                cosine_calibration_mean=0.0,
+                cosine_calibration_std=1.0,
+                knn_train_embeddings=np.zeros((0, 8)),
+                knn_train_labels=[],
+            ),
         )
     )
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
@@ -456,11 +479,13 @@ def test_predict_text_attaches_tfidf_cosine_z_when_available() -> None:
     clf._ood_scorer = OodScorer(  # noqa: SLF001
         _make_stats().model_copy(
             update={
-                "tfidf_vocabulary_terms": tfidf.vocabulary_terms,
-                "tfidf_idf": tfidf.idf,
-                "tfidf_centroids": tfidf.centroids,
-                "tfidf_cosine_calibration_mean": tfidf.cosine_calibration_mean,
-                "tfidf_cosine_calibration_std": tfidf.cosine_calibration_std,
+                "lexical": LexicalStats(
+                    vocabulary_terms=tfidf.vocabulary_terms,
+                    idf=tfidf.idf,
+                    centroids=tfidf.centroids,
+                    cosine_calibration_mean=tfidf.cosine_calibration_mean,
+                    cosine_calibration_std=tfidf.cosine_calibration_std,
+                )
             }
         )
     )
@@ -699,7 +724,9 @@ def test_classifier_raises_when_ood_stats_model_identity_mismatches(tmp_path: Pa
     # Same class_names/order as the loaded model (passes the existing class-mapping check),
     # but computed from a different model_type -- this is the exact gap the class-name-only
     # check can't catch.
-    stats = _make_stats().model_copy(update={"model_type": "bert", "model_hidden_size": 768})
+    stats = _make_stats().model_copy(
+        update={"metadata": ArtifactMetadata(model_type="bert", model_hidden_size=768)}
+    )
     save_stats(stats, tmp_path / "ood_stats.npz")
 
     with (
@@ -718,7 +745,9 @@ def test_classifier_loads_fine_when_ood_stats_model_identity_matches(tmp_path: P
     model.config.model_type = "xlm-roberta"
     model.config.hidden_size = 768
 
-    stats = _make_stats().model_copy(update={"model_type": "xlm-roberta", "model_hidden_size": 768})
+    stats = _make_stats().model_copy(
+        update={"metadata": ArtifactMetadata(model_type="xlm-roberta", model_hidden_size=768)}
+    )
     save_stats(stats, tmp_path / "ood_stats.npz")
 
     with patch("torch.cuda.is_available", return_value=False):
@@ -834,12 +863,17 @@ def test_classifier_does_not_warn_when_thresholds_are_fully_calibrated(
     model.config.id2label = {0: "decreto", 1: "ordenanza"}
     model.config.max_position_embeddings = 512
 
-    stats = _make_stats().model_copy(
+    base = _make_stats()
+    stats = base.model_copy(
         update={
-            "mahalanobis_p_threshold": 0.001,
-            "mahalanobis_threshold_status": "calibrated",
-            "cosine_threshold": 13.7366,
-            "knn_distance_threshold": 16.7908,
+            "thresholds": base.thresholds.model_copy(
+                update={
+                    "mahalanobis_p": 0.001,
+                    "mahalanobis_status": "calibrated",
+                    "cosine": 13.7366,
+                    "knn_distance": 16.7908,
+                }
+            )
         }
     )
     save_stats(stats, tmp_path / "ood_stats.npz")
@@ -862,11 +896,16 @@ def test_classifier_logs_info_not_warning_when_mahalanobis_threshold_refused_deg
     model.config.id2label = {0: "decreto", 1: "ordenanza"}
     model.config.max_position_embeddings = 512
 
-    stats = _make_stats().model_copy(
+    base = _make_stats()
+    stats = base.model_copy(
         update={
-            "mahalanobis_threshold_status": "refused_degenerate",
-            "cosine_threshold": 13.7366,
-            "knn_distance_threshold": 16.7908,
+            "thresholds": base.thresholds.model_copy(
+                update={
+                    "mahalanobis_status": "refused_degenerate",
+                    "cosine": 13.7366,
+                    "knn_distance": 16.7908,
+                }
+            )
         }
     )
     save_stats(stats, tmp_path / "ood_stats.npz")

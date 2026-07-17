@@ -2,8 +2,9 @@ import numpy as np
 
 from src.schema import (
     CalibrationReport,
-    ClassEmbeddingStats,
+    EmbeddingStats,
     Hyperparams,
+    OodArtifact,
     OodMetrics,
     PredictResult,
     flatten_predict_result,
@@ -29,23 +30,24 @@ def test_predict_result_svm_scores_populates_via_snake_case_kwarg() -> None:
 
 
 def test_class_embedding_stats_tfidf_fields_default_to_absent() -> None:
-    stats = ClassEmbeddingStats(
+    stats = OodArtifact(
+        format_version=2,
         class_names=["a", "b"],
-        pca_mean=np.zeros(4),
-        pca_components=np.eye(4),
-        centroids=np.zeros((2, 4)),
-        covariance_inv=np.eye(4),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.zeros((2, 4)),
-        knn_train_labels=[0, 1],
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(4),
+            pca_components=np.eye(4),
+            centroids=np.zeros((2, 4)),
+            covariance_inv=np.eye(4),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.zeros((2, 4)),
+            knn_train_labels=[0, 1],
+        ),
     )
-    assert stats.tfidf_vocabulary_terms == []
-    assert len(stats.tfidf_idf) == 0
-    assert stats.tfidf_centroids.size == 0
-    assert stats.tfidf_cosine_calibration_mean == 0.0
-    assert stats.tfidf_cosine_calibration_std == 1.0
-    assert stats.tfidf_threshold is None
+    assert not stats.lexical.is_fitted()
+    assert stats.lexical.cosine_calibration_mean == 0.0
+    assert stats.lexical.cosine_calibration_std == 1.0
+    assert stats.thresholds.tfidf_cosine is None
 
 
 def test_calibration_report_tfidf_fields_default_to_zero() -> None:
