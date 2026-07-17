@@ -339,6 +339,8 @@ reports/    HTML evaluation reports
 logs/       training logs
 samples/    sample PDFs for quick tests
 .claude/    Claude session state
+.codex/      Codex session state
+.agents/      Agents session state
 ```
 
 ## Known Lint Suppressions
