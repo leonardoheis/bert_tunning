@@ -151,13 +151,14 @@ class EvaluationResult(BaseModel):
         return float(accuracy_raw) if isinstance(accuracy_raw, float) else 0.0
 
 
-class ClassEmbeddingStats(BaseModel):
+class EmbeddingStats(BaseModel):
     """Per-class embedding centroids + shared covariance for Mahalanobis/cosine OOD scoring,
-    plus the raw per-class training embeddings needed for k-NN local-density scoring."""
+    plus the raw per-class training embeddings needed for k-NN local-density scoring. One
+    of OodArtifact's sections -- see
+    docs/superpowers/specs/2026-07-16-ood-artifact-schema-versioning-design.md."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
-    class_names: list[str]
     pca_mean: Float64Array
     pca_components: Float64Array
     centroids: Float64Array
@@ -166,57 +167,101 @@ class ClassEmbeddingStats(BaseModel):
     cosine_calibration_std: float
     knn_train_embeddings: Float64Array  # (n_train_docs, n_components), PCA-reduced
     knn_train_labels: list[int]  # length n_train_docs, parallel to knn_train_embeddings
-    # Per-model calibrated thresholds -- written by `evaluate-ood-calibration --write-thresholds`
-    # (src/cli/ood_calibration.py), read via resolve_ood_thresholds() (src/ood.py). None means
-    # "not yet calibrated for this specific model" -- resolve_ood_thresholds() falls back to
-    # Settings.OOD_* in that case. Fixes thresholds calibrated for one model (e.g. BETO v2)
-    # being silently applied to a different model's differently-scaled embedding space.
-    mahalanobis_p_threshold: float | None = None
-    cosine_threshold: float | None = None
-    knn_distance_threshold: float | None = None
-    # Coarse per-model identity fingerprint -- written by compute_class_stats() from the
-    # model that produced the embeddings, validated at classifier construction in
-    # BertTunningClassifier._validate_ood_stats_model_identity(). class_names alone can't
-    # distinguish two different model architectures trained on the same corpus/label set
-    # (true for every model in this project's registry). None means "predates this field" --
-    # the identity check is skipped entirely, not enforced as absent.
-    model_type: str | None = None
-    model_hidden_size: int | None = None
-    # Distinguishes *why* mahalanobis_p_threshold is None -- "not_calibrated" (nobody has run
+
+
+class LexicalStats(BaseModel):
+    """TF-IDF cosine-centroid signal -- a fourth OOD signal, independent of the
+    embedding-space ones above, operating on raw lexical vocabulary instead. Catches
+    divergence the embedding-based signals structurally cannot (e.g. a document naming a
+    different municipality but sharing the same document-type shape). Always present
+    (never Optional) -- an empty vocabulary means "this artifact predates the TF-IDF
+    signal" or "not yet fitted," an unambiguous sentinel since a real fitted vectorizer
+    always has >=1 term (see stop-using-none's "Nothing here" case). is_fitted() replaces
+    scattered `if not stats.tfidf_vocabulary_terms` checks with one named predicate."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    vocabulary_terms: list[str] = []  # ordered; index = TF-IDF feature id
+    idf: Float64Array = Field(default_factory=lambda: np.zeros(0))
+    centroids: Float64Array = Field(default_factory=lambda: np.zeros((0, 0)))
+    # Plain floats (0.0/1.0 sentinels), NOT Optional, unlike CalibratedThresholds.tfidf_cosine
+    # -- always produced together with vocabulary_terms/idf/centroids in one
+    # compute_tfidf_stats() call, never independently set or checked, so a None here would
+    # just be a second, redundant way to express what vocabulary_terms' emptiness already
+    # expresses. tfidf_cosine (on CalibratedThresholds) differs because it's set
+    # independently, later, by a separate calibration step.
+    cosine_calibration_mean: float = 0.0
+    cosine_calibration_std: float = 1.0  # never 0.0 -- avoids a divide-by-zero if ever read
+    # ungated, though every real caller already gates on is_fitted()
+
+    def is_fitted(self) -> bool:
+        return bool(self.vocabulary_terms)
+
+
+class CalibratedThresholds(BaseModel):
+    """Per-model calibrated OOD thresholds -- written by
+    `evaluate-ood-calibration --write-thresholds` (src/cli/ood_calibration.py), read via
+    resolve_ood_thresholds() (src/ood.py). Each field is independently Optional, because
+    each threshold is calibrated independently -- the degenerate-threshold guard can
+    refuse to write mahalanobis_p while cosine/knn_distance still get written in the same
+    run, so this section can't collapse to one Optional the way ArtifactMetadata does.
+    None means "not yet calibrated for this specific model" -- resolve_ood_thresholds()
+    falls back to Settings.OOD_* in that case. Fixes thresholds calibrated for one model
+    (e.g. BETO v2) being silently applied to a different model's differently-scaled
+    embedding space."""
+
+    model_config = ConfigDict(frozen=True)
+
+    mahalanobis_p: float | None = None
+    cosine: float | None = None
+    knn_distance: float | None = None
+    tfidf_cosine: float | None = None
+    # Distinguishes *why* mahalanobis_p is None -- "not_calibrated" (nobody has run
     # evaluate-ood-calibration --write-thresholds yet, an operator should) from
     # "refused_degenerate" (it WAS run, but the degenerate-threshold guard in
-    # cli/ood_calibration.py correctly refused to persist a floor-adjacent value -- expected,
-    # no action needed, will keep recurring). Without this, both states collapse to the same
-    # None and BertTunningClassifier's startup warning can't tell them apart -- see
-    # _warn_on_uncalibrated_thresholds. cosine_threshold/knn_distance_threshold don't need an
-    # equivalent field: the degenerate guard only ever applies to the Mahalanobis threshold.
-    mahalanobis_threshold_status: Literal["not_calibrated", "calibrated", "refused_degenerate"] = (
+    # cli/ood_calibration.py correctly refused to persist a floor-adjacent value --
+    # expected, no action needed, will keep recurring). Without this, both states collapse
+    # to the same None and BertTunningClassifier's startup warning can't tell them apart --
+    # see OodScorer.warn_if_uncalibrated. cosine/knn_distance don't need an equivalent
+    # field: the degenerate guard only ever applies to the Mahalanobis threshold.
+    mahalanobis_status: Literal["not_calibrated", "calibrated", "refused_degenerate"] = (
         "not_calibrated"
     )
-    # TF-IDF cosine-centroid signal (added 2026-07-14) -- a fourth OOD signal, independent
-    # of the three above, operating on raw lexical vocabulary instead of BERT-embedding
-    # space. Catches divergence the embedding-based signals structurally cannot (e.g. a
-    # document naming a different municipality but sharing the same document-type shape).
-    # An empty vocabulary/idf/centroids together means "this ood_stats.npz predates this
-    # feature" -- a real fitted vectorizer always has >=1 term, so empty is an unambiguous
-    # "not fitted" sentinel (no None needed: see stop-using-none's "Nothing here" case).
-    # The signal is skipped entirely in is_out_of_distribution, not treated as anomalous.
-    tfidf_vocabulary_terms: list[str] = []  # ordered; index = TF-IDF feature id
-    tfidf_idf: Float64Array = Field(default_factory=lambda: np.zeros(0))
-    tfidf_centroids: Float64Array = Field(default_factory=lambda: np.zeros((0, 0)))
-    # These two are plain floats (0.0/1.0 sentinels), NOT Optional, unlike tfidf_threshold
-    # below -- they're always produced together with tfidf_vocabulary_terms/tfidf_idf/
-    # tfidf_centroids in one compute_tfidf_stats() call, never independently set or
-    # independently checked, so a None here would just be a second, redundant way to
-    # express what tfidf_vocabulary_terms' emptiness already expresses (see stop-using-none:
-    # a reason nobody branches on isn't worth modeling). tfidf_threshold differs because
-    # it's set independently, later, by a separate calibration step.
-    tfidf_cosine_calibration_mean: float = 0.0
-    tfidf_cosine_calibration_std: float = 1.0  # never 0.0 -- avoids a divide-by-zero if
-    # ever read ungated, though every real caller already gates on tfidf_vocabulary_terms
-    # Per-model calibrated threshold, same role as cosine_threshold/knn_distance_threshold --
-    # no degenerate-guard status field needed, since that guard only ever applies to Mahalanobis.
-    tfidf_threshold: float | None = None
+
+
+class ArtifactMetadata(BaseModel):
+    """Coarse per-model identity fingerprint -- written by compute_class_stats() from the
+    model that produced the embeddings, validated at classifier construction in
+    OodScorer._validate_model_identity(). class_names alone can't distinguish two
+    different model architectures trained on the same corpus/label set (true for every
+    model in this project's registry). Unlike CalibratedThresholds, model_type and
+    model_hidden_size are always set or unset TOGETHER (compute_class_stats() passes both
+    or neither), so the WHOLE section is Optional on OodArtifact (None = "predates
+    identity fingerprinting, skip the check entirely") rather than two independently-
+    nullable fields that are only ever used as a pair."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model_type: str
+    model_hidden_size: int
+
+
+class OodArtifact(BaseModel):
+    """Replaces the former flat ClassEmbeddingStats -- one artifact, four independently-
+    evolvable sections, one shared class taxonomy. Adding a fifth signal type means adding
+    one new section class + a save/load pair for it, not editing this class or the
+    monolithic save_stats()/load_stats() functions that used to hold every field's
+    backward-compatibility branch inline. See
+    docs/superpowers/specs/2026-07-16-ood-artifact-schema-versioning-design.md."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    format_version: int
+    class_names: list[str]
+    embedding: EmbeddingStats
+    lexical: LexicalStats = LexicalStats()
+    thresholds: CalibratedThresholds = CalibratedThresholds()
+    metadata: ArtifactMetadata | None = None
 
 
 class Hyperparams(BaseModel):

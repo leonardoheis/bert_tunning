@@ -22,7 +22,7 @@ from src.ood import (
     save_stats,
     tfidf_cosine_z_score,
 )
-from src.schema import CalibrationReport, ClassEmbeddingStats
+from src.schema import CalibrationReport, OodArtifact
 from src.settings import Settings
 from src.training.models import get_model_config
 from src.wandb import log_ood_calibration_results
@@ -75,7 +75,7 @@ def build_calibration_report(  # noqa: PLR0913 -- one param per OOD signal, all 
 
 
 def _write_calibrated_thresholds(
-    stats: ClassEmbeddingStats,
+    stats: OodArtifact,
     stats_path: Path,
     report: CalibrationReport,
     n_train: int,
@@ -98,26 +98,29 @@ def _write_calibrated_thresholds(
             report.suggested_maha_threshold,
             floor,
             n_train,
-            stats.mahalanobis_p_threshold,
+            stats.thresholds.mahalanobis_p,
         )
-        maha_threshold = stats.mahalanobis_p_threshold
+        maha_threshold = stats.thresholds.mahalanobis_p
         # A kept prior value is still "calibrated" -- only truly unset (never calibrated
         # before, and now also refused) becomes "refused_degenerate".
         maha_status = "calibrated" if maha_threshold is not None else "refused_degenerate"
 
-    updated = stats.model_copy(
+    # Pydantic v2's model_copy doesn't deep-merge nested models -- build the updated
+    # thresholds section explicitly, then swap the whole section in on the outer artifact.
+    updated_thresholds = stats.thresholds.model_copy(
         update={
-            "mahalanobis_p_threshold": maha_threshold,
-            "mahalanobis_threshold_status": maha_status,
-            "cosine_threshold": report.suggested_cosine_threshold,
-            "knn_distance_threshold": report.suggested_knn_threshold,
-            "tfidf_threshold": (
+            "mahalanobis_p": maha_threshold,
+            "mahalanobis_status": maha_status,
+            "cosine": report.suggested_cosine_threshold,
+            "knn_distance": report.suggested_knn_threshold,
+            "tfidf_cosine": (
                 report.suggested_tfidf_threshold
                 if report.suggested_tfidf_threshold > 0
-                else stats.tfidf_threshold
+                else stats.thresholds.tfidf_cosine
             ),
         }
     )
+    updated = stats.model_copy(update={"thresholds": updated_thresholds})
     save_stats(updated, stats_path)
     log.info(
         "Wrote calibrated thresholds to %s: mahalanobis_p=%s, cosine=%.4f, knn_distance=%.4f",

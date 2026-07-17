@@ -31,7 +31,7 @@ from src.ood import (
     resolve_ood_thresholds,
     tfidf_cosine_z_score,
 )
-from src.schema import ClassEmbeddingStats, OodMetrics
+from src.schema import OodArtifact, OodMetrics
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -105,14 +105,14 @@ class OodScorer:
     "no ood_stats.npz" case is represented by load() returning None, once, not by every
     method re-checking an Optional field."""
 
-    def __init__(self, stats: ClassEmbeddingStats) -> None:
+    def __init__(self, stats: OodArtifact) -> None:
         self._stats = stats
 
     @staticmethod
     def load(model_path: str) -> "OodScorer | None":
         """None when ood_stats.npz isn't present next to the model -- mirrors
         BertTunningClassifier's previous _load_ood_stats exactly, just wrapped in the
-        scorer instead of returning a bare ClassEmbeddingStats."""
+        scorer instead of returning a bare OodArtifact."""
         stats_path = Path(model_path) / "ood_stats.npz"
         if not stats_path.exists():
             log.info("No ood_stats.npz found at %s — OOD scoring disabled", stats_path)
@@ -151,19 +151,19 @@ class OodScorer:
         FOLDER_TO_LABEL classes). model_type + hidden_size is a coarse fingerprint that
         catches the realistic mistake (copying one model's ood_stats.npz next to a
         different architecture) without a new CLI flag or fragile checkpoint-metadata
-        introspection. Skipped entirely when the stats predate this field (both None) --
-        this is an additional check layered on top of the class-mapping one, not a
-        replacement for it, and not a hard requirement for older artifacts."""
-        if self._stats.model_type is None or self._stats.model_hidden_size is None:
+        introspection. Skipped entirely when the stats predate this field (metadata is
+        None) -- this is an additional check layered on top of the class-mapping one, not
+        a replacement for it, and not a hard requirement for older artifacts."""
+        metadata = self._stats.metadata
+        if metadata is None:
             return
         mismatched = (
-            self._stats.model_type != model_type
-            or self._stats.model_hidden_size != model_hidden_size
+            metadata.model_type != model_type or metadata.model_hidden_size != model_hidden_size
         )
         if mismatched:
             msg = (
-                f"ood_stats.npz was computed from model_type={self._stats.model_type!r}, "
-                f"hidden_size={self._stats.model_hidden_size}, but the loaded model is "
+                f"ood_stats.npz was computed from model_type={metadata.model_type!r}, "
+                f"hidden_size={metadata.model_hidden_size}, but the loaded model is "
                 f"model_type={model_type!r}, hidden_size={model_hidden_size} -- this "
                 "ood_stats.npz belongs to a different model architecture. Regenerate it for "
                 "this exact model with compute-ood-stats."
@@ -182,17 +182,18 @@ class OodScorer:
         correctly refused to persist a value" (a separate, non-actionable INFO line below) --
         collapsing both into one message here is exactly the ambiguity that field exists to
         remove."""
+        thresholds = self._stats.thresholds
         uncalibrated = [
             name
             for name, value in (
-                ("cosine_threshold", self._stats.cosine_threshold),
-                ("knn_distance_threshold", self._stats.knn_distance_threshold),
+                ("cosine_threshold", thresholds.cosine),
+                ("knn_distance_threshold", thresholds.knn_distance),
             )
             if value is None
         ]
-        if self._stats.mahalanobis_threshold_status == "not_calibrated":
+        if thresholds.mahalanobis_status == "not_calibrated":
             uncalibrated.append("mahalanobis_p_threshold")
-        if self._stats.tfidf_centroids.size > 0 and self._stats.tfidf_threshold is None:
+        if self._stats.lexical.is_fitted() and thresholds.tfidf_cosine is None:
             uncalibrated.append("tfidf_threshold")
         if uncalibrated:
             log.warning(
@@ -201,7 +202,7 @@ class OodScorer:
                 "evaluate-ood-calibration --write-thresholds for this model to silence this.",
                 ", ".join(uncalibrated),
             )
-        if self._stats.mahalanobis_threshold_status == "refused_degenerate":
+        if thresholds.mahalanobis_status == "refused_degenerate":
             log.info(
                 "mahalanobis_p_threshold falls back to Settings.OOD_MAHALANOBIS_P_THRESHOLD "
                 "because evaluate-ood-calibration's degenerate-threshold guard correctly "
