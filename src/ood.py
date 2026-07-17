@@ -349,26 +349,70 @@ def resolve_ood_thresholds(stats: OodArtifact) -> OodThresholds:
     )
 
 
-def save_stats(stats: OodArtifact, path: Path) -> None:
-    """The .npz file's own keys stay exactly as they've always been -- flat, unnamespaced --
-    this function and load_stats are the only place that know OodArtifact's Python-side
-    shape is nested. See "Versioning strategy" in
-    docs/superpowers/specs/2026-07-16-ood-artifact-schema-versioning-design.md."""
+def _embedding_stats_to_npz_dict(embedding: EmbeddingStats) -> dict[str, npt.ArrayLike]:
+    return {
+        "pca_mean": embedding.pca_mean,
+        "pca_components": embedding.pca_components,
+        "centroids": embedding.centroids,
+        "covariance_inv": embedding.covariance_inv,
+        "cosine_calibration_mean": embedding.cosine_calibration_mean,
+        "cosine_calibration_std": embedding.cosine_calibration_std,
+        "knn_train_embeddings": embedding.knn_train_embeddings,
+        "knn_train_labels": np.array(embedding.knn_train_labels),
+    }
+
+
+def _lexical_stats_to_npz_dict(lexical: LexicalStats) -> dict[str, npt.ArrayLike]:
+    return {
+        "tfidf_vocabulary_terms": np.array(lexical.vocabulary_terms),
+        "tfidf_idf": lexical.idf,
+        "tfidf_centroids": lexical.centroids,
+        "tfidf_cosine_calibration_mean": lexical.cosine_calibration_mean,
+        "tfidf_cosine_calibration_std": lexical.cosine_calibration_std,
+    }
+
+
+def _thresholds_to_npz_dict(thresholds: CalibratedThresholds) -> dict[str, npt.ArrayLike]:
     # npz has no native "missing key" for a single scalar the way a dict does, and no None --
     # NaN is the serialization sentinel for "not yet calibrated," round-tripped back to None
     # by load_stats's _optional_threshold.
-    maha_threshold = (
-        np.nan if stats.thresholds.mahalanobis_p is None else stats.thresholds.mahalanobis_p
-    )
-    cosine_thresh = np.nan if stats.thresholds.cosine is None else stats.thresholds.cosine
-    knn_thresh = np.nan if stats.thresholds.knn_distance is None else stats.thresholds.knn_distance
+    return {
+        "mahalanobis_p_threshold": (
+            np.nan if thresholds.mahalanobis_p is None else thresholds.mahalanobis_p
+        ),
+        "cosine_threshold": np.nan if thresholds.cosine is None else thresholds.cosine,
+        "knn_distance_threshold": (
+            np.nan if thresholds.knn_distance is None else thresholds.knn_distance
+        ),
+        "tfidf_threshold": (np.nan if thresholds.tfidf_cosine is None else thresholds.tfidf_cosine),
+        "mahalanobis_threshold_status": thresholds.mahalanobis_status,
+    }
+
+
+def _metadata_to_npz_dict(metadata: ArtifactMetadata | None) -> dict[str, npt.ArrayLike]:
     # "" / -1 are the None-sentinels for a string/int field, the same role NaN plays for the
     # threshold floats above -- npz has no native optional-scalar support.
-    model_type = "" if stats.metadata is None else stats.metadata.model_type
-    model_hidden_size = -1 if stats.metadata is None else stats.metadata.model_hidden_size
-    tfidf_threshold = (
-        np.nan if stats.thresholds.tfidf_cosine is None else stats.thresholds.tfidf_cosine
-    )
+    return {
+        "model_type": "" if metadata is None else metadata.model_type,
+        "model_hidden_size": -1 if metadata is None else metadata.model_hidden_size,
+    }
+
+
+def save_stats(stats: OodArtifact, path: Path) -> None:
+    """The .npz file's own keys stay exactly as they've always been -- flat, unnamespaced --
+    this function and load_stats are the only place that know OodArtifact's Python-side
+    shape is nested. Adding a new section only means adding its own _load_*/_*_to_npz_dict
+    pair (mirroring each other, one per OodArtifact field) -- this function itself never
+    needs editing. See "Versioning strategy" in
+    docs/superpowers/specs/2026-07-16-ood-artifact-schema-versioning-design.md."""
+    npz_dict: dict[str, npt.ArrayLike] = {
+        "format_version": stats.format_version,
+        "class_names": np.array(stats.class_names),
+        **_embedding_stats_to_npz_dict(stats.embedding),
+        **_lexical_stats_to_npz_dict(stats.lexical),
+        **_thresholds_to_npz_dict(stats.thresholds),
+        **_metadata_to_npz_dict(stats.metadata),
+    }
 
     # Write to a temp file first, verify it actually loads back, then atomically replace the
     # real path -- np.savez writing directly to `path` left a window where a crash, disk-full,
@@ -381,31 +425,10 @@ def save_stats(stats: OodArtifact, path: Path) -> None:
         # string/Path filenames that don't already end in it, which would silently save this
         # as "....npz.tmp.npz" instead of the tmp_path we opened. A handle bypasses that.
         with tmp_path.open("wb") as f:
-            np.savez(
-                f,
-                format_version=stats.format_version,
-                class_names=np.array(stats.class_names),
-                pca_mean=stats.embedding.pca_mean,
-                pca_components=stats.embedding.pca_components,
-                centroids=stats.embedding.centroids,
-                covariance_inv=stats.embedding.covariance_inv,
-                cosine_calibration_mean=stats.embedding.cosine_calibration_mean,
-                cosine_calibration_std=stats.embedding.cosine_calibration_std,
-                knn_train_embeddings=stats.embedding.knn_train_embeddings,
-                knn_train_labels=np.array(stats.embedding.knn_train_labels),
-                mahalanobis_p_threshold=maha_threshold,
-                cosine_threshold=cosine_thresh,
-                knn_distance_threshold=knn_thresh,
-                model_type=model_type,
-                model_hidden_size=model_hidden_size,
-                mahalanobis_threshold_status=stats.thresholds.mahalanobis_status,
-                tfidf_vocabulary_terms=np.array(stats.lexical.vocabulary_terms),
-                tfidf_idf=stats.lexical.idf,
-                tfidf_centroids=stats.lexical.centroids,
-                tfidf_cosine_calibration_mean=stats.lexical.cosine_calibration_mean,
-                tfidf_cosine_calibration_std=stats.lexical.cosine_calibration_std,
-                tfidf_threshold=tfidf_threshold,
-            )
+            # np.savez's stub has a named allow_pickle: bool = True between *args and
+            # **kwds -- mypy can't statically rule out npz_dict containing that key, so it
+            # checks the whole unpack against `bool` and false-positives here.
+            np.savez(f, **npz_dict)  # type: ignore[arg-type]
         load_stats(tmp_path)  # fail fast on a corrupt/incomplete write, before touching `path`
         tmp_path.replace(path)
     finally:
