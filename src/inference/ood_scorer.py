@@ -19,6 +19,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer  # noqa: TC002
 
 from src.exceptions import BertTunningError
 from src.ood import (
+    OodCalibrationStatus,
     OodThresholds,
     build_tfidf_vectorizer,
     compute_train_mahalanobis_distances,
@@ -28,6 +29,7 @@ from src.ood import (
     load_stats,
     mahalanobis_chi2_p_value_from_distance,
     mahalanobis_min_distance,
+    resolve_ood_calibration_status,
     resolve_ood_thresholds,
     tfidf_cosine_z_score,
 )
@@ -53,7 +55,21 @@ class OodScores(NamedTuple):
     tfidf_cosine_z: float = float("nan")
 
 
-def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool:
+_ALL_CALIBRATED = OodCalibrationStatus(
+    mahalanobis="calibrated",
+    cosine="calibrated",
+    knn_distance="calibrated",
+    tfidf_cosine="calibrated",
+)
+
+
+def is_out_of_distribution(
+    scores: OodScores,
+    thresholds: OodThresholds,
+    calibration_status: OodCalibrationStatus = _ALL_CALIBRATED,
+    *,
+    allow_uncalibrated_fallback: bool = True,
+) -> bool:
     """Any one of the four OOD signals firing is enough -- a deliberate OR, not a
     weighted blend (see README's "OOD scoring internals" for why). NaN in knn_distance
     means the predicted class had zero training points to compare against; treated as
@@ -65,14 +81,38 @@ def is_out_of_distribution(scores: OodScores, thresholds: OodThresholds) -> bool
     when available, Settings.OOD_* fallback otherwise. Never reads Settings directly here,
     or a model's decisions silently use whichever thresholds happen to be configured for a
     completely different model.
+
+    calibration_status/allow_uncalibrated_fallback default to "fully permissive" (every
+    signal calibrated / fallback allowed) so callers that don't care about this gating
+    behave exactly as before. When allow_uncalibrated_fallback is False, a signal whose
+    calibration_status is "not_calibrated" is excluded from the OR -- its score is still
+    computed by the caller and reported, it just can't flip in_distribution to False on
+    its own. "refused_degenerate" (mahalanobis only) is NEVER excluded regardless of the
+    flag -- that's a legitimate calibration outcome (the degenerate-threshold guard
+    correctly declined to persist a floor-adjacent value), not a calibration gap; both
+    committed production models rely on this exact fallback for Mahalanobis today. The
+    existing NaN-based knn_distance/tfidf_cosine_z fail-closed/fail-open rules are
+    unchanged -- this is an additional `and`, not a replacement.
     """
-    maha_anomalous = scores.mahalanobis_p < thresholds.mahalanobis_p
-    cosine_anomalous = scores.cosine_z > thresholds.cosine_z
-    knn_anomalous = (
+    maha_blocked = (
+        not allow_uncalibrated_fallback and calibration_status.mahalanobis == "not_calibrated"
+    )
+    maha_anomalous = not maha_blocked and scores.mahalanobis_p < thresholds.mahalanobis_p
+    cosine_blocked = (
+        not allow_uncalibrated_fallback and calibration_status.cosine == "not_calibrated"
+    )
+    cosine_anomalous = not cosine_blocked and scores.cosine_z > thresholds.cosine_z
+    knn_blocked = (
+        not allow_uncalibrated_fallback and calibration_status.knn_distance == "not_calibrated"
+    )
+    knn_anomalous = not knn_blocked and (
         bool(np.isnan(scores.knn_distance)) or scores.knn_distance > thresholds.knn_distance
     )
+    tfidf_blocked = (
+        not allow_uncalibrated_fallback and calibration_status.tfidf_cosine == "not_calibrated"
+    )
     # Opposite of knn_anomalous's NaN handling on purpose -- see OodScores' docstring.
-    tfidf_anomalous = (
+    tfidf_anomalous = not tfidf_blocked and (
         not np.isnan(scores.tfidf_cosine_z) and scores.tfidf_cosine_z > thresholds.tfidf_cosine_z
     )
     log.debug(
@@ -176,33 +216,43 @@ class OodScorer:
         that's never been through `evaluate-ood-calibration --write-thresholds` silently
         inherits whichever model Settings.OOD_* happens to be calibrated for. This does not
         fail startup -- an uncalibrated model is still usable, just with potentially
-        miscalibrated OOD decisions -- but it must not be silent either. Runs once at
-        construction, not per-request. mahalanobis_threshold_status distinguishes "never
-        calibrated" (this WARNING) from "calibration ran, degenerate-threshold guard
-        correctly refused to persist a value" (a separate, non-actionable INFO line below) --
-        collapsing both into one message here is exactly the ambiguity that field exists to
-        remove."""
-        thresholds = self._stats.thresholds
+        miscalibrated OOD decisions unless OOD_ALLOW_UNCALIBRATED_FALLBACK=False -- but it
+        must not be silent either. Runs once at construction, not per-request. Reuses
+        resolve_ood_calibration_status() rather than re-deriving "never calibrated" here,
+        so this warning and score()'s actual gating can never disagree about which signals
+        are uncalibrated. mahalanobis's three-way status distinguishes "never calibrated"
+        (this WARNING) from "calibration ran, degenerate-threshold guard correctly refused
+        to persist a value" (a separate, non-actionable INFO line below) -- collapsing both
+        into one message here is exactly the ambiguity that field exists to remove."""
+        status = resolve_ood_calibration_status(self._stats)
         uncalibrated = [
             name
             for name, value in (
-                ("cosine_threshold", thresholds.cosine),
-                ("knn_distance_threshold", thresholds.knn_distance),
+                ("mahalanobis_p_threshold", status.mahalanobis),
+                ("cosine_threshold", status.cosine),
+                ("knn_distance_threshold", status.knn_distance),
+                ("tfidf_threshold", status.tfidf_cosine),
             )
-            if value is None
+            if value == "not_calibrated"
         ]
-        if thresholds.mahalanobis_status == "not_calibrated":
-            uncalibrated.append("mahalanobis_p_threshold")
-        if self._stats.lexical.is_fitted() and thresholds.tfidf_cosine is None:
-            uncalibrated.append("tfidf_threshold")
         if uncalibrated:
-            log.warning(
-                "ood_stats.npz has no per-model value for %s -- falling back to Settings.OOD_* "
-                "(calibrated for a specific model, not necessarily this one). Run "
-                "evaluate-ood-calibration --write-thresholds for this model to silence this.",
-                ", ".join(uncalibrated),
-            )
-        if thresholds.mahalanobis_status == "refused_degenerate":
+            if Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK:
+                log.warning(
+                    "ood_stats.npz has no per-model value for %s -- falling back to "
+                    "Settings.OOD_* (calibrated for a specific model, not necessarily this "
+                    "one). Run evaluate-ood-calibration --write-thresholds for this model to "
+                    "silence this.",
+                    ", ".join(uncalibrated),
+                )
+            else:
+                log.warning(
+                    "ood_stats.npz has no per-model value for %s -- DISABLED under strict "
+                    "mode (OOD_ALLOW_UNCALIBRATED_FALLBACK=False), not falling back to "
+                    "Settings.OOD_*. Run evaluate-ood-calibration --write-thresholds for "
+                    "this model to enable it.",
+                    ", ".join(uncalibrated),
+                )
+        if status.mahalanobis == "refused_degenerate":
             log.info(
                 "mahalanobis_p_threshold falls back to Settings.OOD_MAHALANOBIS_P_THRESHOLD "
                 "because evaluate-ood-calibration's degenerate-threshold guard correctly "
@@ -255,7 +305,13 @@ class OodScorer:
         )
         maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(squared_distance, self._stats)
         thresholds = resolve_ood_thresholds(self._stats)
-        in_distribution = not is_out_of_distribution(scores, thresholds)
+        calibration_status = resolve_ood_calibration_status(self._stats)
+        in_distribution = not is_out_of_distribution(
+            scores,
+            thresholds,
+            calibration_status,
+            allow_uncalibrated_fallback=Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK,
+        )
         return OodMetrics(
             mahalanobis_p_value=round(scores.mahalanobis_p, 6),
             mahalanobis_p_value_theoretical=round(maha_p_theoretical, 6),
@@ -265,4 +321,8 @@ class OodScorer:
                 None if np.isnan(scores.tfidf_cosine_z) else round(scores.tfidf_cosine_z, 4)
             ),
             in_distribution=in_distribution,
+            mahalanobis_calibration_status=calibration_status.mahalanobis,
+            cosine_calibration_status=calibration_status.cosine,
+            knn_distance_calibration_status=calibration_status.knn_distance,
+            tfidf_calibration_status=calibration_status.tfidf_cosine,
         )

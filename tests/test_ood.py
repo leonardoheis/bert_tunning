@@ -25,6 +25,7 @@ from src.ood import (
     mahalanobis_chi2_p_value_from_distance,
     mahalanobis_empirical_p_value,
     mahalanobis_min_distance,
+    resolve_ood_calibration_status,
     resolve_ood_thresholds,
     save_stats,
     tfidf_cosine_z_score,
@@ -703,6 +704,72 @@ def test_resolve_ood_thresholds_uses_stats_values_when_present() -> None:
     assert thresholds.mahalanobis_p == pytest.approx(0.002)
     assert thresholds.cosine_z == pytest.approx(5.0)
     assert thresholds.knn_distance == pytest.approx(10.0)
+
+
+def test_resolve_ood_calibration_status_all_calibrated() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    base = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
+    )
+    stats = base.model_copy(
+        update={
+            "thresholds": base.thresholds.model_copy(
+                update={
+                    "mahalanobis_p": 0.002,
+                    "mahalanobis_status": "calibrated",
+                    "cosine": 5.0,
+                    "knn_distance": 10.0,
+                    "tfidf_cosine": 2.5,
+                }
+            )
+        }
+    )
+    status = resolve_ood_calibration_status(stats)
+    assert status.mahalanobis == "calibrated"
+    assert status.cosine == "calibrated"
+    assert status.knn_distance == "calibrated"
+    assert status.tfidf_cosine == "calibrated"
+
+
+def test_resolve_ood_calibration_status_not_calibrated_when_thresholds_none() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
+    )
+    status = resolve_ood_calibration_status(stats)
+    assert status.mahalanobis == "not_calibrated"
+    assert status.cosine == "not_calibrated"
+    assert status.knn_distance == "not_calibrated"
+    # This model's compute_class_stats() call above fits TF-IDF (texts= is provided), so
+    # tfidf_cosine here is "not_calibrated", not None -- see the next test for the
+    # not-fitted-at-all case.
+    assert status.tfidf_cosine == "not_calibrated"
+
+
+def test_resolve_ood_calibration_status_mahalanobis_refused_degenerate() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    base = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
+    )
+    stats = base.model_copy(
+        update={
+            "thresholds": base.thresholds.model_copy(
+                update={"mahalanobis_status": "refused_degenerate"}
+            )
+        }
+    )
+    status = resolve_ood_calibration_status(stats)
+    assert status.mahalanobis == "refused_degenerate"
+
+
+def test_resolve_ood_calibration_status_tfidf_none_when_lexical_not_fitted() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    base = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
+    )
+    stats = base.model_copy(update={"lexical": LexicalStats()})
+    status = resolve_ood_calibration_status(stats)
+    assert status.tfidf_cosine is None
 
 
 def test_extract_embeddings_and_predictions_returns_matching_lengths() -> None:

@@ -35,6 +35,21 @@ class OodMetrics(BaseModel):
     knn_distance: float
     tfidf_cosine_z: float | None = None
     in_distribution: bool
+    # Per-signal calibration state -- visibility for the reviewer-flagged gap where a
+    # signal borrowing Settings.OOD_* (this model was never calibrated) looked identical
+    # to a genuinely per-model-calibrated one. Flat fields, not one nested status object,
+    # mirroring how the four signal values above are already flattened rather than
+    # nested. Defaulted so none of the 9 existing direct OodMetrics(...) test
+    # constructors need updating. tfidf_calibration_status mirrors tfidf_cosine_z's own
+    # Optional -- None means this model has no TF-IDF signal at all (lexical stats never
+    # fitted), a different, non-actionable-by-calibration state than "not_calibrated".
+    # See docs/superpowers/specs/2026-07-18-ood-uncalibrated-threshold-visibility-design.md.
+    mahalanobis_calibration_status: Literal[
+        "calibrated", "not_calibrated", "refused_degenerate"
+    ] = "calibrated"
+    cosine_calibration_status: Literal["calibrated", "not_calibrated"] = "calibrated"
+    knn_distance_calibration_status: Literal["calibrated", "not_calibrated"] = "calibrated"
+    tfidf_calibration_status: Literal["calibrated", "not_calibrated"] | None = None
 
 
 class PredictResult(BaseModel):
@@ -84,6 +99,10 @@ _OOD_METRIC_FIELDS = (
     "knn_distance",
     "tfidf_cosine_z",
     "in_distribution",
+    "mahalanobis_calibration_status",
+    "cosine_calibration_status",
+    "knn_distance_calibration_status",
+    "tfidf_calibration_status",
 )
 
 

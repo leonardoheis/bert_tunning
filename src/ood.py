@@ -349,6 +349,40 @@ def resolve_ood_thresholds(stats: OodArtifact) -> OodThresholds:
     )
 
 
+class OodCalibrationStatus(NamedTuple):
+    """Companion to OodThresholds -- describes HOW each threshold was resolved (this
+    model's own calibration vs. a Settings.OOD_* fallback), not the resolved number
+    itself. Kept separate from OodThresholds so its 21 existing call sites, which only
+    ever need the number, never have to learn about this orthogonal policy concept.
+    tfidf_cosine is None (not "not_calibrated") when this model's lexical stats were
+    never fitted at all -- mirrors OodMetrics.tfidf_cosine_z's own existing Optional
+    convention for the identical reason: "no calibration exists yet" and "no signal
+    exists at all" call for two different operator fixes (run evaluate-ood-calibration
+    vs. regenerate the artifact), so they can't collapse to the same value."""
+
+    mahalanobis: Literal["calibrated", "not_calibrated", "refused_degenerate"]
+    cosine: Literal["calibrated", "not_calibrated"]
+    knn_distance: Literal["calibrated", "not_calibrated"]
+    tfidf_cosine: Literal["calibrated", "not_calibrated"] | None
+
+
+def resolve_ood_calibration_status(stats: OodArtifact) -> OodCalibrationStatus:
+    """Pure per-field read of stats.thresholds -- no Settings fallback here, unlike
+    resolve_ood_thresholds(): this function answers "was this model itself calibrated,"
+    which Settings.OOD_* can never answer on a model's behalf."""
+    thresholds = stats.thresholds
+    return OodCalibrationStatus(
+        mahalanobis=thresholds.mahalanobis_status,
+        cosine="calibrated" if thresholds.cosine is not None else "not_calibrated",
+        knn_distance="calibrated" if thresholds.knn_distance is not None else "not_calibrated",
+        tfidf_cosine=(
+            None
+            if not stats.lexical.is_fitted()
+            else ("calibrated" if thresholds.tfidf_cosine is not None else "not_calibrated")
+        ),
+    )
+
+
 def _embedding_stats_to_npz_dict(embedding: EmbeddingStats) -> dict[str, npt.ArrayLike]:
     return {
         "pca_mean": embedding.pca_mean,
