@@ -16,7 +16,7 @@ from src.inference.classify import (
 )
 from src.inference.ood_scorer import OodScorer, OodScores, is_out_of_distribution
 from src.inference.pipeline import predict_pdf
-from src.ood import OodThresholds, compute_tfidf_stats, save_stats
+from src.ood import OodCalibrationStatus, OodThresholds, compute_tfidf_stats, save_stats
 from src.schema import (
     ArtifactMetadata,
     EmbeddingStats,
@@ -231,6 +231,113 @@ def test_is_out_of_distribution_false_when_tfidf_z_below_threshold() -> None:
         mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0, tfidf_cosine_z=2.5
     )
     assert is_out_of_distribution(scores, thresholds) is False
+
+
+def test_is_out_of_distribution_defaults_to_permissive_when_calibration_status_omitted() -> None:
+    # Callers that don't pass calibration_status/allow_uncalibrated_fallback at all must
+    # behave exactly as before this feature -- a signal fires regardless of calibration.
+    scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    assert is_out_of_distribution(scores, thresholds) is True
+
+
+def test_is_out_of_distribution_blocks_not_calibrated_signal_under_strict_mode() -> None:
+    # Mahalanobis would fire (0.0001 < 0.01), but its calibration_status is
+    # "not_calibrated" and allow_uncalibrated_fallback=False -- strict mode must exclude
+    # it from the OR, not just warn about it.
+    scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="not_calibrated",
+        cosine="calibrated",
+        knn_distance="calibrated",
+        tfidf_cosine="calibrated",
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is False
+    )
+
+
+def test_is_out_of_distribution_still_fires_when_a_different_signal_is_calibrated() -> None:
+    # Mahalanobis is blocked (not_calibrated, strict mode), but cosine is genuinely
+    # calibrated and fires on its own -- strict mode blocks per-signal, not the whole OR.
+    scores = OodScores(
+        mahalanobis_p=0.0001, cosine_z=Settings.OOD_COSINE_THRESHOLD + 1, knn_distance=1.0
+    )
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="not_calibrated",
+        cosine="calibrated",
+        knn_distance="calibrated",
+        tfidf_cosine="calibrated",
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is True
+    )
+
+
+def test_is_out_of_distribution_never_blocks_refused_degenerate_under_strict_mode() -> None:
+    # "refused_degenerate" is a legitimate calibration outcome, not a gap -- strict mode
+    # must NOT block it, unlike genuine "not_calibrated". Both committed production
+    # models (BETO v1/v2) rely on this exact fallback for Mahalanobis today.
+    scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="refused_degenerate",
+        cosine="calibrated",
+        knn_distance="calibrated",
+        tfidf_cosine="calibrated",
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is True
+    )
+
+
+def test_is_out_of_distribution_blocks_tfidf_not_calibrated_under_strict_mode() -> None:
+    scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=10.0)
+    thresholds = OodThresholds(
+        mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0, tfidf_cosine_z=2.5
+    )
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="calibrated",
+        cosine="calibrated",
+        knn_distance="calibrated",
+        tfidf_cosine="not_calibrated",
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is False
+    )
+
+
+def test_is_out_of_distribution_tfidf_none_status_still_fails_open_under_strict_mode() -> None:
+    # tfidf_cosine=None (no TF-IDF signal at all for this model) is not "not_calibrated"
+    # -- it must never be blocked, and the existing NaN-based fail-open rule still
+    # applies unchanged.
+    scores = OodScores(
+        mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=float("nan")
+    )
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="calibrated", cosine="calibrated", knn_distance="calibrated", tfidf_cosine=None
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is False
+    )
 
 
 def test_confidence_tier_from_confidence_at_or_above_threshold_is_confident() -> None:
@@ -581,6 +688,43 @@ def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
     assert result.ood_metrics.cosine_z <= Settings.OOD_COSINE_THRESHOLD
     assert result.ood_metrics.in_distribution is False
     assert result.review_route == "human_review"
+
+
+def test_predict_text_reports_calibration_status_fields() -> None:
+    # _make_stats() leaves all three thresholds at their None default -- fully
+    # uncalibrated -- and doesn't fit TF-IDF, so tfidf_calibration_status is None (no
+    # signal at all), not "not_calibrated".
+    clf = _make_mock_classifier()
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.mahalanobis_calibration_status == "not_calibrated"
+    assert result.ood_metrics.cosine_calibration_status == "not_calibrated"
+    assert result.ood_metrics.knn_distance_calibration_status == "not_calibrated"
+    assert result.ood_metrics.tfidf_calibration_status is None
+
+
+def test_predict_text_strict_mode_blocks_uncalibrated_mahalanobis_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same far-point setup as test_predict_text_flags_out_of_distribution_via_mahalanobis_only
+    # (Mahalanobis alone would fire), but _make_stats() is fully uncalibrated and strict
+    # mode is on -- Mahalanobis must be excluded from the OR, so in_distribution stays
+    # True even though the raw score is still reported below threshold.
+    monkeypatch.setattr(Settings, "OOD_ALLOW_UNCALIBRATED_FALLBACK", False)
+    clf = _make_mock_classifier()
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
+    far_embedding = torch.full((1, 512, 8), 100.0)
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        cast("MagicMock", clf.model).return_value.hidden_states = [far_embedding]
+        result = clf.predict_text("anything")
+    assert result.ood_metrics is not None
+    # The raw score is still computed and reported -- strict mode only blocks it from
+    # contributing to in_distribution, it doesn't hide the number.
+    assert result.ood_metrics.mahalanobis_p_value < Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    assert result.ood_metrics.mahalanobis_calibration_status == "not_calibrated"
+    assert result.ood_metrics.in_distribution is True
 
 
 def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
