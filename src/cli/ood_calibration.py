@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import click
 import numpy as np
@@ -150,23 +150,43 @@ class OodCalibrationOptions(BaseModel):
     debug: bool = False
 
 
-def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
-    log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
-    log.info("Logging to %s", log_file)
+class OodCalibrationRunResult(NamedTuple):
+    report: CalibrationReport
+    current_thresholds: OodThresholds
 
+
+def compute_ood_calibration(  # noqa: PLR0913 -- one param per operational input, all required
+    model_path: str,
+    model_key: str,
+    cache_path: str,
+    chunk_strategy: str,
+    seed: int,
+    target_fp_rate: float,
+    write_thresholds: bool,  # noqa: FBT001 -- mirrors OodCalibrationOptions.write_thresholds
+) -> OodCalibrationRunResult:
+    """Runs the four OOD signal computations against a model's test split and builds the
+    calibration report. Pure operation, no CLI/logging-setup or rendering (console/W&B) --
+    those stay in _run_ood_calibration(). Takes only the operational parameters, deliberately
+    excluding log_wandb/debug from OodCalibrationOptions since those are rendering/CLI-setup
+    concerns the calibration math itself doesn't need.
+
+    Raises click.ClickException for the three validation failures (missing stats file, no
+    training data, no test docs with same-class training points), matching existing
+    precedent in src/cli/_ood_common.py's reconstruct_split_and_load_model().
+    """
     # Checked before touching the model/split (both expensive) so a missing stats file
     # fails fast, same as before this function's setup was consolidated.
-    stats_path = Path(opts.model_path) / "ood_stats.npz"
+    stats_path = Path(model_path) / "ood_stats.npz"
     if not stats_path.exists():
         msg = f"No ood_stats.npz found at {stats_path} — run compute-ood-stats first"
         raise click.ClickException(msg)
     stats = load_stats(stats_path)
 
-    model_cfg = get_model_config(opts.model_key)
+    model_cfg = get_model_config(model_key)
     # Same split-reconstruction as Task 3b — the test split is known in-distribution
     # by construction, since it's real training documents held out from the train split.
     split = reconstruct_split_and_load_model(
-        model_path=opts.model_path, cache_path=opts.cache_path, seed=opts.seed
+        model_path=model_path, cache_path=cache_path, seed=seed
     )
 
     train_distances = compute_train_mahalanobis_distances(stats)
@@ -178,7 +198,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     embeddings, predicted_ids = embed_texts_and_predict(
         split.loaded,
         split.test_df,
-        chunk_strategy=opts.chunk_strategy,
+        chunk_strategy=chunk_strategy,
         max_tokens=model_cfg.max_tokens,
     )
 
@@ -229,12 +249,31 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         p_values,
         z_scores,
         knn_distances[knn_valid],
-        opts.target_fp_rate,
+        target_fp_rate,
         current_thresholds,
         tfidf_z_scores=tfidf_z_scores,
     )
-    if opts.write_thresholds:
+    if write_thresholds:
         _write_calibrated_thresholds(stats, stats_path, report, len(train_distances))
+
+    return OodCalibrationRunResult(report=report, current_thresholds=current_thresholds)
+
+
+def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
+    log_file = setup_logging(level=logging.DEBUG if opts.debug else logging.INFO)
+    log.info("Logging to %s", log_file)
+
+    result = compute_ood_calibration(
+        model_path=opts.model_path,
+        model_key=opts.model_key,
+        cache_path=opts.cache_path,
+        chunk_strategy=opts.chunk_strategy,
+        seed=opts.seed,
+        target_fp_rate=opts.target_fp_rate,
+        write_thresholds=opts.write_thresholds,
+    )
+    report = result.report
+    current_thresholds = result.current_thresholds
 
     log.info("=" * 60)
     log.info("OOD threshold calibration — %s", opts.model_path)
