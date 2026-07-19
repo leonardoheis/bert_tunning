@@ -6,6 +6,7 @@ import pytest
 
 from src.svm_reviewer import (
     evaluate_svm_classifiers,
+    fit_and_evaluate_svm_reviewer,
     fit_svm_classifiers,
     load_svm_classifiers,
     save_svm_classifiers,
@@ -78,6 +79,37 @@ def test_evaluate_svm_classifiers_scores_high_on_well_separated_held_out_data() 
         classifiers, held_out_embeddings, held_out_labels, class_names
     )
     assert all(v > 0.9 for v in scores.values())  # noqa: PLR2004
+
+
+def test_fit_and_evaluate_svm_reviewer_returns_classifiers_accuracy_and_counts() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    rng = np.random.default_rng(99)
+    held_out_decreto = rng.normal(loc=0.0, scale=0.1, size=(10, 8))
+    held_out_ordenanza = rng.normal(loc=5.0, scale=0.1, size=(10, 8))
+    val_embeddings = np.vstack([held_out_decreto, held_out_ordenanza])
+    val_labels = [0] * 10 + [1] * 10
+
+    result = fit_and_evaluate_svm_reviewer(
+        embeddings, labels, val_embeddings, val_labels, class_names
+    )
+
+    assert set(result.classifiers.keys()) == set(class_names)
+    assert set(result.val_accuracy.keys()) == set(class_names)
+    assert all(v > 0.9 for v in result.val_accuracy.values())  # noqa: PLR2004
+    assert result.train_class_counts == {"decreto": 20, "ordenanza": 20}
+
+
+def test_fit_and_evaluate_svm_reviewer_matches_calling_the_two_functions_separately() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    val_embeddings, val_labels = embeddings, labels  # any embeddings work for this comparison
+
+    result = fit_and_evaluate_svm_reviewer(
+        embeddings, labels, val_embeddings, val_labels, class_names
+    )
+
+    classifiers = fit_svm_classifiers(embeddings, labels, class_names)
+    accuracy = evaluate_svm_classifiers(classifiers, val_embeddings, val_labels, class_names)
+    assert result.val_accuracy == accuracy
 
 
 def test_save_and_load_svm_classifiers_roundtrip(tmp_path: Path) -> None:
