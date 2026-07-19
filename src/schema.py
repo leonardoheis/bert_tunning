@@ -52,6 +52,14 @@ class OodMetrics(BaseModel):
     tfidf_calibration_status: Literal["calibrated", "not_calibrated"] | None = None
 
 
+# "" is the not-yet-computed default (e.g. before predict_text/predict_pdf runs); the three
+# non-empty values are decide_review_route()'s (src/inference/classify.py) only possible
+# outputs. Shared here (not repeated per field) since PredictResult, the API response
+# schema, and decide_review_route's own return type all need the identical closed set --
+# a Literal only where it's declared once can't catch a typo in any of the other two.
+ReviewRoute = Literal["", "accept", "llm_judge", "human_review"]
+
+
 class PredictResult(BaseModel):
     """Return value from BertTunningClassifier.predict_text and predict_pdf."""
 
@@ -71,7 +79,7 @@ class PredictResult(BaseModel):
     ood_metrics: OodMetrics | None = None
     extracted_text: str = ""
     extractor_used: str = ""
-    review_route: str = ""
+    review_route: ReviewRoute = ""
     foreign_municipality: str | None = None
     foreign_municipality_context: str | None = None
     # Per-class one-vs-rest SVM decision-function margins, independent of ood_metrics --

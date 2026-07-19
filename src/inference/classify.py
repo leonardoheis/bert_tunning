@@ -14,7 +14,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreT
 from src.exceptions import BertTunningError
 from src.inference.ood_scorer import OodScorer
 from src.ingestion.extract import clean_text
-from src.schema import PredictResult
+from src.schema import PredictResult, ReviewRoute
 from src.settings import Settings
 from src.svm_reviewer import load_svm_classifiers, svm_top_label
 from src.svm_reviewer import svm_scores as compute_svm_scores
@@ -80,7 +80,7 @@ def decide_review_route(
     confidence_tier: ConfidenceTier,
     ood_evidence: OodEvidence,
     classifier_disagreement: bool = False,
-) -> str:
+) -> ReviewRoute:
     """Route a prediction to "accept", "llm_judge", or "human_review".
 
     An OOD signal firing (ANOMALOUS) always wins and routes to a human -- an LLM judge
