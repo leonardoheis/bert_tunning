@@ -6,13 +6,17 @@ design rationale -- notably why this sits at src/ top level (used by both
 training/pipeline.py and inference/classify.py, same reasoning as ood.py/embeddings.py)
 and why there is deliberately no calibration/threshold here."""
 
+import logging
 from pathlib import Path
+from typing import NamedTuple
 
 import joblib
 import numpy as np
 import numpy.typing as npt
 from sklearn.metrics import balanced_accuracy_score
 from sklearn.svm import SVC
+
+log = logging.getLogger(__name__)
 
 
 def fit_svm_classifiers(
@@ -73,6 +77,43 @@ def evaluate_svm_classifiers(
         predictions = classifiers[name].predict(embeddings)
         scores[name] = float(balanced_accuracy_score(binary_labels, predictions))
     return scores
+
+
+class SvmTrainingResult(NamedTuple):
+    classifiers: dict[str, SVC]
+    val_accuracy: dict[str, float]
+    train_class_counts: dict[str, int]
+
+
+def fit_and_evaluate_svm_reviewer(
+    train_embeddings: npt.NDArray[np.float64],
+    train_labels: list[int],
+    val_embeddings: npt.NDArray[np.float64],
+    val_labels: list[int],
+    class_names: list[str],
+) -> SvmTrainingResult:
+    """Fits one-vs-rest SVM classifiers and immediately evaluates held-out balanced
+    accuracy on val_embeddings (never the data they were fit on) -- the fit+evaluate+count
+    sequence training/pipeline.py and cli/svm_classifiers.py both need, previously
+    duplicated in both files. Callers stay responsible for extracting the embeddings
+    themselves (the two callers use different embedding-extraction call shapes -- one
+    already has train_embeddings computed for OOD stats, the other doesn't) and for what
+    happens with the result (persisting to disk, logging to an already-open W&B run vs. a
+    standalone one) -- this function only owns the fit+evaluate+count math, the same
+    pure-computation shape as fit_svm_classifiers/evaluate_svm_classifiers above it."""
+    classifiers = fit_svm_classifiers(train_embeddings, train_labels, class_names)
+    val_accuracy = evaluate_svm_classifiers(classifiers, val_embeddings, val_labels, class_names)
+    log.info(
+        "SVM reviewer held-out balanced accuracy (val split): %s",
+        {k: round(v, 4) for k, v in val_accuracy.items()},
+    )
+    train_labels_arr = np.asarray(train_labels)
+    train_class_counts = {
+        name: int((train_labels_arr == idx).sum()) for idx, name in enumerate(class_names)
+    }
+    return SvmTrainingResult(
+        classifiers=classifiers, val_accuracy=val_accuracy, train_class_counts=train_class_counts
+    )
 
 
 def svm_scores(embedding: npt.NDArray[np.float64], classifiers: dict[str, SVC]) -> dict[str, float]:
