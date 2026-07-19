@@ -1,9 +1,10 @@
+from collections.abc import Iterator
 from typing import NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 import torch
-from transformers import PreTrainedTokenizerBase
+from transformers import BatchEncoding, PreTrainedTokenizerBase
 
 
 class LoadedModel(NamedTuple):
@@ -16,6 +17,29 @@ class LoadedModel(NamedTuple):
     device: str
 
 
+def _batched_inputs(
+    loaded: LoadedModel, texts: list[str], *, max_length: int, batch_size: int
+) -> Iterator[BatchEncoding]:
+    """Yields tokenized, device-moved inputs one batch at a time -- the identical
+    batching/tokenization/device-transfer machinery both extract_embeddings and
+    extract_embeddings_and_predictions need. Does NOT run the forward pass -- the two
+    callers deliberately use different forward-pass strategies (see module-level note on
+    why extract_embeddings skips the classification head) and must stay free to do so."""
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        yield loaded.tokenizer(
+            batch,
+            truncation=True,
+            padding="max_length",
+            max_length=max_length,
+            return_tensors="pt",
+        ).to(loaded.device)
+
+
+def _cls_embedding(hidden_state: torch.Tensor) -> npt.NDArray[np.float64]:
+    return hidden_state[:, 0, :].cpu().numpy().astype(np.float64)
+
+
 def extract_embeddings(
     loaded: LoadedModel,
     texts: list[str],
@@ -26,17 +50,9 @@ def extract_embeddings(
     loaded.model.eval()
     batches: list[npt.NDArray[np.float64]] = []
     with torch.no_grad():
-        for start in range(0, len(texts), batch_size):
-            batch = texts[start : start + batch_size]
-            inputs = loaded.tokenizer(
-                batch,
-                truncation=True,
-                padding="max_length",
-                max_length=max_length,
-                return_tensors="pt",
-            ).to(loaded.device)
+        for inputs in _batched_inputs(loaded, texts, max_length=max_length, batch_size=batch_size):
             hidden = loaded.model.base_model(**inputs).last_hidden_state  # type: ignore[operator]
-            batches.append(hidden[:, 0, :].cpu().numpy().astype(np.float64))
+            batches.append(_cls_embedding(hidden))
     return np.vstack(batches)
 
 
@@ -57,17 +73,8 @@ def extract_embeddings_and_predictions(
     embedding_batches: list[npt.NDArray[np.float64]] = []
     predicted_ids: list[int] = []
     with torch.no_grad():
-        for start in range(0, len(texts), batch_size):
-            batch = texts[start : start + batch_size]
-            inputs = loaded.tokenizer(
-                batch,
-                truncation=True,
-                padding="max_length",
-                max_length=max_length,
-                return_tensors="pt",
-            ).to(loaded.device)
+        for inputs in _batched_inputs(loaded, texts, max_length=max_length, batch_size=batch_size):
             outputs = loaded.model(**inputs, output_hidden_states=True)
-            hidden = outputs.hidden_states[-1]
-            embedding_batches.append(hidden[:, 0, :].cpu().numpy().astype(np.float64))
+            embedding_batches.append(_cls_embedding(outputs.hidden_states[-1]))
             predicted_ids.extend(outputs.logits.argmax(dim=-1).cpu().tolist())
     return np.vstack(embedding_batches), predicted_ids
