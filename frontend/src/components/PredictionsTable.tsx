@@ -20,6 +20,10 @@ function formatCell(value: unknown): string {
   return String(value);
 }
 
+function formatConfidence(value: unknown): string {
+  return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : formatCell(value);
+}
+
 const columnHelper = createColumnHelper<FlatResultRow>();
 
 const FIXED_COLUMNS: ColumnDef<FlatResultRow, string>[] = [
@@ -27,7 +31,7 @@ const FIXED_COLUMNS: ColumnDef<FlatResultRow, string>[] = [
   columnHelper.accessor("label", { header: "Label", cell: (c) => formatCell(c.getValue()) }),
   columnHelper.accessor("confidence", {
     header: "Confidence",
-    cell: (c) => formatCell(c.getValue()),
+    cell: (c) => formatConfidence(c.getValue()),
   }),
   columnHelper.accessor("certain", { header: "Certain", cell: (c) => formatCell(c.getValue()) }),
   columnHelper.accessor("mahalanobisPValue", {
