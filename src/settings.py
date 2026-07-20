@@ -100,6 +100,14 @@ class _Settings(BaseSettings):
     # "considerando", "por cuanto", etc.) from the TF-IDF vocabulary, so cosine distance isn't
     # diluted by tokens every document has regardless of municipality or type.
     OOD_TFIDF_MAX_DF: float = 0.5
+    # True (default) preserves the original silent-fallback behavior: a signal with no
+    # per-model calibrated threshold borrows Settings.OOD_* and can still flag anomalies.
+    # False enforces strict mode: a signal whose calibration_status is "not_calibrated"
+    # (never calibrated for this exact model) is excluded from the in_distribution OR
+    # ensemble -- computed and reported for visibility, just never allowed to fire. Does
+    # NOT affect "refused_degenerate" (a legitimate calibration outcome, not a gap) --
+    # see resolve_ood_calibration_status() in src/ood.py.
+    OOD_ALLOW_UNCALIBRATED_FALLBACK: bool = True
     # The corpus is mono-jurisdictional -- every training document is from this municipality.
     # detect_foreign_municipality() flags a document as anomalous when it explicitly names a
     # DIFFERENT one ("Municipalidad de <Name>" where Name != this), independent of the

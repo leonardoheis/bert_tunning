@@ -8,7 +8,7 @@ from pydantic.alias_generators import to_camel
 from src.cli._ood_common import embed_texts, reconstruct_split_and_load_model
 from src.logger import setup_logging
 from src.settings import Settings
-from src.svm_reviewer import evaluate_svm_classifiers, fit_svm_classifiers, save_svm_classifiers
+from src.svm_reviewer import fit_and_evaluate_svm_reviewer, save_svm_classifiers
 from src.training.models import get_model_config
 from src.wandb import log_svm_classifiers_results
 
@@ -50,39 +50,31 @@ def _run_compute_svm_classifiers(opts: ComputeSvmClassifiersOptions) -> None:
         chunk_strategy=opts.chunk_strategy,
         max_tokens=model_cfg.max_tokens,
     )
-    classifiers = fit_svm_classifiers(
-        embeddings, split.train_df["label_id"].tolist(), split.classes
-    )
-    log.info("Fit %d one-vs-rest SVM reviewers", len(classifiers))
-
     # "first", not opts.chunk_strategy -- mirrors training/pipeline.py's val split, which
     # always uses "first" regardless of the training chunk strategy.
     val_embeddings = embed_texts(
         split.loaded, split.val_df, chunk_strategy="first", max_tokens=model_cfg.max_tokens
     )
-    svm_val_accuracy = evaluate_svm_classifiers(
-        classifiers, val_embeddings, split.val_df["label_id"].tolist(), split.classes
+    result = fit_and_evaluate_svm_reviewer(
+        embeddings,
+        split.train_df["label_id"].tolist(),
+        val_embeddings,
+        split.val_df["label_id"].tolist(),
+        split.classes,
     )
-    log.info(
-        "SVM reviewer held-out balanced accuracy (val split): %s",
-        {k: round(v, 4) for k, v in svm_val_accuracy.items()},
-    )
+    log.info("Fit %d one-vs-rest SVM reviewers", len(result.classifiers))
 
     out_path = Path(opts.model_path) / "svm_classifiers.joblib"
-    save_svm_classifiers(classifiers, out_path)
+    save_svm_classifiers(result.classifiers, out_path)
     log.info("Saved SVM reviewer classifiers -> %s", out_path)
 
     if opts.log_wandb:
-        train_labels = split.train_df["label_id"]
-        train_class_counts = {
-            name: int((train_labels == idx).sum()) for idx, name in enumerate(split.classes)
-        }
         log_svm_classifiers_results(
             model_path=opts.model_path,
             cache_path=opts.cache_path,
             model_key=opts.model_key,
-            svm_val_accuracy=svm_val_accuracy,
-            train_class_counts=train_class_counts,
+            svm_val_accuracy=result.val_accuracy,
+            train_class_counts=result.train_class_counts,
         )
 
 

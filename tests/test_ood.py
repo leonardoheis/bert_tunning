@@ -11,6 +11,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from src.embeddings import LoadedModel, extract_embeddings, extract_embeddings_and_predictions
 from src.exceptions import BertTunningError
 from src.ood import (
+    CURRENT_OOD_ARTIFACT_VERSION,
     build_tfidf_vectorizer,
     compute_class_stats,
     compute_tfidf_stats,
@@ -24,11 +25,12 @@ from src.ood import (
     mahalanobis_chi2_p_value_from_distance,
     mahalanobis_empirical_p_value,
     mahalanobis_min_distance,
+    resolve_ood_calibration_status,
     resolve_ood_thresholds,
     save_stats,
     tfidf_cosine_z_score,
 )
-from src.schema import ClassEmbeddingStats
+from src.schema import EmbeddingStats, LexicalStats, OodArtifact
 from src.settings import Settings
 
 
@@ -54,16 +56,16 @@ def test_compute_class_stats_shapes() -> None:
     stats = compute_class_stats(
         embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
     )
-    assert stats.centroids.shape == (2, 8)
-    assert stats.covariance_inv.shape == (8, 8)
+    assert stats.embedding.centroids.shape == (2, 8)
+    assert stats.embedding.covariance_inv.shape == (8, 8)
 
 
 def test_compute_class_stats_populates_tfidf_fields() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
     texts = ["decreto rosario"] * 20 + ["ordenanza cordoba"] * 20
     stats = compute_class_stats(embeddings, labels, class_names, n_components=8, texts=texts)
-    assert stats.tfidf_vocabulary_terms != []
-    assert len(stats.tfidf_centroids) == len(class_names)
+    assert stats.lexical.vocabulary_terms != []
+    assert len(stats.lexical.centroids) == len(class_names)
 
 
 def test_in_distribution_point_has_lower_mahalanobis_distance_than_far_point() -> None:
@@ -166,17 +168,20 @@ def test_compute_train_mahalanobis_distances_uses_true_label_not_nearest_centroi
     # distance), not whichever centroid is nearest (class_b, close -> small distance).
     # This mirrors compute_class_stats()'s own covariance estimation
     # (centered = reduced - centroids[labels_arr]), which uses true labels too.
-    stats = ClassEmbeddingStats(
+    stats = OodArtifact(
+        format_version=2,
         class_names=["class_a", "class_b"],
-        pca_mean=np.zeros(2),
-        pca_components=np.eye(2),
-        centroids=np.array([[0.0, 0.0], [10.0, 0.0]]),
-        covariance_inv=np.eye(2),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        # labeled class_a (centroid [0,0]) but sits right next to class_b's centroid [10,0].
-        knn_train_embeddings=np.array([[9.0, 0.0]]),
-        knn_train_labels=[0],
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(2),
+            pca_components=np.eye(2),
+            centroids=np.array([[0.0, 0.0], [10.0, 0.0]]),
+            covariance_inv=np.eye(2),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            # labeled class_a (centroid [0,0]) but sits right next to class_b's centroid [10,0].
+            knn_train_embeddings=np.array([[9.0, 0.0]]),
+            knn_train_labels=[0],
+        ),
     )
     distances = compute_train_mahalanobis_distances(stats)
     # True-label (class_a) squared distance: 9^2 = 81. Nearest-centroid (class_b) would
@@ -230,9 +235,9 @@ def test_save_and_load_stats_roundtrip(tmp_path: Path) -> None:
     save_stats(stats, path)
     loaded = load_stats(path)
     assert loaded.class_names == stats.class_names
-    np.testing.assert_allclose(loaded.centroids, stats.centroids)
-    np.testing.assert_allclose(loaded.covariance_inv, stats.covariance_inv)
-    assert loaded.cosine_calibration_mean == stats.cosine_calibration_mean
+    np.testing.assert_allclose(loaded.embedding.centroids, stats.embedding.centroids)
+    np.testing.assert_allclose(loaded.embedding.covariance_inv, stats.embedding.covariance_inv)
+    assert loaded.embedding.cosine_calibration_mean == stats.embedding.cosine_calibration_mean
 
 
 def test_knn_mean_distance_is_zero_for_a_training_point_itself() -> None:
@@ -289,8 +294,10 @@ def test_save_and_load_stats_roundtrip_includes_knn_fields(tmp_path: Path) -> No
     path = tmp_path / "ood_stats.npz"
     save_stats(stats, path)
     loaded = load_stats(path)
-    np.testing.assert_allclose(loaded.knn_train_embeddings, stats.knn_train_embeddings)
-    assert loaded.knn_train_labels == stats.knn_train_labels
+    np.testing.assert_allclose(
+        loaded.embedding.knn_train_embeddings, stats.embedding.knn_train_embeddings
+    )
+    assert loaded.embedding.knn_train_labels == stats.embedding.knn_train_labels
 
 
 def test_extract_embeddings_returns_correct_shape() -> None:
@@ -309,22 +316,23 @@ def test_extract_embeddings_returns_correct_shape() -> None:
 
 def test_save_and_load_stats_roundtrip_includes_thresholds() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(
+    base = compute_class_stats(
         embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
-    ).model_copy(
+    )
+    stats = base.model_copy(
         update={
-            "mahalanobis_p_threshold": 0.001,
-            "cosine_threshold": 13.7366,
-            "knn_distance_threshold": 26.125,
+            "thresholds": base.thresholds.model_copy(
+                update={"mahalanobis_p": 0.001, "cosine": 13.7366, "knn_distance": 26.125}
+            )
         }
     )
     path = Path("test_stats_thresholds.npz")
     try:
         save_stats(stats, path)
         loaded = load_stats(path)
-        assert loaded.mahalanobis_p_threshold == pytest.approx(0.001)
-        assert loaded.cosine_threshold == pytest.approx(13.7366)
-        assert loaded.knn_distance_threshold == pytest.approx(26.125)
+        assert loaded.thresholds.mahalanobis_p == pytest.approx(0.001)
+        assert loaded.thresholds.cosine == pytest.approx(13.7366)
+        assert loaded.thresholds.knn_distance == pytest.approx(26.125)
     finally:
         path.unlink(missing_ok=True)
 
@@ -338,23 +346,30 @@ def test_save_and_load_stats_roundtrip_thresholds_default_to_none() -> None:
     try:
         save_stats(stats, path)
         loaded = load_stats(path)
-        assert loaded.mahalanobis_p_threshold is None
-        assert loaded.cosine_threshold is None
-        assert loaded.knn_distance_threshold is None
+        assert loaded.thresholds.mahalanobis_p is None
+        assert loaded.thresholds.cosine is None
+        assert loaded.thresholds.knn_distance is None
     finally:
         path.unlink(missing_ok=True)
 
 
 def test_save_and_load_stats_roundtrip_includes_threshold_status() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(
+    base = compute_class_stats(
         embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
-    ).model_copy(update={"mahalanobis_threshold_status": "refused_degenerate"})
+    )
+    stats = base.model_copy(
+        update={
+            "thresholds": base.thresholds.model_copy(
+                update={"mahalanobis_status": "refused_degenerate"}
+            )
+        }
+    )
     path = Path("test_stats_threshold_status.npz")
     try:
         save_stats(stats, path)
         loaded = load_stats(path)
-        assert loaded.mahalanobis_threshold_status == "refused_degenerate"
+        assert loaded.thresholds.mahalanobis_status == "refused_degenerate"
     finally:
         path.unlink(missing_ok=True)
 
@@ -368,7 +383,7 @@ def test_save_and_load_stats_roundtrip_threshold_status_defaults_to_not_calibrat
     try:
         save_stats(stats, path)
         loaded = load_stats(path)
-        assert loaded.mahalanobis_threshold_status == "not_calibrated"
+        assert loaded.thresholds.mahalanobis_status == "not_calibrated"
     finally:
         path.unlink(missing_ok=True)
 
@@ -385,17 +400,17 @@ def test_load_stats_handles_legacy_file_without_threshold_status_field() -> None
         np.savez(
             str(path),
             class_names=np.array(stats.class_names),
-            pca_mean=stats.pca_mean,
-            pca_components=stats.pca_components,
-            centroids=stats.centroids,
-            covariance_inv=stats.covariance_inv,
-            cosine_calibration_mean=stats.cosine_calibration_mean,
-            cosine_calibration_std=stats.cosine_calibration_std,
-            knn_train_embeddings=stats.knn_train_embeddings,
-            knn_train_labels=np.array(stats.knn_train_labels),
+            pca_mean=stats.embedding.pca_mean,
+            pca_components=stats.embedding.pca_components,
+            centroids=stats.embedding.centroids,
+            covariance_inv=stats.embedding.covariance_inv,
+            cosine_calibration_mean=stats.embedding.cosine_calibration_mean,
+            cosine_calibration_std=stats.embedding.cosine_calibration_std,
+            knn_train_embeddings=stats.embedding.knn_train_embeddings,
+            knn_train_labels=np.array(stats.embedding.knn_train_labels),
         )
         loaded = load_stats(path)
-        assert loaded.mahalanobis_threshold_status == "not_calibrated"
+        assert loaded.thresholds.mahalanobis_status == "not_calibrated"
     finally:
         path.unlink(missing_ok=True)
 
@@ -410,14 +425,14 @@ def test_load_stats_rejects_unknown_threshold_status() -> None:
         np.savez(
             str(path),
             class_names=np.array(stats.class_names),
-            pca_mean=stats.pca_mean,
-            pca_components=stats.pca_components,
-            centroids=stats.centroids,
-            covariance_inv=stats.covariance_inv,
-            cosine_calibration_mean=stats.cosine_calibration_mean,
-            cosine_calibration_std=stats.cosine_calibration_std,
-            knn_train_embeddings=stats.knn_train_embeddings,
-            knn_train_labels=np.array(stats.knn_train_labels),
+            pca_mean=stats.embedding.pca_mean,
+            pca_components=stats.embedding.pca_components,
+            centroids=stats.embedding.centroids,
+            covariance_inv=stats.embedding.covariance_inv,
+            cosine_calibration_mean=stats.embedding.cosine_calibration_mean,
+            cosine_calibration_std=stats.embedding.cosine_calibration_std,
+            knn_train_embeddings=stats.embedding.knn_train_embeddings,
+            knn_train_labels=np.array(stats.embedding.knn_train_labels),
             mahalanobis_threshold_status="not_a_real_status",
         )
         with pytest.raises(BertTunningError, match="mahalanobis_threshold_status"):
@@ -478,7 +493,7 @@ def test_save_stats_leaves_original_file_untouched_when_load_back_verification_f
 
         real_load_stats = load_stats
 
-        def _load_stats_that_rejects_tmp_files(p: Path) -> ClassEmbeddingStats:
+        def _load_stats_that_rejects_tmp_files(p: Path) -> OodArtifact:
             if str(p).endswith(".tmp"):
                 msg = "simulated corrupt tmp file"
                 raise ValueError(msg)
@@ -524,8 +539,9 @@ def test_save_and_load_stats_roundtrip_includes_model_identity() -> None:
     try:
         save_stats(stats, path)
         loaded = load_stats(path)
-        assert loaded.model_type == "bert"
-        assert loaded.model_hidden_size == 768  # noqa: PLR2004
+        assert loaded.metadata is not None
+        assert loaded.metadata.model_type == "bert"
+        assert loaded.metadata.model_hidden_size == 768  # noqa: PLR2004
     finally:
         path.unlink(missing_ok=True)
 
@@ -539,8 +555,7 @@ def test_save_and_load_stats_roundtrip_model_identity_defaults_to_none() -> None
     try:
         save_stats(stats, path)
         loaded = load_stats(path)
-        assert loaded.model_type is None
-        assert loaded.model_hidden_size is None
+        assert loaded.metadata is None
     finally:
         path.unlink(missing_ok=True)
 
@@ -558,21 +573,20 @@ def test_load_stats_handles_legacy_file_without_model_identity_fields() -> None:
             np.savez(
                 f,
                 class_names=np.array(stats.class_names),
-                pca_mean=stats.pca_mean,
-                pca_components=stats.pca_components,
-                centroids=stats.centroids,
-                covariance_inv=stats.covariance_inv,
-                cosine_calibration_mean=stats.cosine_calibration_mean,
-                cosine_calibration_std=stats.cosine_calibration_std,
-                knn_train_embeddings=stats.knn_train_embeddings,
-                knn_train_labels=np.array(stats.knn_train_labels),
+                pca_mean=stats.embedding.pca_mean,
+                pca_components=stats.embedding.pca_components,
+                centroids=stats.embedding.centroids,
+                covariance_inv=stats.embedding.covariance_inv,
+                cosine_calibration_mean=stats.embedding.cosine_calibration_mean,
+                cosine_calibration_std=stats.embedding.cosine_calibration_std,
+                knn_train_embeddings=stats.embedding.knn_train_embeddings,
+                knn_train_labels=np.array(stats.embedding.knn_train_labels),
                 mahalanobis_p_threshold=np.nan,
                 cosine_threshold=np.nan,
                 knn_distance_threshold=np.nan,
             )
         loaded = load_stats(path)
-        assert loaded.model_type is None
-        assert loaded.model_hidden_size is None
+        assert loaded.metadata is None
     finally:
         path.unlink(missing_ok=True)
 
@@ -589,19 +603,19 @@ def test_load_stats_handles_legacy_file_without_threshold_fields() -> None:
         np.savez(
             str(path),
             class_names=np.array(stats.class_names),
-            pca_mean=stats.pca_mean,
-            pca_components=stats.pca_components,
-            centroids=stats.centroids,
-            covariance_inv=stats.covariance_inv,
-            cosine_calibration_mean=stats.cosine_calibration_mean,
-            cosine_calibration_std=stats.cosine_calibration_std,
-            knn_train_embeddings=stats.knn_train_embeddings,
-            knn_train_labels=np.array(stats.knn_train_labels),
+            pca_mean=stats.embedding.pca_mean,
+            pca_components=stats.embedding.pca_components,
+            centroids=stats.embedding.centroids,
+            covariance_inv=stats.embedding.covariance_inv,
+            cosine_calibration_mean=stats.embedding.cosine_calibration_mean,
+            cosine_calibration_std=stats.embedding.cosine_calibration_std,
+            knn_train_embeddings=stats.embedding.knn_train_embeddings,
+            knn_train_labels=np.array(stats.embedding.knn_train_labels),
         )
         loaded = load_stats(path)
-        assert loaded.mahalanobis_p_threshold is None
-        assert loaded.cosine_threshold is None
-        assert loaded.knn_distance_threshold is None
+        assert loaded.thresholds.mahalanobis_p is None
+        assert loaded.thresholds.cosine is None
+        assert loaded.thresholds.knn_distance is None
     finally:
         path.unlink(missing_ok=True)
 
@@ -610,30 +624,35 @@ def test_save_and_load_stats_roundtrip_includes_tfidf_fields(tmp_path: Path) -> 
     texts, labels, class_names = _synthetic_texts()
     embeddings = np.random.default_rng(0).normal(size=(20, 16))
     tfidf = compute_tfidf_stats(texts, labels, class_names, max_features=50)
-    stats = compute_class_stats(
+    base = compute_class_stats(
         embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
-    ).model_copy(
+    )
+    stats = base.model_copy(
         update={
-            "tfidf_vocabulary_terms": tfidf.vocabulary_terms,
-            "tfidf_idf": tfidf.idf,
-            "tfidf_centroids": tfidf.centroids,
-            "tfidf_cosine_calibration_mean": tfidf.cosine_calibration_mean,
-            "tfidf_cosine_calibration_std": tfidf.cosine_calibration_std,
-            "tfidf_threshold": 2.5,
+            "lexical": LexicalStats(
+                vocabulary_terms=tfidf.vocabulary_terms,
+                idf=tfidf.idf,
+                centroids=tfidf.centroids,
+                cosine_calibration_mean=tfidf.cosine_calibration_mean,
+                cosine_calibration_std=tfidf.cosine_calibration_std,
+            ),
+            "thresholds": base.thresholds.model_copy(update={"tfidf_cosine": 2.5}),
         }
     )
     path = tmp_path / "ood_stats.npz"
     save_stats(stats, path)
     loaded = load_stats(path)
 
-    assert loaded.tfidf_vocabulary_terms == stats.tfidf_vocabulary_terms
-    np.testing.assert_allclose(loaded.tfidf_idf, stats.tfidf_idf)
-    np.testing.assert_allclose(loaded.tfidf_centroids, stats.tfidf_centroids)
-    assert loaded.tfidf_cosine_calibration_mean == pytest.approx(
-        stats.tfidf_cosine_calibration_mean
+    assert loaded.lexical.vocabulary_terms == stats.lexical.vocabulary_terms
+    np.testing.assert_allclose(loaded.lexical.idf, stats.lexical.idf)
+    np.testing.assert_allclose(loaded.lexical.centroids, stats.lexical.centroids)
+    assert loaded.lexical.cosine_calibration_mean == pytest.approx(
+        stats.lexical.cosine_calibration_mean
     )
-    assert loaded.tfidf_cosine_calibration_std == pytest.approx(stats.tfidf_cosine_calibration_std)
-    assert loaded.tfidf_threshold == pytest.approx(2.5)
+    assert loaded.lexical.cosine_calibration_std == pytest.approx(
+        stats.lexical.cosine_calibration_std
+    )
+    assert loaded.thresholds.tfidf_cosine == pytest.approx(2.5)
 
 
 def test_load_stats_handles_legacy_file_without_tfidf_fields(tmp_path: Path) -> None:
@@ -643,27 +662,19 @@ def test_load_stats_handles_legacy_file_without_tfidf_fields(tmp_path: Path) -> 
     # compute_class_stats itself now always populates these fields.
     stats = compute_class_stats(
         embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
-    ).model_copy(
-        update={
-            "tfidf_vocabulary_terms": [],
-            "tfidf_idf": np.zeros(0),
-            "tfidf_centroids": np.zeros((0, 0)),
-            "tfidf_cosine_calibration_mean": 0.0,
-            "tfidf_cosine_calibration_std": 1.0,
-        }
-    )
+    ).model_copy(update={"lexical": LexicalStats()})
     path = tmp_path / "ood_stats.npz"
     save_stats(stats, path)  # tfidf_* fields are all at their empty/None defaults --
     # this IS the legacy-shape file (compute_class_stats here predates Task 4's texts= param)
 
     loaded = load_stats(path)
 
-    assert loaded.tfidf_vocabulary_terms == []
-    assert len(loaded.tfidf_idf) == 0
-    assert loaded.tfidf_centroids.size == 0
-    assert loaded.tfidf_cosine_calibration_mean == 0.0
-    assert loaded.tfidf_cosine_calibration_std == 1.0
-    assert loaded.tfidf_threshold is None
+    assert loaded.lexical.vocabulary_terms == []
+    assert len(loaded.lexical.idf) == 0
+    assert loaded.lexical.centroids.size == 0
+    assert loaded.lexical.cosine_calibration_mean == 0.0
+    assert loaded.lexical.cosine_calibration_std == 1.0
+    assert loaded.thresholds.tfidf_cosine is None
 
 
 def test_resolve_ood_thresholds_falls_back_to_settings_when_stats_thresholds_none() -> None:
@@ -679,19 +690,86 @@ def test_resolve_ood_thresholds_falls_back_to_settings_when_stats_thresholds_non
 
 def test_resolve_ood_thresholds_uses_stats_values_when_present() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    stats = compute_class_stats(
+    base = compute_class_stats(
         embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
-    ).model_copy(
+    )
+    stats = base.model_copy(
         update={
-            "mahalanobis_p_threshold": 0.002,
-            "cosine_threshold": 5.0,
-            "knn_distance_threshold": 10.0,
+            "thresholds": base.thresholds.model_copy(
+                update={"mahalanobis_p": 0.002, "cosine": 5.0, "knn_distance": 10.0}
+            )
         }
     )
     thresholds = resolve_ood_thresholds(stats)
     assert thresholds.mahalanobis_p == pytest.approx(0.002)
     assert thresholds.cosine_z == pytest.approx(5.0)
     assert thresholds.knn_distance == pytest.approx(10.0)
+
+
+def test_resolve_ood_calibration_status_all_calibrated() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    base = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
+    )
+    stats = base.model_copy(
+        update={
+            "thresholds": base.thresholds.model_copy(
+                update={
+                    "mahalanobis_p": 0.002,
+                    "mahalanobis_status": "calibrated",
+                    "cosine": 5.0,
+                    "knn_distance": 10.0,
+                    "tfidf_cosine": 2.5,
+                }
+            )
+        }
+    )
+    status = resolve_ood_calibration_status(stats)
+    assert status.mahalanobis == "calibrated"
+    assert status.cosine == "calibrated"
+    assert status.knn_distance == "calibrated"
+    assert status.tfidf_cosine == "calibrated"
+
+
+def test_resolve_ood_calibration_status_not_calibrated_when_thresholds_none() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    stats = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
+    )
+    status = resolve_ood_calibration_status(stats)
+    assert status.mahalanobis == "not_calibrated"
+    assert status.cosine == "not_calibrated"
+    assert status.knn_distance == "not_calibrated"
+    # This model's compute_class_stats() call above fits TF-IDF (texts= is provided), so
+    # tfidf_cosine here is "not_calibrated", not None -- see the next test for the
+    # not-fitted-at-all case.
+    assert status.tfidf_cosine == "not_calibrated"
+
+
+def test_resolve_ood_calibration_status_mahalanobis_refused_degenerate() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    base = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
+    )
+    stats = base.model_copy(
+        update={
+            "thresholds": base.thresholds.model_copy(
+                update={"mahalanobis_status": "refused_degenerate"}
+            )
+        }
+    )
+    status = resolve_ood_calibration_status(stats)
+    assert status.mahalanobis == "refused_degenerate"
+
+
+def test_resolve_ood_calibration_status_tfidf_none_when_lexical_not_fitted() -> None:
+    embeddings, labels, class_names = _synthetic_embeddings()
+    base = compute_class_stats(
+        embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
+    )
+    stats = base.model_copy(update={"lexical": LexicalStats()})
+    status = resolve_ood_calibration_status(stats)
+    assert status.tfidf_cosine is None
 
 
 def test_extract_embeddings_and_predictions_returns_matching_lengths() -> None:
@@ -735,21 +813,26 @@ def test_compute_tfidf_stats_shapes() -> None:
 def test_build_tfidf_vectorizer_reconstructs_fitted_transform() -> None:
     texts, labels, class_names = _synthetic_texts()
     stats_partial = compute_tfidf_stats(texts, labels, class_names, max_features=50)
-    stats = ClassEmbeddingStats(
+    stats = OodArtifact(
+        format_version=CURRENT_OOD_ARTIFACT_VERSION,
         class_names=class_names,
-        pca_mean=np.zeros(1),
-        pca_components=np.eye(1),
-        centroids=np.zeros((2, 1)),
-        covariance_inv=np.eye(1),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.zeros((2, 1)),
-        knn_train_labels=[0, 1],
-        tfidf_vocabulary_terms=stats_partial.vocabulary_terms,
-        tfidf_idf=stats_partial.idf,
-        tfidf_centroids=stats_partial.centroids,
-        tfidf_cosine_calibration_mean=stats_partial.cosine_calibration_mean,
-        tfidf_cosine_calibration_std=stats_partial.cosine_calibration_std,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(1),
+            pca_components=np.eye(1),
+            centroids=np.zeros((2, 1)),
+            covariance_inv=np.eye(1),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.zeros((2, 1)),
+            knn_train_labels=[0, 1],
+        ),
+        lexical=LexicalStats(
+            vocabulary_terms=stats_partial.vocabulary_terms,
+            idf=stats_partial.idf,
+            centroids=stats_partial.centroids,
+            cosine_calibration_mean=stats_partial.cosine_calibration_mean,
+            cosine_calibration_std=stats_partial.cosine_calibration_std,
+        ),
     )
     vectorizer = build_tfidf_vectorizer(stats)
     assert vectorizer is not None
@@ -765,32 +848,37 @@ def test_build_tfidf_vectorizer_reconstructs_fitted_transform() -> None:
 
 def test_build_tfidf_vectorizer_returns_none_when_stats_predate_feature() -> None:
     embeddings, labels, class_names = _synthetic_embeddings()
-    # Reset tfidf_vocabulary_terms to [] via model_copy -- simulates a stats file saved
+    # Reset the lexical section to unfitted via model_copy -- simulates a stats file saved
     # before Task 4 wired TF-IDF fitting into compute_class_stats.
     stats = compute_class_stats(
         embeddings, labels, class_names, n_components=8, texts=_placeholder_texts(labels)
-    ).model_copy(update={"tfidf_vocabulary_terms": []})
+    ).model_copy(update={"lexical": LexicalStats()})
     assert build_tfidf_vectorizer(stats) is None
 
 
 def test_tfidf_cosine_z_score_higher_for_lexically_divergent_same_class_query() -> None:
     texts, labels, class_names = _synthetic_texts()
     stats_partial = compute_tfidf_stats(texts, labels, class_names, max_features=50)
-    stats = ClassEmbeddingStats(
+    stats = OodArtifact(
+        format_version=CURRENT_OOD_ARTIFACT_VERSION,
         class_names=class_names,
-        pca_mean=np.zeros(1),
-        pca_components=np.eye(1),
-        centroids=np.zeros((2, 1)),
-        covariance_inv=np.eye(1),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.zeros((2, 1)),
-        knn_train_labels=[0, 1],
-        tfidf_vocabulary_terms=stats_partial.vocabulary_terms,
-        tfidf_idf=stats_partial.idf,
-        tfidf_centroids=stats_partial.centroids,
-        tfidf_cosine_calibration_mean=stats_partial.cosine_calibration_mean,
-        tfidf_cosine_calibration_std=stats_partial.cosine_calibration_std,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(1),
+            pca_components=np.eye(1),
+            centroids=np.zeros((2, 1)),
+            covariance_inv=np.eye(1),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.zeros((2, 1)),
+            knn_train_labels=[0, 1],
+        ),
+        lexical=LexicalStats(
+            vocabulary_terms=stats_partial.vocabulary_terms,
+            idf=stats_partial.idf,
+            centroids=stats_partial.centroids,
+            cosine_calibration_mean=stats_partial.cosine_calibration_mean,
+            cosine_calibration_std=stats_partial.cosine_calibration_std,
+        ),
     )
     vectorizer = build_tfidf_vectorizer(stats)
     assert vectorizer is not None

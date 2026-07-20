@@ -12,7 +12,7 @@ from src.cli.ood_calibration import build_calibration_report, evaluate_ood_calib
 from src.embeddings import LoadedModel
 from src.ood import OodThresholds, load_stats, save_stats
 from src.ood import knn_mean_distance as real_knn_mean_distance
-from src.schema import ClassEmbeddingStats
+from src.schema import EmbeddingStats, OodArtifact
 from src.settings import Settings
 
 
@@ -22,17 +22,20 @@ def _fake_extract_embeddings_and_predictions(
     return np.zeros((len(texts), 8), dtype=np.float64), [0] * len(texts)
 
 
-def _make_stats() -> ClassEmbeddingStats:
-    return ClassEmbeddingStats(
+def _make_stats() -> OodArtifact:
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.array([[0.0] * 8] * 5 + [[5.0] * 8] * 5),
-        knn_train_labels=[0] * 5 + [1] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.array([[0.0] * 8] * 5 + [[5.0] * 8] * 5),
+            knn_train_labels=[0] * 5 + [1] * 5,
+        ),
     )
 
 
@@ -280,7 +283,7 @@ def _run_successful_calibration(
 
 
 def _run_calibration_with_stats_write_thresholds(
-    tmp_path: Path, stats: ClassEmbeddingStats
+    tmp_path: Path, stats: OodArtifact
 ) -> tuple[Result, MagicMock]:
     cache_path = tmp_path / "cache.parquet"
     pd.DataFrame(
@@ -333,8 +336,8 @@ def test_evaluate_ood_calibration_cmd_write_thresholds_persists_to_stats_file(
     result, _ = _run_successful_calibration(tmp_path, extra_args=["--write-thresholds"])
     assert result.exit_code == 0
     written = load_stats(stats_path)
-    assert written.cosine_threshold is not None
-    assert written.knn_distance_threshold is not None
+    assert written.thresholds.cosine is not None
+    assert written.thresholds.knn_distance is not None
 
 
 def test_evaluate_ood_calibration_cmd_without_flag_does_not_write(tmp_path: Path) -> None:
@@ -362,11 +365,16 @@ def test_evaluate_ood_calibration_cmd_write_thresholds_refuses_degenerate_maha_t
     # and could never rank as extreme. Reference points are placed exactly on their own
     # class's centroid (distance 0) so every query -- always farther away -- ranks more
     # extreme than all of them, landing precisely on the floor.
-    tiny_stats = _make_stats().model_copy(
+    base_stats = _make_stats()
+    tiny_stats = base_stats.model_copy(
         update={
-            "centroids": np.array([[3.0] * 8, [8.0] * 8]),
-            "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
-            "knn_train_labels": [0, 0, 1, 1],
+            "embedding": base_stats.embedding.model_copy(
+                update={
+                    "centroids": np.array([[3.0] * 8, [8.0] * 8]),
+                    "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
+                    "knn_train_labels": [0, 0, 1, 1],
+                }
+            )
         }
     )
     result, _ = _run_calibration_with_stats_write_thresholds(tmp_path, tiny_stats)
@@ -374,9 +382,9 @@ def test_evaluate_ood_calibration_cmd_write_thresholds_refuses_degenerate_maha_t
     assert "Refusing to write" in result.output
     stats_path = tmp_path / "fake-model" / "ood_stats.npz"
     written = load_stats(stats_path)
-    assert written.mahalanobis_p_threshold is None  # unchanged -- tiny_stats had no prior value
-    assert written.cosine_threshold is not None
-    assert written.knn_distance_threshold is not None
+    assert written.thresholds.mahalanobis_p is None  # unchanged -- tiny_stats had no prior value
+    assert written.thresholds.cosine is not None
+    assert written.thresholds.knn_distance is not None
 
 
 def test_evaluate_ood_calibration_cmd_write_thresholds_persists_calibrated_status(
@@ -386,24 +394,29 @@ def test_evaluate_ood_calibration_cmd_write_thresholds_persists_calibrated_statu
     result, _ = _run_successful_calibration(tmp_path, extra_args=["--write-thresholds"])
     assert result.exit_code == 0
     written = load_stats(stats_path)
-    assert written.mahalanobis_threshold_status == "calibrated"
+    assert written.thresholds.mahalanobis_status == "calibrated"
 
 
 def test_evaluate_ood_calibration_cmd_write_thresholds_refused_status_when_degenerate(
     tmp_path: Path,
 ) -> None:
-    tiny_stats = _make_stats().model_copy(
+    base_stats = _make_stats()
+    tiny_stats = base_stats.model_copy(
         update={
-            "centroids": np.array([[3.0] * 8, [8.0] * 8]),
-            "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
-            "knn_train_labels": [0, 0, 1, 1],
+            "embedding": base_stats.embedding.model_copy(
+                update={
+                    "centroids": np.array([[3.0] * 8, [8.0] * 8]),
+                    "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
+                    "knn_train_labels": [0, 0, 1, 1],
+                }
+            )
         }
     )
     result, _ = _run_calibration_with_stats_write_thresholds(tmp_path, tiny_stats)
     assert result.exit_code == 0
     stats_path = tmp_path / "fake-model" / "ood_stats.npz"
     written = load_stats(stats_path)
-    assert written.mahalanobis_threshold_status == "refused_degenerate"
+    assert written.thresholds.mahalanobis_status == "refused_degenerate"
 
 
 def test_evaluate_ood_calibration_cmd_write_thresholds_keeps_calibrated_status_on_refusal(
@@ -412,21 +425,27 @@ def test_evaluate_ood_calibration_cmd_write_thresholds_keeps_calibrated_status_o
     # Guard refuses the new suggestion but a real value from a PRIOR successful calibration
     # already exists -- status must stay "calibrated", not flip to "refused_degenerate",
     # since nothing about the currently-persisted value actually changed or became invalid.
-    tiny_stats = _make_stats().model_copy(
+    base_stats = _make_stats()
+    tiny_stats = base_stats.model_copy(
         update={
-            "centroids": np.array([[3.0] * 8, [8.0] * 8]),
-            "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
-            "knn_train_labels": [0, 0, 1, 1],
-            "mahalanobis_p_threshold": 0.0005,
-            "mahalanobis_threshold_status": "calibrated",
+            "embedding": base_stats.embedding.model_copy(
+                update={
+                    "centroids": np.array([[3.0] * 8, [8.0] * 8]),
+                    "knn_train_embeddings": np.array([[3.0] * 8] * 2 + [[8.0] * 8] * 2),
+                    "knn_train_labels": [0, 0, 1, 1],
+                }
+            ),
+            "thresholds": base_stats.thresholds.model_copy(
+                update={"mahalanobis_p": 0.0005, "mahalanobis_status": "calibrated"}
+            ),
         }
     )
     result, _ = _run_calibration_with_stats_write_thresholds(tmp_path, tiny_stats)
     assert result.exit_code == 0
     stats_path = tmp_path / "fake-model" / "ood_stats.npz"
     written = load_stats(stats_path)
-    assert written.mahalanobis_p_threshold == pytest.approx(0.0005)
-    assert written.mahalanobis_threshold_status == "calibrated"
+    assert written.thresholds.mahalanobis_p == pytest.approx(0.0005)
+    assert written.thresholds.mahalanobis_status == "calibrated"
 
 
 def test_evaluate_ood_calibration_cmd_logs_to_wandb_when_flag_set(tmp_path: Path) -> None:
@@ -444,20 +463,23 @@ def test_evaluate_ood_calibration_cmd_skips_wandb_by_default(tmp_path: Path) -> 
     mock_log.assert_not_called()
 
 
-def _make_stats_missing_class(missing_label_id: int) -> ClassEmbeddingStats:
+def _make_stats_missing_class(missing_label_id: int) -> OodArtifact:
     """Same shape as _make_stats(), but one class has zero stored k-NN training points —
     knn_mean_distance returns NaN for any test document whose true label is that class."""
     present_label_id = 1 - missing_label_id
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.array([[float(present_label_id) * 5.0] * 8] * 5),
-        knn_train_labels=[present_label_id] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.array([[float(present_label_id) * 5.0] * 8] * 5),
+            knn_train_labels=[present_label_id] * 5,
+        ),
     )
 
 
@@ -476,7 +498,7 @@ def _fake_predict_matching_text_label(
 
 def _run_calibration_with_stats(
     tmp_path: Path,
-    stats: ClassEmbeddingStats,
+    stats: OodArtifact,
     *,
     predict_fn: Callable[..., tuple[npt.NDArray[np.float64], list[int]]] = (
         _fake_extract_embeddings_and_predictions
@@ -539,16 +561,19 @@ def test_evaluate_ood_calibration_cmd_fails_when_no_training_data(
     # Both classes missing k-NN training data means compute_train_mahalanobis_distances()
     # (which pools every class's points into one combined reference set) is empty too --
     # the command must fail on that guard before ever reaching k-NN calibration.
-    stats = ClassEmbeddingStats(
+    stats = OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.zeros((0, 8)),
-        knn_train_labels=[],
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.zeros((0, 8)),
+            knn_train_labels=[],
+        ),
     )
 
     result, _ = _run_calibration_with_stats(tmp_path, stats)
@@ -558,23 +583,26 @@ def test_evaluate_ood_calibration_cmd_fails_when_no_training_data(
     assert "cannot calibrate mahalanobis" in str(result.output).lower()
 
 
-def _make_stats_third_class_has_knn_points() -> ClassEmbeddingStats:
+def _make_stats_third_class_has_knn_points() -> OodArtifact:
     """decreto (0) and ordenanza (1) -- the only classes that appear in the test corpus --
     both have zero stored k-NN training points, so every test doc gets a NaN knn_distance.
     A third class ('otro', label 2, never present in the cache) has points, purely so
     compute_train_mahalanobis_distances() -- which pools every class's points into one
     combined reference set -- is non-empty. This isolates the k-NN NaN-exhaustion path
     from the separate no-training-data guard tested above."""
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza", "otro"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8, [10.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.array([[10.0] * 8] * 5),
-        knn_train_labels=[2] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8, [10.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.array([[10.0] * 8] * 5),
+            knn_train_labels=[2] * 5,
+        ),
     )
 
 
@@ -629,7 +657,7 @@ def test_evaluate_ood_calibration_cmd_uses_predicted_label_for_knn_not_true_labe
 
     def _spy_knn_mean_distance(
         embedding: npt.NDArray[np.float64],
-        stats: ClassEmbeddingStats,
+        stats: OodArtifact,
         predicted_label_id: int,
         *,
         k: int,

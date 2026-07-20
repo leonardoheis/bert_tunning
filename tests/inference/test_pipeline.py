@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -11,92 +12,110 @@ from src.inference.classify import (
     BertTunningClassifier,
     ConfidenceTier,
     OodEvidence,
-    OodScores,
-    OodThresholds,
     decide_review_route,
-    is_out_of_distribution,
 )
+from src.inference.ood_scorer import OodScorer, OodScores, is_out_of_distribution
 from src.inference.pipeline import predict_pdf
-from src.ood import compute_tfidf_stats, save_stats
-from src.schema import ClassEmbeddingStats, ExtractionMetadata, PredictResult
+from src.ood import OodCalibrationStatus, OodThresholds, compute_tfidf_stats, save_stats
+from src.schema import (
+    ArtifactMetadata,
+    EmbeddingStats,
+    ExtractionMetadata,
+    LexicalStats,
+    OodArtifact,
+    PredictResult,
+)
 from src.settings import Settings
 from src.svm_reviewer import fit_svm_classifiers, save_svm_classifiers
 
 
-def _make_stats() -> ClassEmbeddingStats:
+def _make_stats() -> OodArtifact:
     # 700 points/class, not 5 -- the empirical Mahalanobis p-value's minimum possible
     # value is 1/(N+1). OOD_MAHALANOBIS_P_THRESHOLD was recalibrated to 0.001
     # (2026-07-12, BETO v2), so N must exceed ~999 for a query point to ever be able
     # to drop below it regardless of how far away it actually is.
     n_per_class = 700
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        # All points sit exactly on their own class's centroid (distance 0) -- degenerate
-        # but sufficient here, since these tests only need "near" vs. "far" distinguishable.
-        knn_train_embeddings=np.array([[0.0] * 8] * n_per_class + [[5.0] * 8] * n_per_class),
-        knn_train_labels=[0] * n_per_class + [1] * n_per_class,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            # All points sit exactly on their own class's centroid (distance 0) --
+            # degenerate but sufficient here, since these tests only need
+            # "near" vs. "far" distinguishable.
+            knn_train_embeddings=np.array([[0.0] * 8] * n_per_class + [[5.0] * 8] * n_per_class),
+            knn_train_labels=[0] * n_per_class + [1] * n_per_class,
+        ),
     )
 
 
-def _make_tight_cosine_stats() -> ClassEmbeddingStats:
+def _make_tight_cosine_stats() -> OodArtifact:
     # A tighter cosine_calibration_std than _make_stats() — models in practice cluster
     # tightly around their centroid's direction, so a modest directional deviation is
     # already many standard deviations away. Used to isolate a cosine-only anomaly
     # without also tripping the Mahalanobis signal. std is small enough that the fixed
     # raw cosine distance produced by the test embedding still exceeds
     # Settings.OOD_COSINE_THRESHOLD after calibration.
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[5.0] * 8, [-5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=0.001,
-        knn_train_embeddings=np.array([[5.0] * 8] * 5 + [[-5.0] * 8] * 5),
-        knn_train_labels=[0] * 5 + [1] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[5.0] * 8, [-5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=0.001,
+            knn_train_embeddings=np.array([[5.0] * 8] * 5 + [[-5.0] * 8] * 5),
+            knn_train_labels=[0] * 5 + [1] * 5,
+        ),
     )
 
 
-def _make_stats_with_isolated_knn_cluster() -> ClassEmbeddingStats:
+def _make_stats_with_isolated_knn_cluster() -> OodArtifact:
     # Centroids sit exactly where the mocked [CLS] embedding for "decreto" lands (the origin),
     # so Mahalanobis and cosine both see a perfect in-distribution match. But the individual
     # k-NN training points stored for "decreto" are a tight cluster far away from that centroid
-    # — a decoupling that's only possible because ClassEmbeddingStats stores centroids and
+    # — a decoupling that's only possible because EmbeddingStats stores centroids and
     # knn_train_embeddings as independent fields. This isolates the k-NN signal: it should fire
     # even though the other two signals pass.
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.array([[50.0] * 8] * 5 + [[5.0] * 8] * 5),
-        knn_train_labels=[0] * 5 + [1] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.array([[50.0] * 8] * 5 + [[5.0] * 8] * 5),
+            knn_train_labels=[0] * 5 + [1] * 5,
+        ),
     )
 
 
-def _make_stats_with_no_knn_training_data_for_decreto() -> ClassEmbeddingStats:
+def _make_stats_with_no_knn_training_data_for_decreto() -> OodArtifact:
     # "decreto" (label 0) has zero stored k-NN training points, so knn_mean_distance
     # returns NaN for any document predicted as "decreto" — the fail-safe case.
-    return ClassEmbeddingStats(
+    return OodArtifact(
+        format_version=2,
         class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.array([[5.0] * 8] * 5),
-        knn_train_labels=[1] * 5,
+        embedding=EmbeddingStats(
+            pca_mean=np.zeros(8),
+            pca_components=np.eye(8),
+            centroids=np.array([[0.0] * 8, [5.0] * 8]),
+            covariance_inv=np.eye(8),
+            cosine_calibration_mean=0.0,
+            cosine_calibration_std=1.0,
+            knn_train_embeddings=np.array([[5.0] * 8] * 5),
+            knn_train_labels=[1] * 5,
+        ),
     )
 
 
@@ -212,6 +231,113 @@ def test_is_out_of_distribution_false_when_tfidf_z_below_threshold() -> None:
         mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0, tfidf_cosine_z=2.5
     )
     assert is_out_of_distribution(scores, thresholds) is False
+
+
+def test_is_out_of_distribution_defaults_to_permissive_when_calibration_status_omitted() -> None:
+    # Callers that don't pass calibration_status/allow_uncalibrated_fallback at all must
+    # behave exactly as before this feature -- a signal fires regardless of calibration.
+    scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    assert is_out_of_distribution(scores, thresholds) is True
+
+
+def test_is_out_of_distribution_blocks_not_calibrated_signal_under_strict_mode() -> None:
+    # Mahalanobis would fire (0.0001 < 0.01), but its calibration_status is
+    # "not_calibrated" and allow_uncalibrated_fallback=False -- strict mode must exclude
+    # it from the OR, not just warn about it.
+    scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="not_calibrated",
+        cosine="calibrated",
+        knn_distance="calibrated",
+        tfidf_cosine="calibrated",
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is False
+    )
+
+
+def test_is_out_of_distribution_still_fires_when_a_different_signal_is_calibrated() -> None:
+    # Mahalanobis is blocked (not_calibrated, strict mode), but cosine is genuinely
+    # calibrated and fires on its own -- strict mode blocks per-signal, not the whole OR.
+    scores = OodScores(
+        mahalanobis_p=0.0001, cosine_z=Settings.OOD_COSINE_THRESHOLD + 1, knn_distance=1.0
+    )
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="not_calibrated",
+        cosine="calibrated",
+        knn_distance="calibrated",
+        tfidf_cosine="calibrated",
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is True
+    )
+
+
+def test_is_out_of_distribution_never_blocks_refused_degenerate_under_strict_mode() -> None:
+    # "refused_degenerate" is a legitimate calibration outcome, not a gap -- strict mode
+    # must NOT block it, unlike genuine "not_calibrated". Both committed production
+    # models (BETO v1/v2) rely on this exact fallback for Mahalanobis today.
+    scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="refused_degenerate",
+        cosine="calibrated",
+        knn_distance="calibrated",
+        tfidf_cosine="calibrated",
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is True
+    )
+
+
+def test_is_out_of_distribution_blocks_tfidf_not_calibrated_under_strict_mode() -> None:
+    scores = OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=10.0)
+    thresholds = OodThresholds(
+        mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0, tfidf_cosine_z=2.5
+    )
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="calibrated",
+        cosine="calibrated",
+        knn_distance="calibrated",
+        tfidf_cosine="not_calibrated",
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is False
+    )
+
+
+def test_is_out_of_distribution_tfidf_none_status_still_fails_open_under_strict_mode() -> None:
+    # tfidf_cosine=None (no TF-IDF signal at all for this model) is not "not_calibrated"
+    # -- it must never be blocked, and the existing NaN-based fail-open rule still
+    # applies unchanged.
+    scores = OodScores(
+        mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0, tfidf_cosine_z=float("nan")
+    )
+    thresholds = OodThresholds(mahalanobis_p=0.01, cosine_z=2.5, knn_distance=5.0)
+    calibration_status = OodCalibrationStatus(
+        mahalanobis="calibrated", cosine="calibrated", knn_distance="calibrated", tfidf_cosine=None
+    )
+    assert (
+        is_out_of_distribution(
+            scores, thresholds, calibration_status, allow_uncalibrated_fallback=False
+        )
+        is False
+    )
 
 
 def test_confidence_tier_from_confidence_at_or_above_threshold_is_confident() -> None:
@@ -384,7 +510,7 @@ def test_predict_text_ood_driven_human_review_survives_svm_agreement() -> None:
     # classifiers agree with each other (agreement doesn't "cancel out" the OOD signal).
     clf = _make_mock_classifier()
     clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001 -- agrees with softmax
-    clf._ood_stats = _make_stats_with_isolated_knn_cluster()  # noqa: SLF001 -- k-NN fires
+    clf._ood_scorer = OodScorer(_make_stats_with_isolated_knn_cluster())  # noqa: SLF001 -- k-NN fires
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.svm_agrees_with_prediction is True
@@ -406,7 +532,7 @@ def test_predict_text_svm_scores_independent_of_ood_stats() -> None:
     # svm_scores must be populated even when there's no ood_stats.npz at all -- it's a
     # separate artifact, not part of the OOD ensemble.
     clf = _make_mock_classifier()
-    assert clf._ood_stats is None  # noqa: SLF001
+    assert clf._ood_scorer is None  # noqa: SLF001
     clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
@@ -417,18 +543,23 @@ def test_predict_text_svm_scores_independent_of_ood_stats() -> None:
 def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
     # ood_stats.npz with populated centroids but empty knn_train_embeddings/labels (e.g. a
     # hand-edited or partially-corrupted stats file) -- OOD scoring must be skipped entirely,
-    # the same as when _ood_stats is None, not raise ValueError from downstream ranking code.
+    # the same as when _ood_scorer is None, not raise ValueError from downstream ranking code.
     clf = _make_mock_classifier()
-    clf._ood_stats = ClassEmbeddingStats(  # noqa: SLF001
-        class_names=["decreto", "ordenanza"],
-        pca_mean=np.zeros(8),
-        pca_components=np.eye(8),
-        centroids=np.array([[0.0] * 8, [5.0] * 8]),
-        covariance_inv=np.eye(8),
-        cosine_calibration_mean=0.0,
-        cosine_calibration_std=1.0,
-        knn_train_embeddings=np.zeros((0, 8)),
-        knn_train_labels=[],
+    clf._ood_scorer = OodScorer(  # noqa: SLF001
+        OodArtifact(
+            format_version=2,
+            class_names=["decreto", "ordenanza"],
+            embedding=EmbeddingStats(
+                pca_mean=np.zeros(8),
+                pca_components=np.eye(8),
+                centroids=np.array([[0.0] * 8, [5.0] * 8]),
+                covariance_inv=np.eye(8),
+                cosine_calibration_mean=0.0,
+                cosine_calibration_std=1.0,
+                knn_train_embeddings=np.zeros((0, 8)),
+                knn_train_labels=[],
+            ),
+        )
     )
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
@@ -437,7 +568,7 @@ def test_predict_text_degrades_gracefully_when_no_knn_training_data() -> None:
 
 def test_predict_text_with_stats_populates_ood_fields() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats()  # noqa: SLF001
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.ood_metrics is not None
@@ -452,14 +583,18 @@ def test_predict_text_attaches_tfidf_cosine_z_when_available() -> None:
     texts = ["decreto rosario municipal"] * 5 + ["ordenanza cordoba concejo"] * 5
     labels = [0] * 5 + [1] * 5
     tfidf = compute_tfidf_stats(texts, labels, ["decreto", "ordenanza"], max_features=20)
-    clf._ood_stats = _make_stats().model_copy(  # noqa: SLF001
-        update={
-            "tfidf_vocabulary_terms": tfidf.vocabulary_terms,
-            "tfidf_idf": tfidf.idf,
-            "tfidf_centroids": tfidf.centroids,
-            "tfidf_cosine_calibration_mean": tfidf.cosine_calibration_mean,
-            "tfidf_cosine_calibration_std": tfidf.cosine_calibration_std,
-        }
+    clf._ood_scorer = OodScorer(  # noqa: SLF001
+        _make_stats().model_copy(
+            update={
+                "lexical": LexicalStats(
+                    vocabulary_terms=tfidf.vocabulary_terms,
+                    idf=tfidf.idf,
+                    centroids=tfidf.centroids,
+                    cosine_calibration_mean=tfidf.cosine_calibration_mean,
+                    cosine_calibration_std=tfidf.cosine_calibration_std,
+                )
+            }
+        )
     )
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("decreto rosario municipal")
@@ -472,7 +607,7 @@ def test_predict_text_attaches_tfidf_cosine_z_when_available() -> None:
 
 def test_predict_text_leaves_tfidf_cosine_z_none_when_stats_predate_feature() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats()  # noqa: SLF001 -- tfidf_vocabulary_terms defaults to []
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001 -- tfidf_vocabulary_terms defaults to []
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.ood_metrics is not None
@@ -481,7 +616,7 @@ def test_predict_text_leaves_tfidf_cosine_z_none_when_stats_predate_feature() ->
 
 def test_predict_text_mahalanobis_p_value_is_empirical() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats()  # noqa: SLF001
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
     # [CLS] embedding is all zeros (mock hidden_states), exactly centroid A -- distance 0,
     # so the empirical p-value must be exactly 1.0 (all 1400 reference points have
     # distance >= 0).
@@ -493,7 +628,7 @@ def test_predict_text_mahalanobis_p_value_is_empirical() -> None:
 
 def test_predict_text_in_distribution_when_matching_a_centroid_exactly() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats()  # noqa: SLF001
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
     # [CLS] embedding is all zeros (from the mock hidden_states), which is exactly the
     # first centroid in _make_stats() — i.e. a perfectly in-distribution point.
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
@@ -505,11 +640,11 @@ def test_predict_text_in_distribution_when_matching_a_centroid_exactly() -> None
 
 def test_predict_text_review_route_llm_judge_when_uncertain_and_in_distribution() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats()  # noqa: SLF001
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
     # softmax([0.55, 0.45]) ≈ [0.525, 0.475], below the 0.70 threshold -- uncertain -- but
     # the [CLS] embedding (zeros, from the mock hidden_states) still matches the "decreto"
     # centroid exactly, so in_distribution stays True.
-    clf.model.return_value.logits = torch.tensor([[0.55, 0.45]])
+    cast("MagicMock", clf.model).return_value.logits = torch.tensor([[0.55, 0.45]])
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.certain is False
@@ -528,7 +663,7 @@ def test_predict_text_review_route_accept_without_ood_stats() -> None:
 
 def test_predict_text_review_route_llm_judge_without_ood_stats_when_uncertain() -> None:
     clf = _make_mock_classifier()
-    clf.model.return_value.logits = torch.tensor([[0.55, 0.45]])
+    cast("MagicMock", clf.model).return_value.logits = torch.tensor([[0.55, 0.45]])
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
         result = clf.predict_text("anything")
     assert result.certain is False
@@ -538,7 +673,7 @@ def test_predict_text_review_route_llm_judge_without_ood_stats_when_uncertain() 
 
 def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats()  # noqa: SLF001
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
     # A point far from both centroids: with all 1400 reference (training) distances equal
     # to 0, the empirical p-value for any nonzero-distance query collapses to
     # 1 / (1400 + 1) ≈ 0.000714, safely below OOD_MAHALANOBIS_P_THRESHOLD (0.001) -- but
@@ -546,7 +681,7 @@ def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
     # only the Mahalanobis signal should fire.
     far_embedding = torch.full((1, 512, 8), 100.0)
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
-        clf.model.return_value.hidden_states = [far_embedding]
+        cast("MagicMock", clf.model).return_value.hidden_states = [far_embedding]
         result = clf.predict_text("anything")
     assert result.ood_metrics is not None
     assert result.ood_metrics.mahalanobis_p_value < Settings.OOD_MAHALANOBIS_P_THRESHOLD
@@ -555,9 +690,46 @@ def test_predict_text_flags_out_of_distribution_via_mahalanobis_only() -> None:
     assert result.review_route == "human_review"
 
 
+def test_predict_text_reports_calibration_status_fields() -> None:
+    # _make_stats() leaves all three thresholds at their None default -- fully
+    # uncalibrated -- and doesn't fit TF-IDF, so tfidf_calibration_status is None (no
+    # signal at all), not "not_calibrated".
+    clf = _make_mock_classifier()
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.mahalanobis_calibration_status == "not_calibrated"
+    assert result.ood_metrics.cosine_calibration_status == "not_calibrated"
+    assert result.ood_metrics.knn_distance_calibration_status == "not_calibrated"
+    assert result.ood_metrics.tfidf_calibration_status is None
+
+
+def test_predict_text_strict_mode_blocks_uncalibrated_mahalanobis_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same far-point setup as test_predict_text_flags_out_of_distribution_via_mahalanobis_only
+    # (Mahalanobis alone would fire), but _make_stats() is fully uncalibrated and strict
+    # mode is on -- Mahalanobis must be excluded from the OR, so in_distribution stays
+    # True even though the raw score is still reported below threshold.
+    monkeypatch.setattr(Settings, "OOD_ALLOW_UNCALIBRATED_FALLBACK", False)
+    clf = _make_mock_classifier()
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
+    far_embedding = torch.full((1, 512, 8), 100.0)
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        cast("MagicMock", clf.model).return_value.hidden_states = [far_embedding]
+        result = clf.predict_text("anything")
+    assert result.ood_metrics is not None
+    # The raw score is still computed and reported -- strict mode only blocks it from
+    # contributing to in_distribution, it doesn't hide the number.
+    assert result.ood_metrics.mahalanobis_p_value < Settings.OOD_MAHALANOBIS_P_THRESHOLD
+    assert result.ood_metrics.mahalanobis_calibration_status == "not_calibrated"
+    assert result.ood_metrics.in_distribution is True
+
+
 def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_tight_cosine_stats()  # noqa: SLF001
+    clf._ood_scorer = OodScorer(_make_tight_cosine_stats())  # noqa: SLF001
     # A point close to centroid ["decreto"] ([5]*8) in Euclidean/Mahalanobis terms (squared
     # distance is 8, well under the chi-squared critical value for df=8) but rotated just
     # enough in direction to be several cosine-calibration standard deviations away — so
@@ -565,7 +737,7 @@ def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
     embedding = torch.zeros(1, 512, 8)
     embedding[0, 0, :] = torch.tensor([6.0, 4.0, 6.0, 4.0, 6.0, 4.0, 6.0, 4.0])
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
-        clf.model.return_value.hidden_states = [embedding]
+        cast("MagicMock", clf.model).return_value.hidden_states = [embedding]
         result = clf.predict_text("anything")
     assert result.ood_metrics is not None
     assert result.ood_metrics.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
@@ -576,7 +748,7 @@ def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
 
 def test_predict_text_flags_out_of_distribution_via_knn_only() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats_with_isolated_knn_cluster()  # noqa: SLF001
+    clf._ood_scorer = OodScorer(_make_stats_with_isolated_knn_cluster())  # noqa: SLF001
     # [CLS] embedding is all zeros (from the mock hidden_states), which is exactly the
     # "decreto" centroid — Mahalanobis and cosine both pass — but the "decreto" k-NN training
     # points are stored far away ([50]*8), so only the k-NN signal should fire.
@@ -592,7 +764,7 @@ def test_predict_text_flags_out_of_distribution_via_knn_only() -> None:
 
 def test_predict_text_flags_out_of_distribution_when_knn_distance_is_nan() -> None:
     clf = _make_mock_classifier()
-    clf._ood_stats = _make_stats_with_no_knn_training_data_for_decreto()  # noqa: SLF001
+    clf._ood_scorer = OodScorer(_make_stats_with_no_knn_training_data_for_decreto())  # noqa: SLF001
     # [CLS] embedding is all zeros, exactly the "decreto" centroid — Mahalanobis and cosine
     # both pass — but "decreto" has zero k-NN training points, so knn_mean_distance returns
     # NaN. `nan > threshold` is False in Python, so without an explicit guard this would
@@ -639,15 +811,15 @@ def test_predict_pdf_returns_extraction_failed_result_when_text_missing() -> Non
     assert result.review_route == "human_review"
 
 
-def test_load_ood_stats_returns_none_when_file_missing(tmp_path: Path) -> None:
-    assert BertTunningClassifier._load_ood_stats(str(tmp_path)) is None  # noqa: SLF001
+def test_ood_scorer_load_returns_none_when_file_missing(tmp_path: Path) -> None:
+    assert OodScorer.load(str(tmp_path)) is None
 
 
-def test_load_ood_stats_returns_stats_when_file_present(tmp_path: Path) -> None:
+def test_ood_scorer_load_returns_scorer_when_file_present(tmp_path: Path) -> None:
     save_stats(_make_stats(), tmp_path / "ood_stats.npz")
-    loaded = BertTunningClassifier._load_ood_stats(str(tmp_path))  # noqa: SLF001
+    loaded = OodScorer.load(str(tmp_path))
     assert loaded is not None
-    assert loaded.class_names == ["decreto", "ordenanza"]
+    assert loaded._stats.class_names == ["decreto", "ordenanza"]  # noqa: SLF001
 
 
 def test_classifier_raises_when_ood_stats_class_names_mismatch_model_id2label(
@@ -681,7 +853,7 @@ def test_classifier_loads_fine_when_ood_stats_class_names_match(tmp_path: Path) 
 
     with patch("torch.cuda.is_available", return_value=False):
         clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
-    assert clf._ood_stats is not None  # noqa: SLF001
+    assert clf._ood_scorer is not None  # noqa: SLF001
 
 
 def test_classifier_raises_when_ood_stats_model_identity_mismatches(tmp_path: Path) -> None:
@@ -696,7 +868,9 @@ def test_classifier_raises_when_ood_stats_model_identity_mismatches(tmp_path: Pa
     # Same class_names/order as the loaded model (passes the existing class-mapping check),
     # but computed from a different model_type -- this is the exact gap the class-name-only
     # check can't catch.
-    stats = _make_stats().model_copy(update={"model_type": "bert", "model_hidden_size": 768})
+    stats = _make_stats().model_copy(
+        update={"metadata": ArtifactMetadata(model_type="bert", model_hidden_size=768)}
+    )
     save_stats(stats, tmp_path / "ood_stats.npz")
 
     with (
@@ -715,12 +889,14 @@ def test_classifier_loads_fine_when_ood_stats_model_identity_matches(tmp_path: P
     model.config.model_type = "xlm-roberta"
     model.config.hidden_size = 768
 
-    stats = _make_stats().model_copy(update={"model_type": "xlm-roberta", "model_hidden_size": 768})
+    stats = _make_stats().model_copy(
+        update={"metadata": ArtifactMetadata(model_type="xlm-roberta", model_hidden_size=768)}
+    )
     save_stats(stats, tmp_path / "ood_stats.npz")
 
     with patch("torch.cuda.is_available", return_value=False):
         clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
-    assert clf._ood_stats is not None  # noqa: SLF001
+    assert clf._ood_scorer is not None  # noqa: SLF001
 
 
 def test_classifier_skips_model_identity_check_when_stats_predate_the_field(
@@ -740,7 +916,7 @@ def test_classifier_skips_model_identity_check_when_stats_predate_the_field(
 
     with patch("torch.cuda.is_available", return_value=False):
         clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
-    assert clf._ood_stats is not None  # noqa: SLF001
+    assert clf._ood_scorer is not None  # noqa: SLF001
 
 
 def test_classifier_skips_validation_when_no_ood_stats(tmp_path: Path) -> None:
@@ -752,7 +928,7 @@ def test_classifier_skips_validation_when_no_ood_stats(tmp_path: Path) -> None:
 
     with patch("torch.cuda.is_available", return_value=False):
         clf = BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
-    assert clf._ood_stats is None  # noqa: SLF001
+    assert clf._ood_scorer is None  # noqa: SLF001
 
 
 def test_classifier_loads_fine_when_svm_classifiers_class_set_matches(tmp_path: Path) -> None:
@@ -831,12 +1007,17 @@ def test_classifier_does_not_warn_when_thresholds_are_fully_calibrated(
     model.config.id2label = {0: "decreto", 1: "ordenanza"}
     model.config.max_position_embeddings = 512
 
-    stats = _make_stats().model_copy(
+    base = _make_stats()
+    stats = base.model_copy(
         update={
-            "mahalanobis_p_threshold": 0.001,
-            "mahalanobis_threshold_status": "calibrated",
-            "cosine_threshold": 13.7366,
-            "knn_distance_threshold": 16.7908,
+            "thresholds": base.thresholds.model_copy(
+                update={
+                    "mahalanobis_p": 0.001,
+                    "mahalanobis_status": "calibrated",
+                    "cosine": 13.7366,
+                    "knn_distance": 16.7908,
+                }
+            )
         }
     )
     save_stats(stats, tmp_path / "ood_stats.npz")
@@ -859,11 +1040,16 @@ def test_classifier_logs_info_not_warning_when_mahalanobis_threshold_refused_deg
     model.config.id2label = {0: "decreto", 1: "ordenanza"}
     model.config.max_position_embeddings = 512
 
-    stats = _make_stats().model_copy(
+    base = _make_stats()
+    stats = base.model_copy(
         update={
-            "mahalanobis_threshold_status": "refused_degenerate",
-            "cosine_threshold": 13.7366,
-            "knn_distance_threshold": 16.7908,
+            "thresholds": base.thresholds.model_copy(
+                update={
+                    "mahalanobis_status": "refused_degenerate",
+                    "cosine": 13.7366,
+                    "knn_distance": 16.7908,
+                }
+            )
         }
     )
     save_stats(stats, tmp_path / "ood_stats.npz")
