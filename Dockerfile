@@ -24,6 +24,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app /app
 
 ENV PATH="/app/.venv/bin:$PATH"
+# Settings.HOST defaults to 127.0.0.1 (correct for local `uv run` dev -- binding 0.0.0.0
+# there would expose the dev API to the whole LAN by default). Inside a container,
+# 127.0.0.1 is only reachable from within the container's own network namespace --
+# `docker run -p` port-forwarding can never reach it. Override for the container only,
+# not the code-level default.
+ENV HOST=0.0.0.0
 
 WORKDIR /app
 
