@@ -2,7 +2,7 @@ import { useState } from "react";
 import { predict } from "./api";
 import type { PredictOutcome } from "./types/api";
 import { FileUploadForm } from "./components/FileUploadForm";
-import { ResultsTable } from "./components/ResultsTable";
+import { PredictionsTable } from "./components/PredictionsTable";
 
 function App() {
   const [results, setResults] = useState<PredictOutcome[]>([]);
@@ -30,7 +30,7 @@ function App() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl p-6">
+    <div className="mx-auto max-w-7xl p-6">
       <h1 className="mb-1 text-2xl font-semibold text-gray-900">Bert Tunning</h1>
       <p className="mb-6 text-sm text-gray-500">
         Classify one or more Spanish municipal PDF documents.
@@ -39,7 +39,7 @@ function App() {
       <FileUploadForm onSubmit={handleSubmit} submitting={submitting} />
 
       <div className="mt-6">
-        <ResultsTable results={results} />
+        <PredictionsTable results={results} />
       </div>
     </div>
   );
