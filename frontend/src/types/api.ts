@@ -39,7 +39,7 @@ export interface PredictFailure {
 
 export type PredictOutcome = PredictResponse | PredictFailure;
 
-export type PredictStage = "extracting" | "classifying" | "done" | "error";
+export type PredictStage = "queued" | "extracting" | "classifying" | "done" | "error";
 
 export interface PredictJob {
   stage: PredictStage;

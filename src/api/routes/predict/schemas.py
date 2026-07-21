@@ -25,7 +25,7 @@ class PredictResponse(BaseSchema):
 
 
 class PredictJob(BaseSchema):
-    stage: Literal["extracting", "classifying", "done", "error"]
+    stage: Literal["queued", "extracting", "classifying", "done", "error"]
     result: PredictResponse | None = None
     error: str | None = None
 
