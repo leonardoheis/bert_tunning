@@ -267,3 +267,36 @@ def test_predict_endpoint_rejects_upload_exceeding_max_size() -> None:
             files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
         )
     assert response.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+
+
+def test_predict_status_returns_404_for_unknown_job_id() -> None:
+    app = create_app(model_path="fake/path")
+    client = TestClient(app)
+    response = client.get("/predict/status/does-not-exist")
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_predict_endpoint_job_lands_in_error_stage_on_exception() -> None:
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.side_effect = RuntimeError("boom")
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        created = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+        assert created.status_code == HTTPStatus.OK
+        job_id = created.json()["jobId"]
+        job = client.get(f"/predict/status/{job_id}").json()
+
+    assert job["stage"] == "error"
+    assert "boom" in job["error"]
+    assert job["result"] is None
