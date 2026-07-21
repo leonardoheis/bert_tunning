@@ -39,6 +39,18 @@ export interface PredictFailure {
 
 export type PredictOutcome = PredictResponse | PredictFailure;
 
+export type PredictStage = "extracting" | "classifying" | "done" | "error";
+
+export interface PredictJob {
+  stage: PredictStage;
+  result: PredictResponse | null;
+  error: string | null;
+}
+
+export interface PredictJobCreated {
+  jobId: string;
+}
+
 export function isPredictFailure(outcome: PredictOutcome): outcome is PredictFailure {
   return !("label" in outcome);
 }

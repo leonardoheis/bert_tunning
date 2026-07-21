@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 
 from src.api.schema import BaseSchema
@@ -20,3 +22,13 @@ class PredictResponse(BaseSchema):
     svm_scores: dict[str, float] = Field(default_factory=dict)
     svm_predicted_label: str = ""
     svm_agrees_with_prediction: bool = True
+
+
+class PredictJob(BaseSchema):
+    stage: Literal["extracting", "classifying", "done", "error"]
+    result: PredictResponse | None = None
+    error: str | None = None
+
+
+class PredictJobCreated(BaseSchema):
+    job_id: str
