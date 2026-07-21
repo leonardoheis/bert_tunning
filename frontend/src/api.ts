@@ -1,6 +1,7 @@
 import type { PredictJob, PredictJobCreated, PredictResponse, PredictStage } from "./types/api";
 
 const POLL_INTERVAL_MS = 500;
+const MAX_POLL_ATTEMPTS = 600; // 5 minutes
 
 export async function predict(
   file: File,
@@ -15,7 +16,7 @@ export async function predict(
   }
   const created: PredictJobCreated = await res.json();
 
-  while (true) {
+  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
     const statusRes = await fetch(`/predict/status/${created.jobId}`);
     if (!statusRes.ok) {
       throw new Error(`Status check failed: ${statusRes.status}`);
@@ -31,4 +32,5 @@ export async function predict(
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
+  throw new Error("Prediction timed out");
 }
