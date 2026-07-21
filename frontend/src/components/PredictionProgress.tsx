@@ -1,6 +1,6 @@
 import type { PredictStage } from "../types/api";
 
-const STEPS: PredictStage[] = ["extracting", "classifying", "done"];
+const STEPS: PredictStage[] = ["queued", "extracting", "classifying", "done"];
 
 /** App.tsx removes a file's entry as soon as it settles (success or error), so only
  * "extracting"/"classifying" are ever actually rendered here -- a settled file's outcome

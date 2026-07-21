@@ -22,6 +22,12 @@ router = APIRouter(tags=["Prediction"])
 # a long-lived shared server with many users.
 _JOBS: dict[str, PredictJob] = {}
 
+# Bounds how many jobs actually run (extraction + classification) at once -- see
+# Settings.PREDICT_MAX_CONCURRENCY. Module-level is correct here: this Dockerfile runs a
+# single process (CMD ["python", "-m", "src"]), one event loop, so this genuinely caps
+# total concurrency for the whole pod.
+_PREDICT_SEMAPHORE = asyncio.Semaphore(Settings.PREDICT_MAX_CONCURRENCY)
+
 
 _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
@@ -75,28 +81,32 @@ async def _run_prediction_job(
     job_id: str, tmp_path: str, filename: str, clf: BertTunningClassifier
 ) -> None:
     try:
-        extraction = await asyncio.to_thread(
-            extract_pdf_with_metadata, tmp_path, use_ocr_fallback=True
-        )
-        if not extraction.text:
-            _JOBS[job_id] = PredictJob(
-                stage="done", result=_to_predict_response(extraction_failed(filename))
+        async with _PREDICT_SEMAPHORE:
+            _JOBS[job_id] = PredictJob(stage="extracting")
+            extraction = await asyncio.to_thread(
+                extract_pdf_with_metadata, tmp_path, use_ocr_fallback=True
             )
-            return
+            if not extraction.text:
+                _JOBS[job_id] = PredictJob(
+                    stage="done", result=_to_predict_response(extraction_failed(filename))
+                )
+                return
 
-        _JOBS[job_id] = PredictJob(stage="classifying")
-        result = await asyncio.to_thread(clf.predict_text, extraction.text)
-        foreign_match = detect_foreign_municipality(extraction.text or "")
-        result = result.model_copy(
-            update={
-                "filename": filename,
-                "extracted_text": extraction.text,
-                "extractor_used": extraction.extractor_used or "",
-                "foreign_municipality": foreign_match.name if foreign_match else None,
-                "foreign_municipality_context": (foreign_match.context if foreign_match else None),
-            }
-        )
-        _JOBS[job_id] = PredictJob(stage="done", result=_to_predict_response(result))
+            _JOBS[job_id] = PredictJob(stage="classifying")
+            result = await asyncio.to_thread(clf.predict_text, extraction.text)
+            foreign_match = detect_foreign_municipality(extraction.text or "")
+            result = result.model_copy(
+                update={
+                    "filename": filename,
+                    "extracted_text": extraction.text,
+                    "extractor_used": extraction.extractor_used or "",
+                    "foreign_municipality": foreign_match.name if foreign_match else None,
+                    "foreign_municipality_context": (
+                        foreign_match.context if foreign_match else None
+                    ),
+                }
+            )
+            _JOBS[job_id] = PredictJob(stage="done", result=_to_predict_response(result))
     except Exception as exc:  # noqa: BLE001 -- boundary between a background task and its
         # job record; an uncaught exception here has no other way to reach the client than
         # through this record
@@ -120,7 +130,7 @@ async def predict(
         tmp_path = tmp.name
 
     job_id = uuid4().hex
-    _JOBS[job_id] = PredictJob(stage="extracting")
+    _JOBS[job_id] = PredictJob(stage="queued")
     background_tasks.add_task(_run_prediction_job, job_id, tmp_path, file.filename, clf)
     return PredictJobCreated(job_id=job_id)
 
