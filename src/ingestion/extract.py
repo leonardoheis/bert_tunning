@@ -7,11 +7,20 @@ from src.ingestion.extractors import ExtractorBase, MarkItDownExtractor, OCRExtr
 from src.schema import ExtractionMetadata
 from src.settings import Settings
 
-__all__ = ["clean_text", "extract_pdf", "extract_pdf_with_metadata"]
+__all__ = ["clean_text", "extract_pdf", "extract_pdf_with_metadata", "warm_ocr_reader"]
 
 log = logging.getLogger(__name__)
 
 _CHAIN: list[ExtractorBase] = [MarkItDownExtractor(), OCRExtractor()]
+
+
+def warm_ocr_reader() -> None:
+    """Eagerly initializes the shared OCRExtractor's EasyOCR reader -- see
+    OCRExtractor.warm() for why this needs to happen once, before any request."""
+    for extractor in _CHAIN:
+        if isinstance(extractor, OCRExtractor):
+            extractor.warm()
+            return
 
 
 def extract_pdf_with_metadata(

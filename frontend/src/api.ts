@@ -1,6 +1,6 @@
 import type { PredictJob, PredictJobCreated, PredictResponse, PredictStage } from "./types/api";
 
-const POLL_INTERVAL_MS = 500;
+const POLL_INTERVAL_MS = 1000;
 const MAX_POLL_ATTEMPTS = 600; // 5 minutes
 
 export async function predict(

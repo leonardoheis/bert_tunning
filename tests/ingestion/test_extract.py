@@ -1,9 +1,10 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.exceptions import BertTunningError
-from src.ingestion.extract import extract_pdf, extract_pdf_with_metadata
+from src.ingestion.extract import extract_pdf, extract_pdf_with_metadata, warm_ocr_reader
+from src.ingestion.extractors import OCRExtractor
 
 
 def _stub_extractor(name: str, *, text: str = "", raises: bool = False) -> object:
@@ -65,3 +66,17 @@ def test_extract_pdf_still_returns_plain_string_or_none() -> None:
     ):
         text = extract_pdf("fake.pdf")
     assert isinstance(text, str)
+
+
+def test_warm_ocr_reader_warms_the_shared_ocr_extractor_instance() -> None:
+    ocr_extractor = OCRExtractor()
+    chain = [_stub_extractor("MarkItDownExtractor"), ocr_extractor]
+    with (
+        patch("src.ingestion.extract._CHAIN", chain),
+        patch(
+            "src.ingestion.extractors.ocr.easyocr.Reader", return_value=MagicMock()
+        ) as mock_reader,
+    ):
+        warm_ocr_reader()
+
+    mock_reader.assert_called_once()

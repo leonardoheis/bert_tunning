@@ -1,4 +1,5 @@
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from src.inference.classify import BertTunningClassifier
+from src.ingestion.extract import warm_ocr_reader
 
 from .routes import ROUTERS
 
@@ -18,8 +20,9 @@ _FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "d
 
 def create_app(model_path: str, threshold: float = 0.70) -> FastAPI:
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         app.state.clf = BertTunningClassifier(model_path, confidence_threshold=threshold)
+        await asyncio.to_thread(warm_ocr_reader)
         yield
 
     app = FastAPI(
