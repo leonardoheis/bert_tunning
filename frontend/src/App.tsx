@@ -2,6 +2,7 @@ import { useState } from "react";
 import { predict } from "./api";
 import type { PredictOutcome, PredictStage } from "./types/api";
 import { FileUploadForm } from "./components/FileUploadForm";
+import { Layout } from "./components/Layout";
 import { PredictionProgress } from "./components/PredictionProgress";
 import { PredictionsTable } from "./components/PredictionsTable";
 
@@ -41,9 +42,8 @@ function App() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl p-6">
-      <h1 className="mb-1 text-2xl font-semibold text-gray-900">Bert Tunning</h1>
-      <p className="mb-6 text-sm text-gray-500">
+    <Layout>
+      <p className="mb-6 text-sm text-gray-400">
         Classify one or more Spanish municipal PDF documents.
       </p>
 
@@ -53,7 +53,7 @@ function App() {
         <PredictionProgress stages={stages} />
         <PredictionsTable results={results} />
       </div>
-    </div>
+    </Layout>
   );
 }
 

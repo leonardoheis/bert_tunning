@@ -24,7 +24,7 @@ export function FileUploadForm({ onSubmit, submitting }: FileUploadFormProps) {
         multiple
         accept="application/pdf"
         onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
-        className="block flex-1 rounded border border-gray-300 p-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-sm"
+        className="block flex-1 rounded border border-gray-700 bg-gray-900 p-2 text-sm text-gray-100 file:mr-3 file:rounded file:border-0 file:bg-gray-800 file:px-3 file:py-1.5 file:text-sm file:text-gray-100"
       />
       <button
         type="submit"
