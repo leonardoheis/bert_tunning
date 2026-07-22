@@ -143,12 +143,12 @@ export function PredictionsTable({ results }: { results: PredictOutcome[] }) {
         <button
           type="button"
           onClick={() => setShowColumnPicker((prev) => !prev)}
-          className="rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50"
+          className="rounded border border-gray-700 px-3 py-1 text-sm text-gray-100 hover:bg-gray-800"
         >
           Columns
         </button>
         {showColumnPicker && (
-          <div className="absolute top-8 right-0 z-10 max-h-80 w-64 overflow-y-auto rounded border border-gray-200 bg-white p-2 shadow-lg">
+          <div className="absolute top-8 right-0 z-10 max-h-80 w-64 overflow-y-auto rounded border border-gray-700 bg-gray-900 p-2 shadow-lg">
             {table.getAllLeafColumns().map((column) => (
               <label key={column.id} className="flex items-center gap-2 px-2 py-1 text-sm">
                 <input
@@ -163,11 +163,11 @@ export function PredictionsTable({ results }: { results: PredictOutcome[] }) {
         )}
       </div>
 
-      <div className="overflow-x-auto rounded border border-gray-200">
+      <div className="overflow-x-auto rounded border border-gray-800">
         <table className="w-full border-collapse text-left text-sm">
           <thead>
             {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id} className="border-b border-gray-300 bg-gray-50">
+              <tr key={headerGroup.id} className="border-b border-gray-700 bg-gray-900">
                 {headerGroup.headers.map((header) => (
                   <th key={header.id} className="px-3 py-2 font-medium whitespace-nowrap">
                     {flexRender(header.column.columnDef.header, header.getContext())}
@@ -178,7 +178,7 @@ export function PredictionsTable({ results }: { results: PredictOutcome[] }) {
           </thead>
           <tbody>
             {table.getRowModel().rows.map((row) => (
-              <tr key={row.id} className="border-b border-gray-100 hover:bg-gray-50">
+              <tr key={row.id} className="border-b border-gray-800 hover:bg-gray-900">
                 {row.getVisibleCells().map((cell) => (
                   <td key={cell.id} className="px-3 py-2 whitespace-nowrap">
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
