@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import tempfile
 from pathlib import Path
 from typing import Annotated, cast
@@ -14,6 +15,8 @@ from src.schema import PredictResult
 from src.settings import Settings
 
 from .schemas import PredictJob, PredictJobCreated, PredictResponse
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Prediction"])
 
@@ -82,11 +85,13 @@ async def _run_prediction_job(
 ) -> None:
     try:
         async with _PREDICT_SEMAPHORE:
+            log.info("[%s] Classifying: %s", job_id, filename)
             _JOBS[job_id] = PredictJob(stage="extracting")
             extraction = await asyncio.to_thread(
                 extract_pdf_with_metadata, tmp_path, use_ocr_fallback=True
             )
             if not extraction.text:
+                log.warning("[%s] Could not extract text from %s", job_id, filename)
                 _JOBS[job_id] = PredictJob(
                     stage="done", result=_to_predict_response(extraction_failed(filename))
                 )
@@ -106,11 +111,19 @@ async def _run_prediction_job(
                     ),
                 }
             )
+            log.info(
+                "[%s] %s -> %s (%.2f%%)",
+                job_id,
+                filename,
+                result.label,
+                result.confidence * 100,
+            )
             _JOBS[job_id] = PredictJob(stage="done", result=_to_predict_response(result))
-    except Exception as exc:  # noqa: BLE001 -- boundary between a background task and its
+    except Exception as exc:
         # job record; an uncaught exception here has no other way to reach the client than
         # through this record
-        _JOBS[job_id] = PredictJob(stage="error", error=str(exc))
+        log.exception("[%s] Prediction failed for %s", job_id, filename)
+        _JOBS[job_id] = PredictJob(stage="error", error=f"{type(exc).__name__}: {exc}")
     finally:
         await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
