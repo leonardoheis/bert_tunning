@@ -213,10 +213,11 @@ src/
 │   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
 │   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py · reporting.py
 ├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN/TF-IDF/SVM scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
-├── api/               app.py · schema.py · __init__.py · __main__.py · error_handlers/ · routes/predict/ · routes/health/
+├── api/               app.py (mounts frontend/dist/ at "/" when built) · schema.py · __init__.py · __main__.py · error_handlers/ · routes/predict/ (job-polling: POST /predict → job id, GET /predict/status/{id}) · routes/health/
 └── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · svm_classifiers.py (compute-svm-classifiers) · _ood_common.py (shared helpers) · clean.py
 
-Dockerfile             multi-stage: uv builder + python:3.10-slim-bookworm runtime
+frontend/              React + TypeScript + Vite SPA for /predict — results table, per-file progress, CSV export, dark sidebar
+Dockerfile             multi-stage: node frontend-builder + uv builder + python:3.10-slim-bookworm runtime
 main.py                Click CLI entry point
 ```
 
