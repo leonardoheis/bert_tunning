@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-table";
 import type { ColumnDef, VisibilityState } from "@tanstack/react-table";
 import type { PredictOutcome } from "../types/api";
+import { downloadCsv, resultsToCsv } from "../utils/csv";
 import type { FlatResultRow } from "../utils/flatten";
 import { flattenResult } from "../utils/flatten";
 
@@ -139,7 +140,14 @@ export function PredictionsTable({ results }: { results: PredictOutcome[] }) {
 
   return (
     <div className="relative">
-      <div className="mb-2 flex justify-end">
+      <div className="mb-2 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => downloadCsv(resultsToCsv(rows), "bert_tunning_predictions.csv")}
+          className="rounded border border-gray-700 px-3 py-1 text-sm text-gray-100 hover:bg-gray-800"
+        >
+          Export CSV
+        </button>
         <button
           type="button"
           onClick={() => setShowColumnPicker((prev) => !prev)}
