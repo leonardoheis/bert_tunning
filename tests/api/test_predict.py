@@ -1,4 +1,5 @@
 from http import HTTPStatus
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -6,6 +7,18 @@ from fastapi.testclient import TestClient
 from src.api.app import create_app
 from src.api.routes.predict.schemas import PredictResponse
 from src.schema import ExtractionMetadata, OodMetrics, PredictResult
+
+
+def _predict_and_await_result(client: TestClient, files: dict[str, tuple[str, bytes, str]]) -> Any:
+    """POST /predict now returns a job id immediately (see PredictJob) -- the actual
+    prediction runs in a BackgroundTask, which TestClient drives to completion before
+    the POST call returns, so a single status poll right after is always already terminal."""
+    created = client.post("/predict", files=files)
+    assert created.status_code == HTTPStatus.OK
+    job_id = created.json()["jobId"]
+    job = client.get(f"/predict/status/{job_id}").json()
+    assert job["stage"] == "done", job
+    return job["result"]
 
 
 def test_health_endpoint() -> None:
@@ -54,15 +67,12 @@ def test_predict_endpoint_returns_extraction_metadata() -> None:
         "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
     ):
         client = TestClient(app)
-        response = client.post(
-            "/predict",
-            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
         )
 
-    assert response.status_code == HTTPStatus.OK
-    body = response.json()
-    assert body["extractedText"] == "hola mundo"
-    assert body["extractorUsed"] == "OCRExtractor"
+    assert result["extractedText"] == "hola mundo"
+    assert result["extractorUsed"] == "OCRExtractor"
 
 
 def test_predict_endpoint_returns_ood_metrics() -> None:
@@ -90,13 +100,11 @@ def test_predict_endpoint_returns_ood_metrics() -> None:
         "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
     ):
         client = TestClient(app)
-        response = client.post(
-            "/predict",
-            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
         )
 
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["oodMetrics"]["knnDistance"] == expected_knn_distance
+    assert result["oodMetrics"]["knnDistance"] == expected_knn_distance
 
 
 def test_predict_endpoint_returns_svm_scores() -> None:
@@ -117,13 +125,11 @@ def test_predict_endpoint_returns_svm_scores() -> None:
         "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
     ):
         client = TestClient(app)
-        response = client.post(
-            "/predict",
-            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
         )
 
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["svmScores"] == {"decreto": 1.2, "ordenanza": -0.5}
+    assert result["svmScores"] == {"decreto": 1.2, "ordenanza": -0.5}
 
 
 def test_predict_endpoint_returns_svm_disagreement_fields() -> None:
@@ -146,15 +152,12 @@ def test_predict_endpoint_returns_svm_disagreement_fields() -> None:
         "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
     ):
         client = TestClient(app)
-        response = client.post(
-            "/predict",
-            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
         )
 
-    assert response.status_code == HTTPStatus.OK
-    body = response.json()
-    assert body["svmPredictedLabel"] == "ordenanza"
-    assert body["svmAgreesWithPrediction"] is False
+    assert result["svmPredictedLabel"] == "ordenanza"
+    assert result["svmAgreesWithPrediction"] is False
 
 
 def test_predict_response_svm_agrees_with_prediction_defaults_to_true() -> None:
@@ -177,14 +180,12 @@ def test_predict_endpoint_returns_foreign_municipality() -> None:
         "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
     ):
         client = TestClient(app)
-        response = client.post(
-            "/predict",
-            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
         )
 
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["foreignMunicipality"] == "Cordoba"
-    assert "Municipalidad de Cordoba" in response.json()["foreignMunicipalityContext"]
+    assert result["foreignMunicipality"] == "Cordoba"
+    assert "Municipalidad de Cordoba" in result["foreignMunicipalityContext"]
 
 
 def test_predict_endpoint_returns_review_route() -> None:
@@ -202,13 +203,11 @@ def test_predict_endpoint_returns_review_route() -> None:
         "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
     ):
         client = TestClient(app)
-        response = client.post(
-            "/predict",
-            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
         )
 
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["reviewRoute"] == "accept"
+    assert result["reviewRoute"] == "accept"
 
 
 def test_predict_endpoint_routes_unreadable_document_to_human_review() -> None:
@@ -219,13 +218,11 @@ def test_predict_endpoint_routes_unreadable_document_to_human_review() -> None:
         "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
     ):
         client = TestClient(app)
-        response = client.post(
-            "/predict",
-            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
         )
 
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["reviewRoute"] == "human_review"
+    assert result["reviewRoute"] == "human_review"
 
 
 def test_predict_endpoint_returns_theoretical_mahalanobis_p_value() -> None:
@@ -253,13 +250,11 @@ def test_predict_endpoint_returns_theoretical_mahalanobis_p_value() -> None:
         "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
     ):
         client = TestClient(app)
-        response = client.post(
-            "/predict",
-            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
         )
 
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["oodMetrics"]["mahalanobisPValueTheoretical"] == expected_theoretical_p
+    assert result["oodMetrics"]["mahalanobisPValueTheoretical"] == expected_theoretical_p
 
 
 def test_predict_endpoint_rejects_upload_exceeding_max_size() -> None:
@@ -272,3 +267,36 @@ def test_predict_endpoint_rejects_upload_exceeding_max_size() -> None:
             files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
         )
     assert response.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+
+
+def test_predict_status_returns_404_for_unknown_job_id() -> None:
+    app = create_app(model_path="fake/path")
+    client = TestClient(app)
+    response = client.get("/predict/status/does-not-exist")
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_predict_endpoint_job_lands_in_error_stage_on_exception() -> None:
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.side_effect = RuntimeError("boom")
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        created = client.post(
+            "/predict",
+            files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        )
+        assert created.status_code == HTTPStatus.OK
+        job_id = created.json()["jobId"]
+        job = client.get(f"/predict/status/{job_id}").json()
+
+    assert job["stage"] == "error"
+    assert "boom" in job["error"]
+    assert job["result"] is None

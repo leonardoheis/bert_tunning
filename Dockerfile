@@ -1,3 +1,11 @@
+FROM node:22-slim AS frontend-builder
+
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM ghcr.io/astral-sh/uv:python3.10-bookworm-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1
@@ -22,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app /app
+COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 ENV PATH="/app/.venv/bin:$PATH"
 # Settings.HOST defaults to 127.0.0.1 (correct for local `uv run` dev -- binding 0.0.0.0

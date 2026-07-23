@@ -1,3 +1,5 @@
+import logging
+
 import click
 import uvicorn
 
@@ -8,7 +10,10 @@ from src.cli.ood_stats import compute_ood_stats_cmd
 from src.cli.predict import predict_cmd, predict_folder_cmd
 from src.cli.svm_classifiers import compute_svm_classifiers_cmd
 from src.cli.train import train_cmd
+from src.logger import setup_logging
 from src.settings import Settings
+
+log = logging.getLogger(__name__)
 
 
 @click.group()
@@ -32,6 +37,8 @@ cli.add_command(compute_svm_classifiers_cmd, name="compute-svm-classifiers")
 @click.option("--threshold", default=Settings.model_threshold, show_default=True)
 def serve_cmd(model_path: str, host: str, port: int, threshold: float) -> None:
     """Start the FastAPI inference server."""
+    log_file = setup_logging()
+    log.info("Logging to %s", log_file)
     app = create_app(model_path=model_path, threshold=threshold)
     uvicorn.run(app, host=host, port=port)
 

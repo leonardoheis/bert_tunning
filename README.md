@@ -213,10 +213,11 @@ src/
 │   ├── models/        __init__.py (ModelConfig + registry) · xlm_roberta.py · beto.py · minilm.py
 │   └──                options.py · split.py · tokenize.py · trainer.py · evaluate.py · pipeline.py · reporting.py
 ├── inference/         classify.py (BertTunningClassifier — mahalanobis/cosine/k-NN/TF-IDF/SVM scoring) · pipeline.py (predict_pdf, predict_folder → list[PredictResult])
-├── api/               app.py · schema.py · __init__.py · __main__.py · error_handlers/ · routes/predict/ · routes/health/
+├── api/               app.py (mounts frontend/dist/ at "/" when built) · schema.py · __init__.py · __main__.py · error_handlers/ · routes/predict/ (job-polling: POST /predict → job id, GET /predict/status/{id}) · routes/health/
 └── cli/               train.py · predict.py · ood_stats.py (compute-ood-stats) · ood_calibration.py (evaluate-ood-calibration) · svm_classifiers.py (compute-svm-classifiers) · _ood_common.py (shared helpers) · clean.py
 
-Dockerfile             multi-stage: uv builder + python:3.10-slim-bookworm runtime
+frontend/              React + TypeScript + Vite SPA for /predict — results table, per-file progress, CSV export, dark sidebar
+Dockerfile             multi-stage: node frontend-builder + uv builder + python:3.10-slim-bookworm runtime
 main.py                Click CLI entry point
 ```
 
@@ -596,44 +597,77 @@ docker run -p 8000:8000 -v ./models/bert_tunning_model:/app/models/bert_tunning_
 ```
 
 Available endpoints:
-- `POST /predict` — upload a PDF, returns JSON with label, confidence, all scores, OOD signals, and extraction metadata
+- `POST /predict` — upload a PDF, returns `{"jobId": "..."}` immediately; extraction and
+  classification run in the background (see "Prediction job polling" below)
+- `GET /predict/status/{job_id}` — poll for a job's current stage and, once done, its result
 - `GET /health` — returns `{"status": "healthy", ...}`
+- `GET /config/wandb`, `POST /config/wandb`, `POST /config/wandb/credentials` — live W&B
+  logging toggle/credentials for the bundled frontend's Config page
 
 API docs at `http://localhost:8000/docs` (Swagger UI).
 
-**Example response:**
+The built frontend (`frontend/dist/`, present when the Docker image's frontend-builder
+stage ran, or after `npm run build` locally) is served at `/` — a real, in-repo consumer
+of this same polling contract if you want a working example beyond curl.
+
+### Prediction job polling
+
+`POST /predict` doesn't block until classification finishes — it reads the upload, kicks
+off extraction+classification as a background task, and returns a job id right away:
+
+```json
+{ "jobId": "b1f8cda3b41a46e2b18e72ae3135093a" }
+```
+
+Poll `GET /predict/status/{job_id}` until `stage` is `"done"` or `"error"`:
+
+```json
+{ "stage": "extracting", "result": null, "error": null }
+```
+
+`stage` moves through `"queued"` → `"extracting"` → `"classifying"` → `"done"` (or
+`"error"` at any point, with `error` populated). Once `stage` is `"done"`, `result`
+holds the full prediction response:
 
 ```json
 {
-  "filename": "decreto_123.pdf",
-  "label": "decreto",
-  "confidence": 0.9431,
-  "certain": true,
-  "allScores": {
-    "decreto": 0.9431,
-    "ordenanza": 0.0312,
-    "resolucion": 0.0257
-  },
+  "stage": "done",
   "error": null,
-  "mahalanobisPValue": 0.42,
-  "cosineZ": 0.8,
-  "knnDistance": 9.7,
-  "tfidfCosineZ": 0.31,
-  "inDistribution": true,
-  "foreignMunicipality": null,
-  "svmScores": {
-    "decreto": 1.4,
-    "ordenanza": -0.6,
-    "resolucion": -0.9
-  },
-  "svmPredictedLabel": "decreto",
-  "svmAgreesWithPrediction": true,
-  "extractedText": "DECRETO N° 123/2026...",
-  "extractorUsed": "MarkItDownExtractor"
+  "result": {
+    "filename": "decreto_123.pdf",
+    "label": "decreto",
+    "confidence": 0.9431,
+    "certain": true,
+    "allScores": {
+      "decreto": 0.9431,
+      "ordenanza": 0.0312,
+      "resolucion": 0.0257
+    },
+    "error": null,
+    "mahalanobisPValue": 0.42,
+    "cosineZ": 0.8,
+    "knnDistance": 9.7,
+    "tfidfCosineZ": 0.31,
+    "inDistribution": true,
+    "foreignMunicipality": null,
+    "svmScores": {
+      "decreto": 1.4,
+      "ordenanza": -0.6,
+      "resolucion": -0.9
+    },
+    "svmPredictedLabel": "decreto",
+    "svmAgreesWithPrediction": true,
+    "extractedText": "DECRETO N° 123/2026...",
+    "extractorUsed": "MarkItDownExtractor"
+  }
 }
 ```
 
 `mahalanobisPValue`/`cosineZ`/`knnDistance`/`tfidfCosineZ`/`inDistribution` are only present (non-null) when the loaded model directory has an `ood_stats.npz` — see "Out-of-distribution detection" above. `foreignMunicipality` is computed independently of `ood_stats.npz` and is always present (`null` when no foreign jurisdiction phrase is found). `svmScores` is `{}` and `svmPredictedLabel` is `""` (neither is nullable — see "SVM independent reviewer" above for why), and `svmAgreesWithPrediction` defaults to `true`, when no `svm_classifiers.joblib` is loaded.
+
+This is an HTTP-only contract change — `predict`/`predict-folder` (the CLI commands) call
+`predict_pdf`/`predict_folder` directly and were never routed through `/predict`, so
+they're unaffected.
 
 ### Clean state
 

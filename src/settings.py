@@ -16,6 +16,12 @@ class _Settings(BaseSettings):
     # src/api/routes/predict/endpoints.py's chunked read, not by FastAPI/uvicorn, which
     # impose no default body-size limit on their own.
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024
+    # How many /predict jobs (extraction + classification) may run at the same time. Each
+    # job does a full BERT forward pass and, for scanned PDFs, OCR -- running too many at
+    # once is what was crashing the pod (OOM kill) when 6+ files were uploaded in one batch.
+    # No pod memory limit is currently set, so this defaults conservatively; raise it once
+    # you've measured actual memory headroom.
+    PREDICT_MAX_CONCURRENCY: int = 2
     THRESHOLD: float = 0.70
     HF_HOME: str = str(_PROJECT_ROOT / "models")
 

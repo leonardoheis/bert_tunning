@@ -6,13 +6,26 @@ Bert Tunning fine-tunes transformer models on Spanish municipal PDF documents to
 
 ## Current State (July 2026)
 
-Scaffold migration from flat-file layout to `src/` pipeline is complete and merged to `master`.
+Scaffold migration from flat-file layout to `src/` pipeline, and the out-of-distribution
+(Mahalanobis/cosine/k-NN/TF-IDF) detection and SVM independent reviewer features, are all
+complete and merged to `master`. See "Out-of-distribution (OOD) detection", "k-NN
+class-conditional distance", "TF-IDF cosine-centroid", "SVM independent reviewer", and
+"Extraction metadata" under Key Technical Decisions below for what shipped.
 
-The out-of-distribution (Mahalanobis/cosine) detection feature (`docs/superpowers/plans/2026-07-04-ood-mahalanobis-detection.md`) is complete — all 9 tasks (1, 2, 3, 3b, 4, 5, 6, 7, 8) are merged into `feature/ood-detection`. A third OOD signal, class-conditional k-NN mean distance (`docs/superpowers/plans/2026-07-07-knn-ood-detection.md`), is also complete — all 6 tasks are merged. `feature/ood-detection` is ready to merge to `master`. See "Out-of-distribution (OOD) detection", "k-NN class-conditional distance", and "Extraction metadata" under Key Technical Decisions below for what shipped.
+A React frontend (`frontend/`) for the `/predict` API — batch PDF upload, a W&B-style
+results table, per-file progress, a dark sidebar layout, and CSV export — plus a set of
+backend reliability fixes surfaced by using it against real batch uploads (bounded
+`/predict` concurrency, a real OCR reader race-condition fix, and logging that previously
+wasn't reaching the console) are complete on `feature/react-frontend`, PR'd to `master`
+(PR #71). See "Prediction job polling", "`PREDICT_MAX_CONCURRENCY`", "OCR reader
+double-checked locking", and "CSV export formula-injection guard" under Key Technical
+Decisions below for what shipped. A Config page for live W&B logging was designed
+(`docs/superpowers/specs/2026-07-20-config-page-model-switch-and-wandb-design.md`) but not
+implemented — spec only.
 
 Branch strategy:
 - `master` — stable, production-ready
-- `feature/ood-detection` — integration branch, merged from `feature/scaffold-migration`, ready to merge to master
+- `feature/react-frontend` — integration branch for the frontend + reliability work, PR'd to master
 - `task/N-*` — per-task branches (merged into whichever integration branch was active when the task started)
 
 <!-- CODEGRAPH_START -->
@@ -83,7 +96,7 @@ docker build -t bert-tunning .
 docker run -p 8000:8000 -v ./models/bert_tunning_model:/app/models/bert_tunning_model bert-tunning
 ```
 
-The container starts the API via `python -m src` → `run_api()` → `create_app(Settings.default_model_path)`. Port 8000. No env vars required — `OUTPUT_DIR` in `src/settings.py` controls which model loads.
+The container starts the API via `python -m src` → `run_api()` → `create_app(Settings.default_model_path)`. Port 8000. No env vars required — `OUTPUT_DIR` in `src/settings.py` controls which model loads. The build's `node:22-slim` frontend-builder stage runs `npm run build` and the final stage copies `frontend/dist/` in — `create_app()` serves it at `/` automatically, no separate step or flag needed.
 
 ## Architecture (`src/` pipeline)
 
@@ -126,22 +139,23 @@ src/
 │   ├── classify.py     BertTunningClassifier, predict_text — computes mahalanobis_p_value/cosine_z/knn_distance/in_distribution when ood_stats.npz is present
 │   └── pipeline.py     predict_pdf() → PredictResult; predict_folder() → list[PredictResult] — both attach extracted_text/extractor_used
 ├── api/
-│   ├── app.py          create_app(model_path, threshold) → FastAPI
+│   ├── app.py          create_app(model_path, threshold) → FastAPI; mounts frontend/dist/ at "/" via StaticFiles when present (is_dir() guarded — no-op in test/CLI-only envs); OCRExtractor.warm() pre-warmed once in lifespan, before any request
 │   ├── schema.py       BaseSchema (camelCase aliases, `populate_by_name=True`)
-│   ├── __init__.py     run_api() — reads Settings.default_model_path
+│   ├── __init__.py     run_api() — reads Settings.default_model_path, calls setup_logging()
 │   └── routes/
 │       ├── health/     GET / and GET /health
-│       └── predict/    POST /predict — multipart PDF upload; response includes OOD + extraction-metadata fields
+│       └── predict/    POST /predict — returns a job id immediately (PredictJobCreated); extraction+classification run as a BackgroundTask, gated by Settings.PREDICT_MAX_CONCURRENCY; GET /predict/status/{job_id} polled for stage (queued/extracting/classifying/done/error) and, once done, the full result — see "Prediction job polling" below
 └── cli/
     ├── train.py        @click.command "train" — TrainOptions (Pydantic), supports --epochs
-    ├── predict.py      @click.command "predict" + "predict-folder" — prints/exports OOD + extraction fields; predict-folder supports --log-wandb and defaults --output to bert_tunning_predictions.csv inside folder_path
+    ├── predict.py      @click.command "predict" + "predict-folder" — prints/exports OOD + extraction fields; predict-folder supports --log-wandb and defaults --output to bert_tunning_predictions.csv inside folder_path; calls predict_pdf/predict_folder directly, never HTTP /predict — unaffected by the job-polling contract
     ├── ood_stats.py     @click.command "compute-ood-stats" — backfills ood_stats.npz for an already-trained model, no retraining
     ├── ood_calibration.py @click.command "evaluate-ood-calibration" — measures empirical FP rate of OOD thresholds against the model's own test split; supports --log-wandb
     ├── svm_classifiers.py @click.command "compute-svm-classifiers" — backfills svm_classifiers.joblib for an already-trained model, no retraining; independent of compute-ood-stats
     └── clean.py        @click.command "clean"
 
-Dockerfile              multi-stage build: uv builder + python:3.10-slim-bookworm runtime
-.dockerignore           excludes .venv/, data/, models/, logs/, reports/, tests/, docs/
+frontend/               React + TypeScript + Vite SPA for /predict — batch upload, W&B-style results table (TanStack Table, column picker), per-file progress indicator, CSV export, dark sidebar layout. `npm run build` output (dist/) is what api/app.py serves; see "Prediction job polling" and "CSV export formula-injection guard" below
+Dockerfile              multi-stage build: node frontend-builder + uv builder + python:3.10-slim-bookworm runtime
+.dockerignore           excludes .venv/, data/, models/, logs/, reports/, tests/, docs/, .agents/, .codegraph/, .codex/, .github/, src/playground/
 main.py                 Click group — train, predict, predict-folder, serve, clean
 ```
 
@@ -193,12 +207,13 @@ All settings live in `_Settings(BaseSettings)` and are overridable via `.env`:
 | `OOD_TFIDF_COSINE_THRESHOLD` | `2.5` | TF-IDF cosine z-score above which a document is flagged `in_distribution=False` — see the TF-IDF detection note below |
 | `OOD_TFIDF_MAX_FEATURES` | `5000` | Vocabulary size cap for the TF-IDF vectorizer fitted at training time |
 | `MAX_UPLOAD_SIZE_BYTES` | `26214400` (25 MB) | `/predict` rejects uploads larger than this with a 413, read in bounded chunks |
+| `PREDICT_MAX_CONCURRENCY` | `2` | How many `/predict` jobs (extraction + classification) may run at once — see "`PREDICT_MAX_CONCURRENCY`" below |
 
 Model hyperparameters (`lr`, `batch_size`, `grad_accum`, `max_tokens`, `force_fp32`) live in `ModelConfig`, not in settings.
 
 ## Logging
 
-Each run creates a timestamped log file: `logs/bert_tunning_{YYYYMMDD_HHMMSS}.log`. `poe clean` deletes all `bert_tunning_*.log` files. The log path is returned by `setup_logging()` and emitted as the first log line of every CLI command.
+Each run creates a timestamped log file: `logs/bert_tunning_{YYYYMMDD_HHMMSS}.log`. `poe clean` deletes all `bert_tunning_*.log` files. The log path is returned by `setup_logging()` and emitted as the first log line of every CLI command — also called by `run_api()` (Docker) and `serve_cmd()` (`main.py serve`), which previously never called it at all: `log.info()` calls anywhere in the app were silently dropped in the console, since Python's logging module has no handlers configured until `setup_logging()` attaches them (only `log.warning()`+ leaked through via the bare fallback handler). `/predict`'s background job (`_run_prediction_job`, `src/api/routes/predict/endpoints.py`) logs which file is being classified, extraction failures, and successful results (label + confidence), each line prefixed with the job id so concurrent uploads' log lines don't blur together; failures use `log.exception()` for a full traceback rather than a bare message, and the exception type is prefixed onto the job's own `error` field (`f"{type(exc).__name__}: {exc}"`) so it's visible in the browser too, not just server logs.
 
 ## Document Labels
 
@@ -308,6 +323,89 @@ Every OOD signal (Mahalanobis, cosine, k-NN, TF-IDF) and `detect_foreign_municip
 The SVM independent reviewer answers "does this document look like anything trained on" (Option A, OOD) — but it also incidentally produces a second, independently-trained opinion on *which* known class a document belongs to, which nothing previously checked (Option B: the document genuinely is a known class, softmax just picked the wrong one). `svm_top_label()` (`src/svm_reviewer.py`) returns the class with the highest `svm_scores` margin — the SVM reviewer's own "prediction." `predict_text()` (`src/inference/classify.py`) compares it against softmax's own pick (`label`) and attaches two new `PredictResult` fields: `svm_predicted_label: str` (what the SVM picked instead, `""` — not `None` — when no `svm_classifiers.joblib` is loaded; a real class name is never empty, so `""` can't collide with genuine data, and it stays type-compatible with `label`'s own comparison without a `None` check) and `svm_agrees_with_prediction: bool` (**plain `bool`, not `bool | None`** — a tri-state here would encode two different questions in one field: "was there SVM evidence" and "did it agree"; the first already has an owner, `svm_predicted_label` being `""`, and no caller ever branches differently on "no signal" vs. "agreed," so a `None` state wasn't earning its complexity; defaults to `True`, the same permissive-default-on-missing-artifact pattern as `OodEvidence.from_in_distribution(None)` → `NOT_ANOMALOUS`). Originally shipped as `str | None`/`bool | None` — revised same-day after review pushed on whether `None` was earning its complexity here at all; landed on empty-string/plain-bool instead of `Literal[*class_names, "sentinel"]` because the class list isn't fixed at type-checking time (varies per trained model), and a same-typed string sentinel (e.g. `"not_a_class"`) would lose `mypy`'s type-level None-vs-str distinction and risk colliding with a real future class name — `""` avoids both, since it's structurally impossible as a real (folder-derived) class name.
 
 `decide_review_route()`'s signature grew a `classifier_disagreement: bool = False` parameter (default preserves every existing caller's behavior) — a disagreement routes to `human_review` **regardless of confidence**, the identical rationale OOD firing already gets, since a confident-but-wrong prediction is the dangerous case either way. This is **not** folded into `in_distribution`/`OodEvidence` — a document can be perfectly in-distribution and still trigger a disagreement (the two classifiers agreeing on genre but not on which specific known class), a different question than "does this resemble anything trained on at all." Both are independent triggers for the same `human_review` lane, not mutually exclusive, mirroring the OOD ensemble's own "OR, not one blended score" philosophy. Both `predict_text()` call sites of `decide_review_route()` pass `classifier_disagreement` — including the early-return path taken when `self._ood_stats is None`, which would otherwise silently drop the disagreement signal for any model without `ood_stats.npz`. `svm_predicted_label`/`svm_agrees_with_prediction` need explicit additions to `_PREDICTION_COLUMNS` (`src/wandb.py`) to reach the `predict-folder --log-wandb` table — the CSV gets them automatically via `flatten_predict_result()`, the W&B table does not, the exact gap already found once for `svm_scores` itself. See `docs/superpowers/specs/2026-07-16-svm-softmax-disagreement-design.md`.
+
+**React frontend for `/predict` (`frontend/`, 2026-07-19 onward)**
+A Vite + React + TypeScript SPA, served from the same FastAPI process as the API —
+`create_app()` (`src/api/app.py`) mounts `frontend/dist/` at `/` via `StaticFiles`, guarded
+by `_FRONTEND_DIST.is_dir()` so this is a no-op when the frontend hasn't been built (tests,
+plain `uv run`, CLI-only use). The Docker build gets a `node:22-slim` frontend-builder
+stage feeding `COPY --from=frontend-builder` into the final image; no code path needs to
+know whether the frontend exists beyond that one guard. Ships a W&B-style results table
+(`PredictionsTable.tsx`, TanStack Table, per-column show/hide picker, matching the
+`predict-folder` CSV's field set), a per-file progress indicator (`PredictionProgress.tsx`),
+a CSV export button, and a dark sidebar layout (`Layout.tsx`). No React Router — a plain
+`useState` view switch, since nothing yet needs URL-addressable views.
+
+**Prediction job polling — `/predict` returns immediately, `/predict/status/{job_id}` is polled (2026-07-21)**
+`/predict` used to block until classification finished, returning the full result in one
+response. For a batch upload (the frontend's actual use case) this meant no progress
+feedback and, combined with unbounded concurrency, a real OOM crash under 6+ simultaneous
+files (see `PREDICT_MAX_CONCURRENCY` below). `POST /predict` (`src/api/routes/predict/endpoints.py`)
+now reads the upload, queues a `BackgroundTask` (`_run_prediction_job`), and returns
+`{"jobId": "..."}` immediately. `GET /predict/status/{job_id}` returns a `PredictJob`
+(`stage`: `"queued"` → `"extracting"` → `"classifying"` → `"done"`/`"error"`; `result`
+populated once `done`; `error` populated once `"error"`), polled by the frontend
+(`frontend/src/api.ts`) every `POLL_INTERVAL_MS` (1000ms), capped at `MAX_POLL_ATTEMPTS`
+(300 — kept in sync with the interval for a fixed 5-minute timeout; these two constants
+must move together, a bug in this session bumped one without the other and silently
+doubled the timeout) before throwing a client-side timeout error. `_JOBS` is an in-memory
+`dict[str, PredictJob]` with no eviction — accepted as fine for a single-person dev tool,
+not a long-lived shared server. This is an HTTP-only contract change: `predict`/
+`predict-folder` (the CLI commands) call `predict_pdf`/`predict_folder` directly and were
+never routed through `/predict`, so they're unaffected.
+
+**`PREDICT_MAX_CONCURRENCY` — bounding concurrent `/predict` jobs to prevent OOM kills (2026-07-21)**
+Uploading 6+ files at once crashed the pod — each `/predict` job runs a full BERT forward
+pass and, for scanned PDFs, OCR, with nothing capping how many ran concurrently before this
+fix. A module-level `asyncio.Semaphore(Settings.PREDICT_MAX_CONCURRENCY)` (default `2`, no
+pod memory limit is currently set so this is conservative) in `endpoints.py` gates the real
+work inside `_run_prediction_job`; jobs beyond the limit sit in the `"queued"` stage (set
+by the `POST /predict` handler before the semaphore is even attempted) instead of falsely
+claiming `"extracting"` before any extraction has actually started — `"extracting"` is only
+set once the semaphore is acquired. Module-level is correct here specifically because the
+Dockerfile runs a single process (`CMD ["python", "-m", "src"]`), one event loop — a
+multi-worker deployment would need this scoped differently.
+
+**OCR reader double-checked locking — a real concurrency regression, found and fixed (2026-07-22)**
+`OCRExtractor._get_reader()` (`src/ingestion/extractors/ocr.py`) had, at some point, been
+refactored from manual `threading.Lock`-based double-checked locking to
+`functools.lru_cache(maxsize=1)`, on the mistaken belief that `lru_cache`'s internal lock
+gives the same "thread-safe, compute-once" guarantee. It doesn't: that lock only protects
+the cache *dictionary* from corruption, not the wrapped function call itself — two threads
+can both miss the cache and both call `easyocr.Reader(...)` concurrently before either
+finishes. Reproduced twice in production logs as two different symptoms of the same race:
+an `EOFError` (a corrupted partially-written model file after a container restart mid-
+download) and a `FileNotFoundError` (one thread deleting a file mid-redownload — triggered
+by EasyOCR's own MD5-mismatch integrity check — while another thread tried to read it).
+Fixed by reverting to real `threading.Lock`-based double-checked locking (the lock is held
+for the *entire* `easyocr.Reader(...)` construction, so a second concurrent caller blocks
+until the first is completely done, instead of racing it) — restoring what this file
+already documented above as the intended design. `threading.Lock` is correct here, not
+`asyncio.Lock`: `extract_pdf_with_metadata` runs inside `asyncio.to_thread(...)`
+(`_run_prediction_job`), so concurrent `/predict` jobs call `OCRExtractor.extract()` from
+separate OS threads in a thread pool, not separate asyncio tasks on one event loop.
+`OCRExtractor.warm()` / `warm_ocr_reader()` (`src/ingestion/extract.py`) additionally
+pre-warm the shared `OCRExtractor` instance (the one already living in the module-level
+`_CHAIN` list — warming a fresh throwaway instance elsewhere would warm a reader nobody
+uses) once at FastAPI startup, via `await asyncio.to_thread(warm_ocr_reader)` in
+`create_app()`'s `lifespan`, before any request can reach it — narrowing the race window to
+zero in practice, not just fixing it when it does occur. Regression test
+(`tests/ingestion/test_ocr.py`) uses a mocked `easyocr.Reader` with an artificial
+`time.sleep()` to widen the race window and asserts the constructor is called exactly once
+under concurrent calls — verified to actually fail against the old `lru_cache` code (8
+constructions) and pass against the fix (1), not just pass by coincidence.
+
+**CSV export formula-injection guard (2026-07-23)**
+The frontend's CSV export (`frontend/src/utils/csv.ts`, `resultsToCsv()`) includes fields
+derived from untrusted PDF content — `filename`, `error`, `foreignMunicipalityContext` — a
+crafted filename or extracted municipality string starting with `=`, `+`, `-`, or `@` would
+execute as a live formula when the exported file is opened in Excel/Sheets otherwise (a
+known CSV-injection class). `escapeCsvValue()` prefixes such values with a quote before its
+normal RFC 4180 quoting/escaping. `RESULT_COLUMNS` (also in `csv.ts`) is the single source
+of truth for both the CSV export and the on-screen table's columns (`PredictionsTable.tsx`'s
+`FIXED_COLUMNS` is derived from it) — previously two independently hand-written lists of
+the same ~20 fields, the same class of drift `_PREDICTION_COLUMNS` (`src/wandb.py`) already
+hit once on the Python side (`svm_scores` silently missing from the W&B table).
 
 ## Git Workflow
 

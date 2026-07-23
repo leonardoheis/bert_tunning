@@ -1,6 +1,10 @@
 .venv/
 .git/
+.agents/
 .claude/
+.codegraph/
+.codex/
+.github/
 .env*
 
 data/
@@ -12,8 +16,12 @@ samples/
 tests/
 docs/
 htmlcov/
+src/playground/
 
 __pycache__/
 **/__pycache__/
 **/*.pyc
 **/*.pyo
+
+frontend/node_modules/
+frontend/dist/
