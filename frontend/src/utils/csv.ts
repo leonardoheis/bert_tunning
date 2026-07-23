@@ -1,6 +1,10 @@
 import type { FlatResultRow } from "./flatten";
 
-const COLUMNS: { key: keyof FlatResultRow; header: string }[] = [
+/** Shared with PredictionsTable.tsx's FIXED_COLUMNS -- a single source of truth for the
+ * on-screen table and the CSV export, so a new field can't silently show up in one but
+ * not the other (this repo already hit that exact drift once, on the Python side --
+ * see _PREDICTION_COLUMNS in src/wandb.py's history). */
+export const RESULT_COLUMNS: { key: keyof FlatResultRow; header: string }[] = [
   { key: "filename", header: "File" },
   { key: "label", header: "Label" },
   { key: "confidence", header: "Confidence" },
@@ -28,8 +32,16 @@ function escapeCsvValue(value: unknown): string {
   if (value === null || value === undefined) {
     return "";
   }
-  const str = typeof value === "boolean" ? (value ? "yes" : "no") : String(value);
-  return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  let str = typeof value === "boolean" ? (value ? "yes" : "no") : String(value);
+  // Prevent CSV/formula injection when the export is opened in Excel/Sheets -- several
+  // exported fields (filename, error, foreignMunicipalityContext) are derived from
+  // untrusted PDF content, and a value starting with =, +, -, or @ would run as a live
+  // formula on open otherwise. Prefixing with a quote neutralizes it without changing
+  // the visible text.
+  if (/^[=+\-@]/.test(str)) {
+    str = `'${str}`;
+  }
+  return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
 }
 
 /** Always includes every column, independent of the table's current column-visibility
@@ -40,11 +52,11 @@ export function resultsToCsv(rows: FlatResultRow[]): string {
   ).sort();
 
   const headers = [
-    ...COLUMNS.map((c) => c.header),
+    ...RESULT_COLUMNS.map((c) => c.header),
     ...svmClassNames.map((name) => `svm_scores.${name}`),
   ];
   const lines = rows.map((row) => {
-    const fixed = COLUMNS.map((c) => escapeCsvValue(row[c.key]));
+    const fixed = RESULT_COLUMNS.map((c) => escapeCsvValue(row[c.key]));
     const svm = svmClassNames.map((name) => escapeCsvValue(row.svmScores[name]));
     return [...fixed, ...svm].join(",");
   });

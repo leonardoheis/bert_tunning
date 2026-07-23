@@ -7,7 +7,7 @@ import {
 } from "@tanstack/react-table";
 import type { ColumnDef, VisibilityState } from "@tanstack/react-table";
 import type { PredictOutcome } from "../types/api";
-import { downloadCsv, resultsToCsv } from "../utils/csv";
+import { RESULT_COLUMNS, downloadCsv, resultsToCsv } from "../utils/csv";
 import type { FlatResultRow } from "../utils/flatten";
 import { flattenResult } from "../utils/flatten";
 
@@ -27,77 +27,12 @@ function formatConfidence(value: unknown): string {
 
 const columnHelper = createColumnHelper<FlatResultRow>();
 
-const FIXED_COLUMNS: ColumnDef<FlatResultRow, string>[] = [
-  columnHelper.accessor("filename", { header: "File" }),
-  columnHelper.accessor("label", { header: "Label", cell: (c) => formatCell(c.getValue()) }),
-  columnHelper.accessor("confidence", {
-    header: "Confidence",
-    cell: (c) => formatConfidence(c.getValue()),
+const FIXED_COLUMNS: ColumnDef<FlatResultRow, string>[] = RESULT_COLUMNS.map(({ key, header }) =>
+  columnHelper.accessor(key, {
+    header,
+    cell: (c) => (key === "confidence" ? formatConfidence(c.getValue()) : formatCell(c.getValue())),
   }),
-  columnHelper.accessor("certain", { header: "Certain", cell: (c) => formatCell(c.getValue()) }),
-  columnHelper.accessor("mahalanobisPValue", {
-    header: "Mahalanobis p",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("mahalanobisPValueTheoretical", {
-    header: "Mahalanobis p (theoretical)",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("cosineZ", { header: "Cosine z", cell: (c) => formatCell(c.getValue()) }),
-  columnHelper.accessor("knnDistance", {
-    header: "k-NN distance",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("tfidfCosineZ", {
-    header: "TF-IDF cosine z",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("inDistribution", {
-    header: "In distribution",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("mahalanobisCalibrationStatus", {
-    header: "Mahalanobis calibration",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("cosineCalibrationStatus", {
-    header: "Cosine calibration",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("knnDistanceCalibrationStatus", {
-    header: "k-NN calibration",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("tfidfCalibrationStatus", {
-    header: "TF-IDF calibration",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("foreignMunicipality", {
-    header: "Foreign municipality",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("foreignMunicipalityContext", {
-    header: "Foreign municipality context",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("reviewRoute", {
-    header: "Review route",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("extractorUsed", {
-    header: "Extractor used",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("error", { header: "Error", cell: (c) => formatCell(c.getValue()) }),
-  columnHelper.accessor("svmPredictedLabel", {
-    header: "SVM predicted label",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-  columnHelper.accessor("svmAgreesWithPrediction", {
-    header: "SVM agrees",
-    cell: (c) => formatCell(c.getValue()),
-  }),
-] as unknown as ColumnDef<FlatResultRow, string>[];
+) as unknown as ColumnDef<FlatResultRow, string>[];
 
 export function PredictionsTable({ results }: { results: PredictOutcome[] }) {
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
