@@ -1,7 +1,7 @@
 import type { PredictJob, PredictJobCreated, PredictResponse, PredictStage } from "./types/api";
 
-const POLL_INTERVAL_MS = 500;
-const MAX_POLL_ATTEMPTS = 600; // 5 minutes
+const POLL_INTERVAL_MS = 1000;
+const MAX_POLL_ATTEMPTS = 300; // 5 minutes at POLL_INTERVAL_MS -- keep these two in sync
 
 export async function predict(
   file: File,
