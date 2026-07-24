@@ -2,7 +2,7 @@ import logging
 
 import wandb
 from src.ood import OodThresholds
-from src.schema import (
+from src.schemas import (
     CalibrationReport,
     EvaluationResult,
     Hyperparams,

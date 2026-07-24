@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.routes.predict.schemas import PredictResponse
-from src.schema import ExtractionMetadata, OodMetrics, PredictResult
+from src.schemas import ExtractionMetadata, OodMetrics, PredictResult
 
 
 def _predict_and_await_result(client: TestClient, files: dict[str, tuple[str, bytes, str]]) -> Any:

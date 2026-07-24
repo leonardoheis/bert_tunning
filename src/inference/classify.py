@@ -14,7 +14,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreT
 from src.exceptions import BertTunningError
 from src.inference.ood_scorer import OodScorer
 from src.ingestion.extract import clean_text
-from src.schema import PredictResult, ReviewRoute
+from src.schemas import PredictResult, ReviewRoute
 from src.settings import Settings
 from src.svm_reviewer import load_svm_classifiers, svm_top_label
 from src.svm_reviewer import svm_scores as compute_svm_scores
@@ -196,6 +196,7 @@ class BertTunningClassifier:
             svm_predicted_label = svm_top_label(svm_scores_result)
             svm_agrees_with_prediction = svm_predicted_label == label
         classifier_disagreement = not svm_agrees_with_prediction
+        smells: list[str] = [] if certain else ["low_confidence"]
         result = PredictResult(
             label=label,
             confidence=round(confidence, 4),
@@ -209,6 +210,7 @@ class BertTunningClassifier:
             svm_scores=svm_scores_result,
             svm_predicted_label=svm_predicted_label,
             svm_agrees_with_prediction=svm_agrees_with_prediction,
+            smells=smells,
         )
 
         if self._ood_scorer is None:
@@ -221,6 +223,7 @@ class BertTunningClassifier:
         return result.model_copy(
             update={
                 "ood_metrics": ood_metrics,
+                "smells": [*ood_metrics.smells, *smells],
                 "review_route": decide_review_route(
                     confidence_tier=confidence_tier,
                     ood_evidence=OodEvidence.from_in_distribution(

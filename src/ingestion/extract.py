@@ -4,7 +4,7 @@ from pathlib import Path
 from src.exceptions import BertTunningError
 from src.ingestion._text import clean_text
 from src.ingestion.extractors import ExtractorBase, MarkItDownExtractor, OCRExtractor
-from src.schema import ExtractionMetadata
+from src.schemas import ExtractionMetadata
 from src.settings import Settings
 
 __all__ = ["clean_text", "extract_pdf", "extract_pdf_with_metadata", "warm_ocr_reader"]

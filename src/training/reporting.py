@@ -7,7 +7,7 @@ import numpy.typing as npt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from src.schema import EvaluationResult, Hyperparams, ReportDict
+from src.schemas import EvaluationResult, Hyperparams, ReportDict
 
 log = logging.getLogger(__name__)
 

@@ -199,7 +199,7 @@ src/
 ├── __init__.py        package entry — exports BertTunningError, Settings, __version__
 ├── __main__.py        python -m src entry — spawns run_api() via multiprocessing.Process
 ├── settings.py        all configuration (Pydantic BaseSettings, overridable via .env)
-├── schema.py          shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, CalibrationReport, Hyperparams, ReportDict)
+├── schemas.py         shared Pydantic schemas (PredictResult, ExtractionMetadata, ClassEmbeddingStats, CalibrationReport, Hyperparams, ReportDict)
 ├── wandb.py            all W&B interaction — WandbLogger (training) + log_predict_folder_results/log_ood_calibration_results (--log-wandb)
 ├── ood.py              OOD math — compute_class_stats, mahalanobis_p_value, cosine_z_score, knn_mean_distance, compute_tfidf_stats/tfidf_cosine_z_score, save_stats/load_stats.
 │                       Lives at top level, not under training/ or inference/, since it's used by both (training-time stats computation, inference-time scoring)
@@ -485,7 +485,7 @@ own, independent trigger for the same lane rather than being folded into
 `svm_classifiers.joblib` isn't loaded — a real class name is never empty, so
 this can't collide with genuine data. `svmAgreesWithPrediction` then defaults
 to `true` (no signal, don't trigger) rather than being nullable — see
-`PredictResult.svm_agrees_with_prediction`'s docstring in `src/schema.py` for
+`PredictResult.svm_agrees_with_prediction`'s docstring in `src/schemas.py` for
 why a tri-state here would encode two different questions in one field.
 
 In `predict-folder`'s CSV, `svm_scores` (like `all_scores`) is a Python

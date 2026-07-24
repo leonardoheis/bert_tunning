@@ -50,6 +50,14 @@ class OodMetrics(BaseModel):
     cosine_calibration_status: Literal["calibrated", "not_calibrated"] = "calibrated"
     knn_distance_calibration_status: Literal["calibrated", "not_calibrated"] = "calibrated"
     tfidf_calibration_status: Literal["calibrated", "not_calibrated"] | None = None
+    # Which of the four signals above actually fired (e.g. "high_cosine_z"), computed by
+    # OodScorer.score() from the same ood_signal_breakdown() in_distribution itself is
+    # derived from -- never a second, independently-reimplemented check. Intermediate:
+    # predict_text() folds this into PredictResult.smells alongside low_confidence/
+    # foreign_municipality, which is the field consumers should read. Not part of
+    # _OOD_METRIC_FIELDS (src/schema.py) -- flatten_predict_result() must not let this
+    # partial list overwrite PredictResult.smells' own, complete one.
+    smells: list[str] = []
 
 
 # "" is the not-yet-computed default (e.g. before predict_text/predict_pdf runs); the three
@@ -98,6 +106,18 @@ class PredictResult(BaseModel):
     # docs/superpowers/specs/2026-07-16-svm-softmax-disagreement-design.md.
     svm_predicted_label: str = ""
     svm_agrees_with_prediction: bool = True
+    # Which named condition(s) fired for this prediction (e.g. "high_cosine_z",
+    # "low_confidence", "foreign_municipality") -- a presentational decomposition of
+    # in_distribution/certain/foreign_municipality, not a new decision; nothing here
+    # changes what those fields themselves compute. Set in two stages: predict_text()
+    # populates the OOD + confidence smells, attach_metadata() (src/inference/pipeline.py)
+    # appends foreign_municipality once it's known and finalizes risk_score from the
+    # complete list -- see docs/superpowers/specs/2026-07-23-1-risk-score-and-smells-design.md.
+    smells: list[str] = []
+    # A weighted point total over `smells` (RiskScore's weight table), not a new OOD
+    # decision -- purely presentational, same rationale as smells above. 0 is the
+    # not-yet-computed default, same convention as review_route's "".
+    risk_score: int = 0
 
 
 _OOD_METRIC_FIELDS = (

@@ -1,4 +1,4 @@
-from src.schema import PredictResult
+from src.schemas import PredictResult
 from src.settings import Settings
 
 

@@ -21,7 +21,7 @@ from transformers import (
 
 from src.embeddings import LoadedModel, extract_embeddings
 from src.ood import compute_class_stats, save_stats
-from src.schema import Hyperparams, OodArtifact
+from src.schemas import Hyperparams, OodArtifact
 from src.settings import Settings
 from src.svm_reviewer import fit_and_evaluate_svm_reviewer, save_svm_classifiers
 from src.training.evaluate import run_evaluation

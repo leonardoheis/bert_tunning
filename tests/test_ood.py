@@ -30,7 +30,7 @@ from src.ood import (
     save_stats,
     tfidf_cosine_z_score,
 )
-from src.schema import EmbeddingStats, LexicalStats, OodArtifact
+from src.schemas import EmbeddingStats, LexicalStats, OodArtifact
 from src.settings import Settings
 
 

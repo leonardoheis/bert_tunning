@@ -8,7 +8,7 @@ from pydantic.alias_generators import to_camel
 
 from src.inference.pipeline import predict_folder, predict_pdf
 from src.logger import setup_logging
-from src.schema import flatten_predict_result
+from src.schemas import flatten_predict_result
 from src.settings import Settings
 from src.wandb import log_predict_folder_results
 

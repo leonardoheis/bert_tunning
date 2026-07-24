@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from src.schema import PredictResult, flatten_predict_result
+from src.schemas import PredictResult, flatten_predict_result
 from src.settings import Settings
 
 _DB_PATH = Path(Settings.CACHE_PATH).parent / "bert_tunning_registry.db"

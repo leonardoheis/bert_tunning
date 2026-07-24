@@ -12,7 +12,7 @@ from src.cli.ood_calibration import build_calibration_report, evaluate_ood_calib
 from src.embeddings import LoadedModel
 from src.ood import OodThresholds, load_stats, save_stats
 from src.ood import knn_mean_distance as real_knn_mean_distance
-from src.schema import EmbeddingStats, OodArtifact
+from src.schemas import EmbeddingStats, OodArtifact
 from src.settings import Settings
 
 
