@@ -29,6 +29,8 @@ export interface PredictResponse {
   svmScores: Record<string, number>;
   svmPredictedLabel: string;
   svmAgreesWithPrediction: boolean;
+  smells: string[];
+  riskScore: number;
 }
 
 /** A file that failed before/during the request -- never reached a real PredictResponse. */
