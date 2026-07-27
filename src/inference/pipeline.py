@@ -4,7 +4,7 @@ from pathlib import Path
 from src.inference.classify import BertTunningClassifier
 from src.ingestion._text import detect_foreign_municipality
 from src.ingestion.extract import extract_pdf_with_metadata
-from src.schemas import ExtractionMetadata, PredictResult
+from src.schemas import ExtractionMetadata, OodMetrics, PredictResult
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -30,12 +30,25 @@ def _compute_risk_score(smells: list[str]) -> int:
     return sum(_SMELL_WEIGHTS.get(smell, 0) for smell in smells)
 
 
+def _compute_smell_review_suggested(risk_score: int, ood_metrics: OodMetrics | None) -> bool:
+    """True when risk_score alone crosses Settings.SMELL_REVIEW_RISK_SCORE_THRESHOLD, for
+    documents the official decision didn't already send to a human. Deliberately
+    independent of review_route/classifier_disagreement -- see
+    docs/superpowers/specs/2026-07-27-smell-review-suggested-design.md. ood_metrics being
+    None (no ood_stats.npz loaded) behaves the same as in_distribution=True; only an
+    explicit False excludes it, since that path already gets review_route="human_review"."""
+    if ood_metrics is not None and ood_metrics.in_distribution is False:
+        return False
+    return risk_score > Settings.SMELL_REVIEW_RISK_SCORE_THRESHOLD
+
+
 def extraction_failed(filename: str) -> PredictResult:
     """The empty/unreadable-document result -- one place defining this rule, reused by
     predict_pdf, predict_folder, and the /predict API route (src/api/routes/predict).
     Never goes through attach_metadata() (there's no extraction to attach metadata
     from), so its smells/risk_score are set directly here rather than derived."""
     smells = ["unreadable_document"]
+    risk_score = _compute_risk_score(smells)
     return PredictResult(
         filename=filename,
         label=None,
@@ -44,7 +57,8 @@ def extraction_failed(filename: str) -> PredictResult:
         error="empty/unreadable document",
         review_route="human_review",
         smells=smells,
-        risk_score=_compute_risk_score(smells),
+        risk_score=risk_score,
+        smell_review_suggested=_compute_smell_review_suggested(risk_score, None),
     )
 
 
@@ -55,6 +69,7 @@ def attach_metadata(
     smells = list(result.smells)
     if foreign_match is not None:
         smells.append("foreign_municipality")
+    risk_score = _compute_risk_score(smells)
     return result.model_copy(
         update={
             "filename": filename,
@@ -63,7 +78,10 @@ def attach_metadata(
             "foreign_municipality": foreign_match.name if foreign_match else None,
             "foreign_municipality_context": foreign_match.context if foreign_match else None,
             "smells": smells,
-            "risk_score": _compute_risk_score(smells),
+            "risk_score": risk_score,
+            "smell_review_suggested": _compute_smell_review_suggested(
+                risk_score, result.ood_metrics
+            ),
         }
     )
 

@@ -38,6 +38,7 @@ _PREDICTION_COLUMNS = [
     "svm_agrees_with_prediction",
     "smells",
     "risk_score",
+    "smell_review_suggested",
 ]
 
 

@@ -28,6 +28,7 @@ from src.schemas import (
     ExtractionMetadata,
     LexicalStats,
     OodArtifact,
+    OodMetrics,
     PredictResult,
     SmellThresholds,
 )
@@ -1241,3 +1242,164 @@ def test_classifier_does_not_warn_when_no_ood_stats(
         BertTunningClassifier(str(tmp_path), tokenizer=tokenizer, model=model)
 
     assert not any("falling back to Settings.OOD_*" in record.message for record in caplog.records)
+
+
+def test_predict_pdf_smell_review_suggested_true_above_threshold_when_in_distribution() -> None:
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="MarkItDownExtractor", char_count=10
+    )
+    fake_result = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        smells=["low_mahalanobis_p", "high_cosine_z"],  # weights 3+3=6, over the default 5
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.0001,
+            mahalanobis_p_value_theoretical=0.0001,
+            cosine_z=5.0,
+            knn_distance=1.0,
+            in_distribution=True,
+        ),
+    )
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier") as mock_clf_cls,
+    ):
+        mock_clf = MagicMock()
+        mock_clf.predict_text.return_value = fake_result
+        mock_clf_cls.return_value = mock_clf
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.risk_score == 6  # noqa: PLR2004
+    assert result.smell_review_suggested is True
+
+
+def test_predict_pdf_smell_review_suggested_false_at_exact_threshold() -> None:
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="MarkItDownExtractor", char_count=10
+    )
+    fake_result = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        smells=["low_mahalanobis_p", "low_svm_margin"],  # weights 3+2=5, exactly the threshold
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.0001,
+            mahalanobis_p_value_theoretical=0.0001,
+            cosine_z=0.0,
+            knn_distance=1.0,
+            in_distribution=True,
+        ),
+    )
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier") as mock_clf_cls,
+    ):
+        mock_clf = MagicMock()
+        mock_clf.predict_text.return_value = fake_result
+        mock_clf_cls.return_value = mock_clf
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.risk_score == 5  # noqa: PLR2004
+    assert result.smell_review_suggested is False
+
+
+def test_predict_pdf_smell_review_suggested_false_when_in_distribution_false() -> None:
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="MarkItDownExtractor", char_count=10
+    )
+    fake_result = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        smells=["low_mahalanobis_p", "high_cosine_z"],  # weights 3+3=6, over the default 5
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.0001,
+            mahalanobis_p_value_theoretical=0.0001,
+            cosine_z=5.0,
+            knn_distance=1.0,
+            in_distribution=False,
+        ),
+    )
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier") as mock_clf_cls,
+    ):
+        mock_clf = MagicMock()
+        mock_clf.predict_text.return_value = fake_result
+        mock_clf_cls.return_value = mock_clf
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.risk_score == 6  # noqa: PLR2004
+    assert result.smell_review_suggested is False
+
+
+def test_predict_pdf_smell_review_suggested_true_when_no_ood_metrics() -> None:
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="MarkItDownExtractor", char_count=10
+    )
+    fake_result = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        smells=["low_mahalanobis_p", "high_cosine_z"],  # weights 3+3=6, over the default 5
+        ood_metrics=None,
+    )
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier") as mock_clf_cls,
+    ):
+        mock_clf = MagicMock()
+        mock_clf.predict_text.return_value = fake_result
+        mock_clf_cls.return_value = mock_clf
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.smell_review_suggested is True
+
+
+def test_predict_pdf_extraction_failed_smell_review_suggested_stays_false() -> None:
+    fake_extraction = ExtractionMetadata(text=None, extractor_used=None, char_count=0)
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier"),
+    ):
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.risk_score == 3  # noqa: PLR2004
+    assert result.smell_review_suggested is False
+
+
+def test_predict_pdf_smell_review_suggested_foreign_municipality_boundary() -> None:
+    fake_extraction = ExtractionMetadata(
+        text="Municipalidad de Cordoba informa",
+        extractor_used="MarkItDownExtractor",
+        char_count=30,
+    )
+    # low_svm_margin (2) + low_svm_margin (2) = 4; with foreign_municipality (+2) = 6
+    fake_result = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        smells=["low_svm_margin", "low_svm_margin"],
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.5,
+            mahalanobis_p_value_theoretical=0.5,
+            cosine_z=0.0,
+            knn_distance=1.0,
+            in_distribution=True,
+        ),
+    )
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier") as mock_clf_cls,
+    ):
+        mock_clf = MagicMock()
+        mock_clf.predict_text.return_value = fake_result
+        mock_clf_cls.return_value = mock_clf
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.foreign_municipality == "Cordoba"
+    # low_svm_margin (2) + low_svm_margin (2) = 4, plus foreign_municipality appended by
+    # attach_metadata (+2) = 6, which is > threshold (5)
+    assert result.risk_score == 6  # noqa: PLR2004
+    assert result.smell_review_suggested is True

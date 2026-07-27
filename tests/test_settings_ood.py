@@ -22,3 +22,7 @@ def test_predict_result_ood_fields_default_to_none() -> None:
 def test_ood_tfidf_settings_have_defaults() -> None:
     assert Settings.OOD_TFIDF_COSINE_THRESHOLD > 0
     assert Settings.OOD_TFIDF_MAX_FEATURES > 0
+
+
+def test_smell_review_risk_score_threshold_default() -> None:
+    assert Settings.SMELL_REVIEW_RISK_SCORE_THRESHOLD == 5  # noqa: PLR2004
