@@ -33,7 +33,7 @@ from src.ood import (
     resolve_ood_thresholds,
     tfidf_cosine_z_score,
 )
-from src.schema import OodArtifact, OodMetrics
+from src.schemas import OodArtifact, OodMetrics
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -63,36 +63,48 @@ _ALL_CALIBRATED = OodCalibrationStatus(
 )
 
 
-def is_out_of_distribution(
+class OodSignalBreakdown(NamedTuple):
+    """Per-signal anomaly flags -- the same four booleans is_out_of_distribution() OR's
+    together, exposed individually so callers (the `smells` feature) can report *which*
+    signal fired without duplicating this function's calibration-gating/NaN-handling
+    logic. Duplicating that logic elsewhere risks it silently disagreeing with
+    is_out_of_distribution()'s own answer -- exactly one place decides "is this specific
+    signal anomalous."""
+
+    mahalanobis: bool
+    cosine: bool
+    knn_distance: bool
+    tfidf: bool
+
+
+def ood_signal_breakdown(
     scores: OodScores,
     thresholds: OodThresholds,
     calibration_status: OodCalibrationStatus = _ALL_CALIBRATED,
     *,
     allow_uncalibrated_fallback: bool = True,
-) -> bool:
-    """Any one of the four OOD signals firing is enough -- a deliberate OR, not a
-    weighted blend (see README's "OOD scoring internals" for why). NaN in knn_distance
-    means the predicted class had zero training points to compare against; treated as
-    anomalous, fail-safe, since `nan > threshold` would otherwise silently pass. NaN in
-    tfidf_cosine_z means this model's ood_stats.npz predates the TF-IDF signal -- treated
-    as NOT anomalous, fail-open, the opposite polarity, since there the signal simply
-    doesn't exist for this model rather than having failed to compute for this document.
-    `thresholds` comes from resolve_ood_thresholds(stats) -- per-model calibrated values
-    when available, Settings.OOD_* fallback otherwise. Never reads Settings directly here,
-    or a model's decisions silently use whichever thresholds happen to be configured for a
-    completely different model.
+) -> OodSignalBreakdown:
+    """NaN in knn_distance means the predicted class had zero training points to compare
+    against; treated as anomalous, fail-safe, since `nan > threshold` would otherwise
+    silently pass. NaN in tfidf_cosine_z means this model's ood_stats.npz predates the
+    TF-IDF signal -- treated as NOT anomalous, fail-open, the opposite polarity, since
+    there the signal simply doesn't exist for this model rather than having failed to
+    compute for this document. `thresholds` comes from resolve_ood_thresholds(stats) --
+    per-model calibrated values when available, Settings.OOD_* fallback otherwise. Never
+    reads Settings directly here, or a model's decisions silently use whichever thresholds
+    happen to be configured for a completely different model.
 
     calibration_status/allow_uncalibrated_fallback default to "fully permissive" (every
     signal calibrated / fallback allowed) so callers that don't care about this gating
     behave exactly as before. When allow_uncalibrated_fallback is False, a signal whose
-    calibration_status is "not_calibrated" is excluded from the OR -- its score is still
-    computed by the caller and reported, it just can't flip in_distribution to False on
-    its own. "refused_degenerate" (mahalanobis only) is NEVER excluded regardless of the
-    flag -- that's a legitimate calibration outcome (the degenerate-threshold guard
-    correctly declined to persist a floor-adjacent value), not a calibration gap; both
-    committed production models rely on this exact fallback for Mahalanobis today. The
-    existing NaN-based knn_distance/tfidf_cosine_z fail-closed/fail-open rules are
-    unchanged -- this is an additional `and`, not a replacement.
+    calibration_status is "not_calibrated" is excluded -- its score is still computed by
+    the caller and reported, it just can't flip in_distribution to False on its own.
+    "refused_degenerate" (mahalanobis only) is NEVER excluded regardless of the flag --
+    that's a legitimate calibration outcome (the degenerate-threshold guard correctly
+    declined to persist a floor-adjacent value), not a calibration gap; both committed
+    production models rely on this exact fallback for Mahalanobis today. The existing
+    NaN-based knn_distance/tfidf_cosine_z fail-closed/fail-open rules are unchanged --
+    this is an additional `and`, not a replacement.
     """
     maha_blocked = (
         not allow_uncalibrated_fallback and calibration_status.mahalanobis == "not_calibrated"
@@ -133,7 +145,38 @@ def is_out_of_distribution(
         thresholds.tfidf_cosine_z,
         tfidf_anomalous,
     )
-    return maha_anomalous or cosine_anomalous or knn_anomalous or tfidf_anomalous
+    return OodSignalBreakdown(maha_anomalous, cosine_anomalous, knn_anomalous, tfidf_anomalous)
+
+
+def is_out_of_distribution(
+    scores: OodScores,
+    thresholds: OodThresholds,
+    calibration_status: OodCalibrationStatus = _ALL_CALIBRATED,
+    *,
+    allow_uncalibrated_fallback: bool = True,
+) -> bool:
+    """Any one of the four OOD signals firing is enough -- a deliberate OR, not a
+    weighted blend (see README's "OOD scoring internals" for why). See
+    ood_signal_breakdown() for what counts as "anomalous" per signal."""
+    breakdown = ood_signal_breakdown(
+        scores,
+        thresholds,
+        calibration_status,
+        allow_uncalibrated_fallback=allow_uncalibrated_fallback,
+    )
+    return any(breakdown)
+
+
+_SMELL_NAMES = {
+    "mahalanobis": "low_mahalanobis_p",
+    "cosine": "high_cosine_z",
+    "knn_distance": "high_knn_distance",
+    "tfidf": "high_tfidf_z",
+}
+
+
+def _smells_from_breakdown(breakdown: OodSignalBreakdown) -> list[str]:
+    return [name for field, name in _SMELL_NAMES.items() if getattr(breakdown, field)]
 
 
 class OodScorer:
@@ -306,7 +349,7 @@ class OodScorer:
         maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(squared_distance, self._stats)
         thresholds = resolve_ood_thresholds(self._stats)
         calibration_status = resolve_ood_calibration_status(self._stats)
-        in_distribution = not is_out_of_distribution(
+        breakdown = ood_signal_breakdown(
             scores,
             thresholds,
             calibration_status,
@@ -320,9 +363,10 @@ class OodScorer:
             tfidf_cosine_z=(
                 None if np.isnan(scores.tfidf_cosine_z) else round(scores.tfidf_cosine_z, 4)
             ),
-            in_distribution=in_distribution,
+            in_distribution=not any(breakdown),
             mahalanobis_calibration_status=calibration_status.mahalanobis,
             cosine_calibration_status=calibration_status.cosine,
             knn_distance_calibration_status=calibration_status.knn_distance,
             tfidf_calibration_status=calibration_status.tfidf_cosine,
+            smells=_smells_from_breakdown(breakdown),
         )

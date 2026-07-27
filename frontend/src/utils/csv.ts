@@ -26,6 +26,8 @@ export const RESULT_COLUMNS: { key: keyof FlatResultRow; header: string }[] = [
   { key: "error", header: "Error" },
   { key: "svmPredictedLabel", header: "SVM predicted label" },
   { key: "svmAgreesWithPrediction", header: "SVM agrees" },
+  { key: "smells", header: "Smells" },
+  { key: "riskScore", header: "Risk score" },
 ];
 
 function escapeCsvValue(value: unknown): string {

@@ -7,7 +7,7 @@ from click.testing import CliRunner
 from src.cli.clean import clean_cmd
 from src.cli.predict import predict_cmd, predict_folder_cmd
 from src.cli.train import train_cmd
-from src.schema import OodMetrics, PredictResult
+from src.schemas import OodMetrics, PredictResult
 
 
 def test_train_cmd_help() -> None:

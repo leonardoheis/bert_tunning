@@ -24,6 +24,8 @@ export interface FlatResultRow {
   svmScores: Record<string, number>;
   svmPredictedLabel: string | null;
   svmAgreesWithPrediction: boolean | null;
+  smells: string[];
+  riskScore: number | null;
 }
 
 const NULL_ROW: Omit<FlatResultRow, "filename" | "error"> = {
@@ -47,6 +49,8 @@ const NULL_ROW: Omit<FlatResultRow, "filename" | "error"> = {
   svmScores: {},
   svmPredictedLabel: null,
   svmAgreesWithPrediction: null,
+  smells: [],
+  riskScore: null,
 };
 
 /** Mirrors flatten_predict_result() (src/schema.py) -- turns one PredictOutcome into a
@@ -83,5 +87,7 @@ export function flattenResult(outcome: PredictOutcome): FlatResultRow {
     svmScores: outcome.svmScores,
     svmPredictedLabel: outcome.svmPredictedLabel,
     svmAgreesWithPrediction: outcome.svmAgreesWithPrediction,
+    smells: outcome.smells,
+    riskScore: outcome.riskScore,
   };
 }

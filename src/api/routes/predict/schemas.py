@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import Field
 
 from src.api.schema import BaseSchema
-from src.schema import OodMetrics, ReviewRoute
+from src.schemas import OodMetrics, ReviewRoute
 
 
 class PredictResponse(BaseSchema):
@@ -22,6 +22,8 @@ class PredictResponse(BaseSchema):
     svm_scores: dict[str, float] = Field(default_factory=dict)
     svm_predicted_label: str = ""
     svm_agrees_with_prediction: bool = True
+    smells: list[str] = Field(default_factory=list)
+    risk_score: int = 0
 
 
 class PredictJob(BaseSchema):

@@ -8,10 +8,9 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 
 from src.inference.classify import BertTunningClassifier
-from src.inference.pipeline import extraction_failed
-from src.ingestion._text import detect_foreign_municipality
+from src.inference.pipeline import attach_metadata, extraction_failed
 from src.ingestion.extract import extract_pdf_with_metadata
-from src.schema import PredictResult
+from src.schemas import PredictResult
 from src.settings import Settings
 
 from .schemas import PredictJob, PredictJobCreated, PredictResponse
@@ -77,6 +76,8 @@ def _to_predict_response(result: PredictResult) -> PredictResponse:
         svm_scores=data["svm_scores"],
         svm_predicted_label=data["svm_predicted_label"],
         svm_agrees_with_prediction=data["svm_agrees_with_prediction"],
+        smells=data["smells"],
+        risk_score=data["risk_score"],
     )
 
 
@@ -99,18 +100,7 @@ async def _run_prediction_job(
 
             _JOBS[job_id] = PredictJob(stage="classifying")
             result = await asyncio.to_thread(clf.predict_text, extraction.text)
-            foreign_match = detect_foreign_municipality(extraction.text or "")
-            result = result.model_copy(
-                update={
-                    "filename": filename,
-                    "extracted_text": extraction.text,
-                    "extractor_used": extraction.extractor_used or "",
-                    "foreign_municipality": foreign_match.name if foreign_match else None,
-                    "foreign_municipality_context": (
-                        foreign_match.context if foreign_match else None
-                    ),
-                }
-            )
+            result = attach_metadata(result, filename, extraction)
             log.info(
                 "[%s] %s -> %s (%.2f%%)",
                 job_id,

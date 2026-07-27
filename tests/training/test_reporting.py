@@ -1,4 +1,4 @@
-from src.schema import Hyperparams, ReportDict
+from src.schemas import Hyperparams, ReportDict
 from src.training.reporting import (
     _class_metric_pairs,
     _f1_bar_trace,

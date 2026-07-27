@@ -22,7 +22,7 @@ from src.ood import (
     save_stats,
     tfidf_cosine_z_score,
 )
-from src.schema import CalibrationReport, OodArtifact
+from src.schemas import CalibrationReport, OodArtifact
 from src.settings import Settings
 from src.training.models import get_model_config
 from src.wandb import log_ood_calibration_results

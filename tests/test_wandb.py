@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from src.ood import OodThresholds
-from src.schema import CalibrationReport, OodMetrics, PredictResult
+from src.schemas import CalibrationReport, OodMetrics, PredictResult
 from src.wandb import (
     WandbLogger,
     log_ood_calibration_results,

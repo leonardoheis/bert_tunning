@@ -2,7 +2,7 @@ import logging
 
 import wandb
 from src.ood import OodThresholds
-from src.schema import (
+from src.schemas import (
     CalibrationReport,
     EvaluationResult,
     Hyperparams,
@@ -36,6 +36,8 @@ _PREDICTION_COLUMNS = [
     "svm_scores",
     "svm_predicted_label",
     "svm_agrees_with_prediction",
+    "smells",
+    "risk_score",
 ]
 
 

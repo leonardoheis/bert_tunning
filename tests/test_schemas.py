@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.schema import (
+from src.schemas import (
     CalibrationReport,
     EmbeddingStats,
     Hyperparams,

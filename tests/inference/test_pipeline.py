@@ -14,10 +14,15 @@ from src.inference.classify import (
     OodEvidence,
     decide_review_route,
 )
-from src.inference.ood_scorer import OodScorer, OodScores, is_out_of_distribution
+from src.inference.ood_scorer import (
+    OodScorer,
+    OodScores,
+    is_out_of_distribution,
+    ood_signal_breakdown,
+)
 from src.inference.pipeline import predict_pdf
 from src.ood import OodCalibrationStatus, OodThresholds, compute_tfidf_stats, save_stats
-from src.schema import (
+from src.schemas import (
     ArtifactMetadata,
     EmbeddingStats,
     ExtractionMetadata,
@@ -157,6 +162,40 @@ def test_is_out_of_distribution_false_when_all_signals_pass() -> None:
         knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
     )
     assert is_out_of_distribution(scores, thresholds) is False
+
+
+def test_ood_signal_breakdown_matches_is_out_of_distribution() -> None:
+    """The invariant the smells feature depends on: is_out_of_distribution() must always
+    equal any(ood_signal_breakdown(...)) for identical inputs -- they're required to be
+    the same computation, not two independently-maintained ones."""
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    for scores in (
+        OodScores(mahalanobis_p=0.5, cosine_z=0.0, knn_distance=1.0),  # none fire
+        OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0),  # mahalanobis
+        OodScores(
+            mahalanobis_p=0.5, cosine_z=Settings.OOD_COSINE_THRESHOLD + 1, knn_distance=1.0
+        ),  # cosine
+    ):
+        breakdown = ood_signal_breakdown(scores, thresholds)
+        assert is_out_of_distribution(scores, thresholds) == any(breakdown)
+
+
+def test_ood_signal_breakdown_flags_only_the_signal_that_actually_fired() -> None:
+    scores = OodScores(mahalanobis_p=0.0001, cosine_z=0.0, knn_distance=1.0)
+    thresholds = OodThresholds(
+        mahalanobis_p=Settings.OOD_MAHALANOBIS_P_THRESHOLD,
+        cosine_z=Settings.OOD_COSINE_THRESHOLD,
+        knn_distance=Settings.OOD_KNN_DISTANCE_THRESHOLD,
+    )
+    breakdown = ood_signal_breakdown(scores, thresholds)
+    assert breakdown.mahalanobis is True
+    assert breakdown.cosine is False
+    assert breakdown.knn_distance is False
+    assert breakdown.tfidf is False
 
 
 def test_is_out_of_distribution_true_when_mahalanobis_fires() -> None:
@@ -653,6 +692,38 @@ def test_predict_text_review_route_llm_judge_when_uncertain_and_in_distribution(
     assert result.review_route == "llm_judge"
 
 
+def test_predict_text_smells_empty_and_risk_score_zero_when_in_distribution_and_certain() -> None:
+    clf = _make_mock_classifier()
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.smells == []
+    assert result.risk_score == 0
+
+
+def test_predict_text_flags_low_confidence_smell_when_uncertain() -> None:
+    clf = _make_mock_classifier()
+    cast("MagicMock", clf.model).return_value.logits = torch.tensor([[0.55, 0.45]])
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert result.certain is False
+    assert "low_confidence" in result.smells
+    # risk_score is deliberately still 0 here -- predict_text() only populates smells;
+    # attach_metadata() (src/inference/pipeline.py) is where risk_score gets finalized,
+    # once foreign_municipality is known too. See test_predict_pdf_* below for that.
+    assert result.risk_score == 0
+
+
+def test_predict_text_smells_include_the_ood_signal_that_fired() -> None:
+    clf = _make_mock_classifier()
+    clf._ood_scorer = OodScorer(_make_stats())  # noqa: SLF001
+    far_embedding = torch.full((1, 512, 8), 100.0)
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        cast("MagicMock", clf.model).return_value.hidden_states = [far_embedding]
+        result = clf.predict_text("anything")
+    assert "low_mahalanobis_p" in result.smells
+
+
 def test_predict_text_review_route_accept_without_ood_stats() -> None:
     clf = _make_mock_classifier()
     with patch("src.inference.classify.clean_text", return_value="cleaned text"):
@@ -807,8 +878,27 @@ def test_predict_pdf_returns_extraction_failed_result_when_text_missing() -> Non
     assert result.label is None
     assert result.error == "empty/unreadable document"
     assert result.extracted_text == ""
-    assert result.extractor_used == ""
-    assert result.review_route == "human_review"
+    assert result.smells == ["unreadable_document"]
+    assert result.risk_score == 3  # noqa: PLR2004
+
+
+def test_predict_pdf_adds_foreign_municipality_smell_and_risk_score() -> None:
+    fake_extraction = ExtractionMetadata(
+        text="Municipalidad de Cordoba informa", extractor_used="MarkItDownExtractor", char_count=30
+    )
+    fake_result = PredictResult(label="decreto", confidence=0.9, certain=True)
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier") as mock_clf_cls,
+    ):
+        mock_clf = MagicMock()
+        mock_clf.predict_text.return_value = fake_result
+        mock_clf_cls.return_value = mock_clf
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.foreign_municipality == "Cordoba"
+    assert result.smells == ["foreign_municipality"]
+    assert result.risk_score == 2  # noqa: PLR2004
 
 
 def test_ood_scorer_load_returns_none_when_file_missing(tmp_path: Path) -> None:

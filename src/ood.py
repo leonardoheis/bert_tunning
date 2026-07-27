@@ -12,7 +12,7 @@ from sklearn.metrics.pairwise import cosine_distances
 
 from src.exceptions import BertTunningError
 from src.ingestion.extract import clean_text
-from src.schema import (
+from src.schemas import (
     ArtifactMetadata,
     CalibratedThresholds,
     EmbeddingStats,
