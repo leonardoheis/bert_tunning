@@ -192,6 +192,30 @@ def test_log_predict_folder_results_table_includes_svm_disagreement_columns() ->
     assert row["svm_agrees_with_prediction"] is False
 
 
+def test_log_predict_folder_results_table_includes_smell_review_suggested_column() -> None:
+    results = [
+        PredictResult(
+            filename="a.pdf",
+            label="decreto",
+            confidence=0.9,
+            certain=True,
+            smells=["low_mahalanobis_p", "high_cosine_z"],
+            risk_score=6,
+            smell_review_suggested=True,
+        ),
+    ]
+    mock_table = MagicMock()
+    with (
+        patch("src.wandb.wandb.init"),
+        patch("src.wandb.wandb.Table", return_value=mock_table) as mock_table_cls,
+        patch("src.wandb.wandb.log"),
+        patch("src.wandb.wandb.finish"),
+    ):
+        log_predict_folder_results(results, model_path="fake/model", folder_path="fake/folder")
+
+    assert _logged_row(mock_table_cls, mock_table)["smell_review_suggested"] is True
+
+
 def test_log_predict_folder_results_table_includes_theoretical_mahalanobis_column() -> None:
     expected_theoretical_p = 0.1708
     results = [
