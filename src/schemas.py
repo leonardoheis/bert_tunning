@@ -276,6 +276,43 @@ class CalibratedThresholds(BaseModel):
     )
 
 
+# The only valid keys for SmellThresholds.thresholds -- a Literal, not a bare `str`, so a
+# typo'd key (e.g. "cosine_z" instead of "cosine") is a Pydantic ValidationError at
+# SmellThresholds.model_validate_json() (hand-edited smell_thresholds.json) or a mypy error
+# at every call site (dict.get()/__setitem__ against this type), instead of silently
+# no-op'ing through dict.get()'s fallback default with no error anywhere. Same convention as
+# ReviewRoute above -- a closed set of strings gets a Literal alias, not scattered literals.
+SmellSignalKey = Literal["mahalanobis_p", "cosine", "knn_distance", "tfidf_cosine", "svm_margin"]
+
+
+class SmellThresholds(BaseModel):
+    """A second, deliberately decoupled threshold profile -- read from smell_thresholds.json
+    (src/smell_thresholds.py) next to a trained model, used ONLY to compute
+    PredictResult.smells. Never read by ood_signal_breakdown()/is_out_of_distribution() when
+    deciding in_distribution -- that still reads exclusively from OodArtifact.thresholds
+    (CalibratedThresholds) via resolve_ood_thresholds(). `thresholds` is keyed by
+    SmellSignalKey -- an absent key means "not customized, fall back to the decision
+    threshold for the four OOD signals, or emit no low_svm_margin smell at all for
+    svm_margin" -- deliberately not one-Optional-field-per-signal like CalibratedThresholds:
+    nothing here needs per-field independent Optional typing, an absent dict key already
+    says exactly one thing (not set) with no second state to disambiguate, and no None
+    appears anywhere in this model as a result.
+    svm_margin has no CalibratedThresholds equivalent -- the SVM reviewer's margin has never
+    been thresholded anywhere until now -- see
+    docs/superpowers/specs/2026-07-26-smell-thresholds-design.md for why that's a deliberate,
+    narrow exception (a presentational smell, not a new decision) rather than scope creep
+    back into the OOD ensemble."""
+
+    model_config = ConfigDict(frozen=True)
+
+    thresholds: dict[SmellSignalKey, float] = Field(default_factory=dict)
+    # Mirrors CalibratedThresholds.mahalanobis_status -- same reason (the degenerate-floor
+    # guard can refuse the suggested Mahalanobis value here too, on the same corpus).
+    mahalanobis_status: Literal["not_calibrated", "calibrated", "refused_degenerate"] = (
+        "not_calibrated"
+    )
+
+
 class ArtifactMetadata(BaseModel):
     """Coarse per-model identity fingerprint -- written by compute_class_stats() from the
     model that produced the embeddings, validated at classifier construction in

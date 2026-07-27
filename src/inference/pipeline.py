@@ -21,6 +21,7 @@ _SMELL_WEIGHTS: dict[str, int] = {
     "high_tfidf_z": 3,
     "unreadable_document": 3,
     "foreign_municipality": 2,
+    "low_svm_margin": 2,
     "low_confidence": 1,
 }
 
