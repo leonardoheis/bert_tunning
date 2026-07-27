@@ -185,6 +185,22 @@ def _smells_from_breakdown(breakdown: OodSignalBreakdown) -> list[str]:
     return [name for field, name in _SMELL_NAMES.items() if getattr(breakdown, field)]
 
 
+def _breakdown_with_settings_fallback(
+    scores: OodScores, thresholds: OodThresholds, calibration_status: OodCalibrationStatus
+) -> OodSignalBreakdown:
+    """ood_signal_breakdown() with allow_uncalibrated_fallback fixed to
+    Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK -- the one fallback policy OodScorer.score()
+    ever uses. Extracted so its two breakdown calls (decision thresholds vs. smell
+    thresholds) share the exact same call shape and can't drift apart on anything but the
+    one argument that's actually supposed to differ between them: `thresholds`."""
+    return ood_signal_breakdown(
+        scores,
+        thresholds,
+        calibration_status,
+        allow_uncalibrated_fallback=Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK,
+    )
+
+
 class OodScorer:
     """Owns everything derived from a loaded ood_stats.npz: validation against the model
     it's paired with, the uncalibrated-threshold warning, and per-document scoring. One
@@ -367,19 +383,13 @@ class OodScorer:
         maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(squared_distance, self._stats)
         decision_thresholds = resolve_ood_thresholds(self._stats)
         calibration_status = resolve_ood_calibration_status(self._stats)
-        breakdown = ood_signal_breakdown(
-            scores,
-            decision_thresholds,
-            calibration_status,
-            allow_uncalibrated_fallback=Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK,
-        )
 
+        breakdown = _breakdown_with_settings_fallback(
+            scores, decision_thresholds, calibration_status
+        )
         smell_signal_thresholds = resolve_smell_thresholds(smell_thresholds, decision_thresholds)
-        smell_breakdown = ood_signal_breakdown(
-            scores,
-            smell_signal_thresholds,
-            calibration_status,
-            allow_uncalibrated_fallback=Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK,
+        smell_breakdown = _breakdown_with_settings_fallback(
+            scores, smell_signal_thresholds, calibration_status
         )
 
         return OodMetrics(

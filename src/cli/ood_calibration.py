@@ -102,6 +102,16 @@ def _resolve_mahalanobis_threshold(
     return suggested, "calibrated"
 
 
+def _resolve_tfidf_threshold(suggested: float, existing: float | None) -> float | None:
+    """Shared "no TF-IDF data this run" guard for both threshold profiles.
+    build_calibration_report() reports suggested_tfidf_threshold as 0.0 when this model's
+    lexical stats were never fitted -- a sentinel this project already treats as "nothing to
+    write" rather than a real threshold of zero, not a value worth persisting over whatever
+    was already there. Extracted so the two writers can't drift on this guard either, same
+    reasoning as _resolve_mahalanobis_threshold above."""
+    return suggested if suggested > 0 else existing
+
+
 def _write_calibrated_thresholds(
     stats: OodArtifact,
     stats_path: Path,
@@ -124,10 +134,8 @@ def _write_calibrated_thresholds(
             "mahalanobis_status": maha_status,
             "cosine": report.suggested_cosine_threshold,
             "knn_distance": report.suggested_knn_threshold,
-            "tfidf_cosine": (
-                report.suggested_tfidf_threshold
-                if report.suggested_tfidf_threshold > 0
-                else stats.thresholds.tfidf_cosine
+            "tfidf_cosine": _resolve_tfidf_threshold(
+                report.suggested_tfidf_threshold, stats.thresholds.tfidf_cosine
             ),
         }
     )
@@ -157,8 +165,11 @@ def _write_smell_thresholds(model_path: str, report: CalibrationReport, n_train:
         values["mahalanobis_p"] = maha_threshold
     values["cosine"] = report.suggested_cosine_threshold
     values["knn_distance"] = report.suggested_knn_threshold
-    if report.suggested_tfidf_threshold > 0:
-        values["tfidf_cosine"] = report.suggested_tfidf_threshold
+    tfidf_threshold = _resolve_tfidf_threshold(
+        report.suggested_tfidf_threshold, values.get("tfidf_cosine")
+    )
+    if tfidf_threshold is not None:
+        values["tfidf_cosine"] = tfidf_threshold
     updated = SmellThresholds(thresholds=values, mahalanobis_status=status)
     save_smell_thresholds(updated, model_path)
     log.info(
