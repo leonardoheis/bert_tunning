@@ -24,6 +24,7 @@ class PredictResponse(BaseSchema):
     svm_agrees_with_prediction: bool = True
     smells: list[str] = Field(default_factory=list)
     risk_score: int = 0
+    smell_review_suggested: bool = False
 
 
 class PredictJob(BaseSchema):

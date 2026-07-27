@@ -78,6 +78,7 @@ def _to_predict_response(result: PredictResult) -> PredictResponse:
         svm_agrees_with_prediction=data["svm_agrees_with_prediction"],
         smells=data["smells"],
         risk_score=data["risk_score"],
+        smell_review_suggested=data["smell_review_suggested"],
     )
 
 

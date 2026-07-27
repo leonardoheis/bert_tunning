@@ -300,3 +300,30 @@ def test_predict_endpoint_job_lands_in_error_stage_on_exception() -> None:
     assert job["stage"] == "error"
     assert "boom" in job["error"]
     assert job["result"] is None
+
+
+def test_predict_endpoint_returns_smell_review_suggested() -> None:
+    app = create_app(model_path="fake/path")
+    mock_clf = MagicMock()
+    mock_clf.predict_text.return_value = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        smells=["low_mahalanobis_p", "high_cosine_z"],
+        risk_score=6,
+        smell_review_suggested=True,
+    )
+    app.state.clf = mock_clf
+
+    fake_extraction = ExtractionMetadata(
+        text="hola mundo", extractor_used="OCRExtractor", char_count=10
+    )
+    with patch(
+        "src.api.routes.predict.endpoints.extract_pdf_with_metadata", return_value=fake_extraction
+    ):
+        client = TestClient(app)
+        result = _predict_and_await_result(
+            client, files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")}
+        )
+
+    assert result["smellReviewSuggested"] is True
