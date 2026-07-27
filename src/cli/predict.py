@@ -68,6 +68,7 @@ def predict_cmd(
     click.echo(f"  Review route : {result.review_route}")
     click.echo(f"  Risk score   : {result.risk_score}")
     click.echo(f"  Smells       : {', '.join(result.smells) if result.smells else '-'}")
+    click.echo(f"  Smell review suggested: {result.smell_review_suggested}")
     if result.foreign_municipality is not None:
         click.echo(f"  Foreign municipality detected: {result.foreign_municipality}")
         click.echo(f"    Context: {result.foreign_municipality_context}")

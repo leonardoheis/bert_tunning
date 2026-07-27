@@ -88,6 +88,25 @@ def test_predict_cmd_prints_ood_metrics_when_present(tmp_path: Path) -> None:
     assert "In-Dist.     : False" in result.output
 
 
+def test_predict_cmd_prints_smell_review_suggested(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake content")
+    fake_result = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        smells=["low_mahalanobis_p", "high_cosine_z"],
+        risk_score=6,
+        smell_review_suggested=True,
+    )
+
+    with patch("src.cli.predict.predict_pdf", return_value=fake_result):
+        result = CliRunner().invoke(predict_cmd, [str(pdf_path)])
+
+    assert result.exit_code == 0
+    assert "Smell review suggested: True" in result.output
+
+
 def test_clean_cmd_help() -> None:
     result = CliRunner().invoke(clean_cmd, ["--help"])
     assert result.exit_code == 0
