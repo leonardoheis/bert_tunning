@@ -97,6 +97,10 @@ class _Settings(BaseSettings):
     # evaluate-ood-calibration if the training corpus changes materially.
     OOD_KNN_DISTANCE_THRESHOLD: float = 26.125
     TARGET_FP_RATE: float = 0.01
+    # Review-policy cutoff over the AGGREGATE risk_score (weighted sum of smells), not a
+    # per-signal OOD threshold -- deliberately not under the OOD_* prefix. See
+    # docs/superpowers/specs/2026-07-27-smell-review-suggested-design.md.
+    SMELL_REVIEW_RISK_SCORE_THRESHOLD: int = 5
     # Uncalibrated placeholder, matching how OOD_COSINE_THRESHOLD/OOD_KNN_DISTANCE_THRESHOLD
     # started before their first evaluate-ood-calibration --write-thresholds run. Run that
     # command for any model using this signal before trusting it in production.

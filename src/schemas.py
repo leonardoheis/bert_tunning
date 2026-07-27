@@ -118,6 +118,12 @@ class PredictResult(BaseModel):
     # decision -- purely presentational, same rationale as smells above. 0 is the
     # not-yet-computed default, same convention as review_route's "".
     risk_score: int = 0
+    # True when risk_score alone (independent of review_route/classifier_disagreement)
+    # crosses Settings.SMELL_REVIEW_RISK_SCORE_THRESHOLD, for documents the official
+    # decision didn't already send to a human. False is the not-yet-computed default, same
+    # convention as risk_score's own 0. See
+    # docs/superpowers/specs/2026-07-27-smell-review-suggested-design.md.
+    smell_review_suggested: bool = False
 
 
 _OOD_METRIC_FIELDS = (
