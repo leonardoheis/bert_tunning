@@ -1367,3 +1367,39 @@ def test_predict_pdf_extraction_failed_smell_review_suggested_stays_false() -> N
 
     assert result.risk_score == 3  # noqa: PLR2004
     assert result.smell_review_suggested is False
+
+
+def test_predict_pdf_smell_review_suggested_foreign_municipality_boundary() -> None:
+    fake_extraction = ExtractionMetadata(
+        text="Municipalidad de Cordoba informa",
+        extractor_used="MarkItDownExtractor",
+        char_count=30,
+    )
+    # low_svm_margin (2) + low_svm_margin (2) = 4; with foreign_municipality (+2) = 6
+    fake_result = PredictResult(
+        label="decreto",
+        confidence=0.9,
+        certain=True,
+        smells=["low_svm_margin", "low_svm_margin"],
+        ood_metrics=OodMetrics(
+            mahalanobis_p_value=0.5,
+            mahalanobis_p_value_theoretical=0.5,
+            cosine_z=0.0,
+            knn_distance=1.0,
+            in_distribution=True,
+        ),
+    )
+    with (
+        patch("src.inference.pipeline.extract_pdf_with_metadata", return_value=fake_extraction),
+        patch("src.inference.pipeline.BertTunningClassifier") as mock_clf_cls,
+    ):
+        mock_clf = MagicMock()
+        mock_clf.predict_text.return_value = fake_result
+        mock_clf_cls.return_value = mock_clf
+        result = predict_pdf("fake/model", "doc.pdf")
+
+    assert result.foreign_municipality == "Cordoba"
+    # low_svm_margin (2) + low_svm_margin (2) = 4, plus foreign_municipality appended by
+    # attach_metadata (+2) = 6, which is > threshold (5)
+    assert result.risk_score == 6  # noqa: PLR2004
+    assert result.smell_review_suggested is True

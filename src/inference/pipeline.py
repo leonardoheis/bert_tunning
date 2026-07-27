@@ -48,6 +48,7 @@ def extraction_failed(filename: str) -> PredictResult:
     Never goes through attach_metadata() (there's no extraction to attach metadata
     from), so its smells/risk_score are set directly here rather than derived."""
     smells = ["unreadable_document"]
+    risk_score = _compute_risk_score(smells)
     return PredictResult(
         filename=filename,
         label=None,
@@ -56,7 +57,8 @@ def extraction_failed(filename: str) -> PredictResult:
         error="empty/unreadable document",
         review_route="human_review",
         smells=smells,
-        risk_score=_compute_risk_score(smells),
+        risk_score=risk_score,
+        smell_review_suggested=_compute_smell_review_suggested(risk_score, None),
     )
 
 
