@@ -6,6 +6,11 @@ Part of a 4-piece decomposition (see the other 3 specs dated 2026-07-23):
 3. API wiring (SQLite writes from `/predict`).
 4. Registry query/update endpoints (`GET /predictions`, `PATCH /predictions/{id}`).
 
+**Additional prerequisite, added later:** `2026-07-27-smell-review-suggested-design.md`
+adds one more field to `PredictResult` (`smell_review_suggested`). Implement it before this
+piece so the registry persists the final field set from the start, not a schema patch
+after the fact.
+
 ## Motivation
 
 Review status (piece 4) needs to survive across requests and container restarts — this
