@@ -29,6 +29,7 @@ from src.schemas import (
     LexicalStats,
     OodArtifact,
     PredictResult,
+    SmellThresholds,
 )
 from src.settings import Settings
 from src.svm_reviewer import fit_svm_classifiers, save_svm_classifiers
@@ -152,6 +153,20 @@ def _make_mock_classifier() -> BertTunningClassifier:
 
     with patch("torch.cuda.is_available", return_value=False):
         return BertTunningClassifier("fake/model/path", tokenizer=tokenizer, model=model)
+
+
+def _predict_with_tight_cosine_embedding(clf: BertTunningClassifier) -> PredictResult:
+    """A point close to centroid ["decreto"] ([5]*8) in Euclidean/Mahalanobis terms (squared
+    distance is 8, well under the chi-squared critical value for df=8) but rotated just
+    enough in direction to be several cosine-calibration standard deviations away -- pairs
+    with _make_tight_cosine_stats() to isolate a cosine-only anomaly without also tripping
+    the Mahalanobis signal. Shared by every test exercising that fixture, so the embedding
+    values and predict_text() plumbing can't drift between them."""
+    embedding = torch.zeros(1, 512, 8)
+    embedding[0, 0, :] = torch.tensor([6.0, 4.0, 6.0, 4.0, 6.0, 4.0, 6.0, 4.0])
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        cast("MagicMock", clf.model).return_value.hidden_states = [embedding]
+        return clf.predict_text("anything")
 
 
 def test_is_out_of_distribution_false_when_all_signals_pass() -> None:
@@ -801,15 +816,9 @@ def test_predict_text_strict_mode_blocks_uncalibrated_mahalanobis_signal(
 def test_predict_text_flags_out_of_distribution_via_cosine_only() -> None:
     clf = _make_mock_classifier()
     clf._ood_scorer = OodScorer(_make_tight_cosine_stats())  # noqa: SLF001
-    # A point close to centroid ["decreto"] ([5]*8) in Euclidean/Mahalanobis terms (squared
-    # distance is 8, well under the chi-squared critical value for df=8) but rotated just
-    # enough in direction to be several cosine-calibration standard deviations away — so
-    # only the cosine signal should fire.
-    embedding = torch.zeros(1, 512, 8)
-    embedding[0, 0, :] = torch.tensor([6.0, 4.0, 6.0, 4.0, 6.0, 4.0, 6.0, 4.0])
-    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
-        cast("MagicMock", clf.model).return_value.hidden_states = [embedding]
-        result = clf.predict_text("anything")
+    # Only the cosine signal should fire -- see _predict_with_tight_cosine_embedding's
+    # docstring for why this embedding isolates cosine from Mahalanobis.
+    result = _predict_with_tight_cosine_embedding(clf)
     assert result.ood_metrics is not None
     assert result.ood_metrics.mahalanobis_p_value >= Settings.OOD_MAHALANOBIS_P_THRESHOLD
     assert result.ood_metrics.cosine_z > Settings.OOD_COSINE_THRESHOLD
@@ -846,6 +855,62 @@ def test_predict_text_flags_out_of_distribution_when_knn_distance_is_nan() -> No
     assert np.isnan(result.ood_metrics.knn_distance)
     assert result.ood_metrics.in_distribution is False
     assert result.review_route == "human_review"
+
+
+def test_predict_text_smells_match_decision_breakdown_when_no_smell_thresholds() -> None:
+    """No smell_thresholds.json (the default for _make_mock_classifier, a fake model path)
+    -> smells must be identical to what the decision breakdown alone produces -- the
+    pre-existing invariant, preserved for anyone who hasn't opted into a smell profile."""
+    clf = _make_mock_classifier()
+    clf._ood_scorer = OodScorer(_make_tight_cosine_stats())  # noqa: SLF001
+    result = _predict_with_tight_cosine_embedding(clf)
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.in_distribution is False
+    assert "high_cosine_z" in result.smells
+    assert result.review_route == "human_review"
+
+
+def test_predict_text_smells_decoupled_from_in_distribution() -> None:
+    """The core guarantee of the smell-thresholds design: a permissive smell threshold adds
+    a smell without ever moving in_distribution/review_route, which stay pinned to the
+    decision thresholds regardless. See
+    docs/superpowers/specs/2026-07-26-smell-thresholds-design.md."""
+    stats = _make_tight_cosine_stats()
+    # Decision threshold raised far past the actual cosine_z this embedding produces (which
+    # fires under the model default -- see the test above) -- isolates the decision
+    # breakdown from firing at all.
+    stats = stats.model_copy(
+        update={"thresholds": stats.thresholds.model_copy(update={"cosine": 1000.0})}
+    )
+    clf = _make_mock_classifier()
+    clf._ood_scorer = OodScorer(stats)  # noqa: SLF001
+    # Well below the actual score, guaranteed to fire the smell breakdown.
+    clf._smell_thresholds = SmellThresholds(thresholds={"cosine": 1.0})  # noqa: SLF001
+    result = _predict_with_tight_cosine_embedding(clf)
+    assert result.ood_metrics is not None
+    assert result.ood_metrics.in_distribution is True
+    assert result.review_route == "accept"
+    assert "high_cosine_z" in result.smells
+
+
+def test_predict_text_flags_low_svm_margin_smell_when_below_threshold() -> None:
+    clf = _make_mock_classifier()
+    clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001
+    # Absurdly high threshold -- guaranteed to exceed any real SVM decision-function margin.
+    clf._smell_thresholds = SmellThresholds(thresholds={"svm_margin": 10.0})  # noqa: SLF001
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert "low_svm_margin" in result.smells
+
+
+def test_predict_text_no_low_svm_margin_smell_when_not_configured() -> None:
+    clf = _make_mock_classifier()
+    clf._svm_classifiers = _make_svm_classifiers()  # noqa: SLF001
+    # clf._smell_thresholds stays at its constructor default (an empty SmellThresholds(),
+    # since no smell_thresholds.json exists at the fake model path).
+    with patch("src.inference.classify.clean_text", return_value="cleaned text"):
+        result = clf.predict_text("anything")
+    assert "low_svm_margin" not in result.smells
 
 
 def test_predict_pdf_attaches_extraction_metadata() -> None:

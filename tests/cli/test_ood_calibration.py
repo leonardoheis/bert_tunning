@@ -14,6 +14,7 @@ from src.ood import OodThresholds, load_stats, save_stats
 from src.ood import knn_mean_distance as real_knn_mean_distance
 from src.schemas import EmbeddingStats, OodArtifact
 from src.settings import Settings
+from src.smell_thresholds import load_smell_thresholds
 
 
 def _fake_extract_embeddings_and_predictions(
@@ -338,6 +339,31 @@ def test_evaluate_ood_calibration_cmd_write_thresholds_persists_to_stats_file(
     written = load_stats(stats_path)
     assert written.thresholds.cosine is not None
     assert written.thresholds.knn_distance is not None
+
+
+def test_evaluate_ood_calibration_cmd_write_smell_thresholds_persists_to_separate_file(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "fake-model"
+    stats_path = model_path / "ood_stats.npz"
+    result, _ = _run_successful_calibration(tmp_path, extra_args=["--write-smell-thresholds"])
+    assert result.exit_code == 0
+    # The decision thresholds (ood_stats.npz) must be completely untouched by this flag --
+    # --write-smell-thresholds targets a separate file, never the decision profile.
+    written_stats = load_stats(stats_path)
+    assert written_stats.thresholds.cosine is None
+    smell_thresholds = load_smell_thresholds(str(model_path))
+    assert "cosine" in smell_thresholds.thresholds
+    assert "knn_distance" in smell_thresholds.thresholds
+
+
+def test_evaluate_ood_calibration_cmd_without_flag_does_not_write_smell_thresholds(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "fake-model"
+    result, _ = _run_successful_calibration(tmp_path, extra_args=[])
+    assert result.exit_code == 0
+    assert load_smell_thresholds(str(model_path)).thresholds == {}
 
 
 def test_evaluate_ood_calibration_cmd_without_flag_does_not_write(tmp_path: Path) -> None:

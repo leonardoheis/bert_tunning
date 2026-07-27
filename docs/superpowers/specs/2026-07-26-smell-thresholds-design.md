@@ -1,5 +1,14 @@
 # Smell Thresholds: A Second, Decoupled Threshold Profile — Design Spec
 
+**Amendment (post-implementation):** every `threshold_overrides`/`OodThresholdOverrides`/
+`--ood-mahalanobis-p`/`--ood-cosine-z`/`--ood-knn-distance`/`--ood-tfidf-z` reference below
+was removed during implementation — the user decided the ad hoc per-run CLI override layer
+wasn't needed once `smell_thresholds.json` (the persisted profile) covers the real workflow.
+`SmellThresholds.thresholds` is the only mechanism now; `OodScorer.score()` takes a single
+`smell_thresholds: SmellThresholds | None` parameter, no override dict. Everything else in
+this spec (the second breakdown, `resolve_smell_thresholds()`'s per-key fallback,
+`low_svm_margin`, `--write-smell-thresholds`) shipped as designed below.
+
 ## Motivation
 
 Piece 1 (`2026-07-23-1-risk-score-and-smells-design.md`) built `smells`/`risk_score` from the

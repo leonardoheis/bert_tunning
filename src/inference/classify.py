@@ -16,6 +16,7 @@ from src.inference.ood_scorer import OodScorer
 from src.ingestion.extract import clean_text
 from src.schemas import PredictResult, ReviewRoute
 from src.settings import Settings
+from src.smell_thresholds import load_smell_thresholds
 from src.svm_reviewer import load_svm_classifiers, svm_top_label
 from src.svm_reviewer import svm_scores as compute_svm_scores
 
@@ -130,6 +131,7 @@ class BertTunningClassifier:
             self._ood_scorer.warn_if_uncalibrated()
         self._svm_classifiers = self._load_svm_classifiers(model_path)
         self._validate_svm_classifiers_class_mapping()
+        self._smell_thresholds = load_smell_thresholds(model_path)
         log.info("Classifier ready on %s (max_length=%d)", self.device, self.max_length)
 
     @staticmethod
@@ -197,6 +199,11 @@ class BertTunningClassifier:
             svm_agrees_with_prediction = svm_predicted_label == label
         classifier_disagreement = not svm_agrees_with_prediction
         smells: list[str] = [] if certain else ["low_confidence"]
+        svm_margin_threshold = self._smell_thresholds.thresholds.get("svm_margin")
+        if svm_margin_threshold is not None:
+            predicted_margin = svm_scores_result.get(label)
+            if predicted_margin is not None and predicted_margin < svm_margin_threshold:
+                smells.append("low_svm_margin")
         result = PredictResult(
             label=label,
             confidence=round(confidence, 4),
@@ -216,7 +223,7 @@ class BertTunningClassifier:
         if self._ood_scorer is None:
             return result
 
-        ood_metrics = self._ood_scorer.score(text, cls_embedding, pred_idx)
+        ood_metrics = self._ood_scorer.score(text, cls_embedding, pred_idx, self._smell_thresholds)
         if ood_metrics is None:
             return result
 

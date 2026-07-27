@@ -22,8 +22,9 @@ from src.ood import (
     save_stats,
     tfidf_cosine_z_score,
 )
-from src.schemas import CalibrationReport, OodArtifact
+from src.schemas import CalibrationReport, OodArtifact, SmellThresholds
 from src.settings import Settings
+from src.smell_thresholds import load_smell_thresholds, save_smell_thresholds
 from src.training.models import get_model_config
 from src.wandb import log_ood_calibration_results
 
@@ -74,6 +75,43 @@ def build_calibration_report(  # noqa: PLR0913 -- one param per OOD signal, all 
     )
 
 
+def _resolve_mahalanobis_threshold(
+    suggested: float, existing: float | None, n_train: int
+) -> tuple[float | None, Literal["calibrated", "refused_degenerate"]]:
+    """Shared degenerate-floor guard for BOTH threshold profiles (the decision thresholds in
+    ood_stats.npz and the smell thresholds in smell_thresholds.json) -- refuses a suggested
+    Mahalanobis threshold at or below the empirical p-value's own resolution floor
+    (1/(n_train+1)): that threshold would be mathematically unreachable (the signal could
+    never fire), the exact bug this project hit once already with an unchecked suggested
+    value. Returns the value to actually persist (the suggestion, or the kept existing value
+    on refusal) paired with its status -- a kept prior value is still "calibrated"; only
+    truly unset (never calibrated before, and now also refused) becomes "refused_degenerate".
+    Extracted so this guard can't drift between the two writers that each apply it."""
+    floor = 1 / (n_train + 1)
+    if suggested <= floor:
+        log.warning(
+            "Refusing to write suggested Mahalanobis threshold %.6f: at or below this "
+            "model's empirical resolution floor %.6f (n_train=%d). The signal would never "
+            "fire. Keeping the existing value (%s).",
+            suggested,
+            floor,
+            n_train,
+            existing,
+        )
+        return existing, ("calibrated" if existing is not None else "refused_degenerate")
+    return suggested, "calibrated"
+
+
+def _resolve_tfidf_threshold(suggested: float, existing: float | None) -> float | None:
+    """Shared "no TF-IDF data this run" guard for both threshold profiles.
+    build_calibration_report() reports suggested_tfidf_threshold as 0.0 when this model's
+    lexical stats were never fitted -- a sentinel this project already treats as "nothing to
+    write" rather than a real threshold of zero, not a value worth persisting over whatever
+    was already there. Extracted so the two writers can't drift on this guard either, same
+    reasoning as _resolve_mahalanobis_threshold above."""
+    return suggested if suggested > 0 else existing
+
+
 def _write_calibrated_thresholds(
     stats: OodArtifact,
     stats_path: Path,
@@ -83,27 +121,10 @@ def _write_calibrated_thresholds(
     """Writes evaluate-ood-calibration's suggested thresholds back into this model's own
     ood_stats.npz, so resolve_ood_thresholds() uses per-model calibrated values instead of
     falling back to Settings.OOD_* -- the fix for thresholds calibrated against one model
-    being silently applied to every other model. Refuses to write a Mahalanobis threshold at
-    or below the empirical p-value's own resolution floor (1/(n_train+1)) -- that threshold
-    would be mathematically unreachable (the signal could never fire), the exact bug this
-    project hit once already with an unchecked suggested value."""
-    floor = 1 / (n_train + 1)
-    maha_threshold: float | None = report.suggested_maha_threshold
-    maha_status: Literal["calibrated", "refused_degenerate"] = "calibrated"
-    if report.suggested_maha_threshold <= floor:
-        log.warning(
-            "Refusing to write suggested Mahalanobis threshold %.6f: at or below this "
-            "model's empirical resolution floor %.6f (n_train=%d). The signal would never "
-            "fire. Keeping the existing value (%s).",
-            report.suggested_maha_threshold,
-            floor,
-            n_train,
-            stats.thresholds.mahalanobis_p,
-        )
-        maha_threshold = stats.thresholds.mahalanobis_p
-        # A kept prior value is still "calibrated" -- only truly unset (never calibrated
-        # before, and now also refused) becomes "refused_degenerate".
-        maha_status = "calibrated" if maha_threshold is not None else "refused_degenerate"
+    being silently applied to every other model."""
+    maha_threshold, maha_status = _resolve_mahalanobis_threshold(
+        report.suggested_maha_threshold, stats.thresholds.mahalanobis_p, n_train
+    )
 
     # Pydantic v2's model_copy doesn't deep-merge nested models -- build the updated
     # thresholds section explicitly, then swap the whole section in on the outer artifact.
@@ -113,10 +134,8 @@ def _write_calibrated_thresholds(
             "mahalanobis_status": maha_status,
             "cosine": report.suggested_cosine_threshold,
             "knn_distance": report.suggested_knn_threshold,
-            "tfidf_cosine": (
-                report.suggested_tfidf_threshold
-                if report.suggested_tfidf_threshold > 0
-                else stats.thresholds.tfidf_cosine
+            "tfidf_cosine": _resolve_tfidf_threshold(
+                report.suggested_tfidf_threshold, stats.thresholds.tfidf_cosine
             ),
         }
     )
@@ -126,6 +145,38 @@ def _write_calibrated_thresholds(
         "Wrote calibrated thresholds to %s: mahalanobis_p=%s, cosine=%.4f, knn_distance=%.4f",
         stats_path,
         maha_threshold,
+        report.suggested_cosine_threshold,
+        report.suggested_knn_threshold,
+    )
+
+
+def _write_smell_thresholds(model_path: str, report: CalibrationReport, n_train: int) -> None:
+    """Writes evaluate-ood-calibration's suggested thresholds into this model's
+    smell_thresholds.json instead of ood_stats.npz -- a second, independently-targetable
+    threshold profile used only by PredictResult.smells, never in_distribution/review_route.
+    See docs/superpowers/specs/2026-07-26-smell-thresholds-design.md. Same degenerate-floor
+    guard on Mahalanobis as _write_calibrated_thresholds() -- shared via
+    _resolve_mahalanobis_threshold() so the two writers can't drift apart."""
+    values = dict(load_smell_thresholds(model_path).thresholds)
+    maha_threshold, status = _resolve_mahalanobis_threshold(
+        report.suggested_maha_threshold, values.get("mahalanobis_p"), n_train
+    )
+    if maha_threshold is not None:
+        values["mahalanobis_p"] = maha_threshold
+    values["cosine"] = report.suggested_cosine_threshold
+    values["knn_distance"] = report.suggested_knn_threshold
+    tfidf_threshold = _resolve_tfidf_threshold(
+        report.suggested_tfidf_threshold, values.get("tfidf_cosine")
+    )
+    if tfidf_threshold is not None:
+        values["tfidf_cosine"] = tfidf_threshold
+    updated = SmellThresholds(thresholds=values, mahalanobis_status=status)
+    save_smell_thresholds(updated, model_path)
+    log.info(
+        "Wrote smell thresholds to %s/smell_thresholds.json: mahalanobis_p=%s, cosine=%.4f, "
+        "knn_distance=%.4f",
+        model_path,
+        values.get("mahalanobis_p"),
         report.suggested_cosine_threshold,
         report.suggested_knn_threshold,
     )
@@ -146,6 +197,7 @@ class OodCalibrationOptions(BaseModel):
     seed: int = Settings.SEED
     target_fp_rate: float = Settings.TARGET_FP_RATE
     write_thresholds: bool = False
+    write_smell_thresholds: bool = False
     log_wandb: bool = False
     debug: bool = False
 
@@ -163,6 +215,7 @@ def compute_ood_calibration(  # noqa: PLR0913 -- one param per operational input
     seed: int,
     target_fp_rate: float,
     write_thresholds: bool,  # noqa: FBT001 -- mirrors OodCalibrationOptions.write_thresholds
+    write_smell_thresholds: bool,  # noqa: FBT001 -- ditto
 ) -> OodCalibrationRunResult:
     """Runs the four OOD signal computations against a model's test split and builds the
     calibration report. Pure operation, no CLI/logging-setup or rendering (console/W&B) --
@@ -255,6 +308,8 @@ def compute_ood_calibration(  # noqa: PLR0913 -- one param per operational input
     )
     if write_thresholds:
         _write_calibrated_thresholds(stats, stats_path, report, len(train_distances))
+    if write_smell_thresholds:
+        _write_smell_thresholds(model_path, report, len(train_distances))
 
     return OodCalibrationRunResult(report=report, current_thresholds=current_thresholds)
 
@@ -271,6 +326,7 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
         seed=opts.seed,
         target_fp_rate=opts.target_fp_rate,
         write_thresholds=opts.write_thresholds,
+        write_smell_thresholds=opts.write_smell_thresholds,
     )
     report = result.report
     current_thresholds = result.current_thresholds
@@ -369,6 +425,18 @@ def _run_ood_calibration(opts: OodCalibrationOptions) -> None:
     help=(
         "Persist the suggested thresholds into this model's ood_stats.npz, so "
         "predict/predict-folder/serve use them instead of falling back to Settings.OOD_*"
+    ),
+)
+@click.option(
+    "--write-smell-thresholds",
+    is_flag=True,
+    default=False,
+    help=(
+        "Persist the suggested thresholds into this model's smell_thresholds.json instead -- "
+        "a second, independently-targetable threshold profile used only by "
+        "PredictResult.smells, never in_distribution/review_route. Independent of "
+        "--write-thresholds; pass both to calibrate each profile in the same run, e.g. at "
+        "different --target-fp-rate values across two separate invocations"
     ),
 )
 @click.option(

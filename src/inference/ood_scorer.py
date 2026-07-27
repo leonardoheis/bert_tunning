@@ -33,8 +33,9 @@ from src.ood import (
     resolve_ood_thresholds,
     tfidf_cosine_z_score,
 )
-from src.schemas import OodArtifact, OodMetrics
+from src.schemas import OodArtifact, OodMetrics, SmellThresholds
 from src.settings import Settings
+from src.smell_thresholds import resolve_smell_thresholds
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,11 @@ _ALL_CALIBRATED = OodCalibrationStatus(
     knn_distance="calibrated",
     tfidf_cosine="calibrated",
 )
+
+# "No smell profile" default for score()'s smell_thresholds param -- an empty SmellThresholds()
+# resolves to the decision thresholds for every signal (see resolve_smell_thresholds()), the
+# same named-sentinel-default-instead-of-None pattern as _ALL_CALIBRATED above.
+_NO_SMELL_THRESHOLDS = SmellThresholds()
 
 
 class OodSignalBreakdown(NamedTuple):
@@ -177,6 +183,22 @@ _SMELL_NAMES = {
 
 def _smells_from_breakdown(breakdown: OodSignalBreakdown) -> list[str]:
     return [name for field, name in _SMELL_NAMES.items() if getattr(breakdown, field)]
+
+
+def _breakdown_with_settings_fallback(
+    scores: OodScores, thresholds: OodThresholds, calibration_status: OodCalibrationStatus
+) -> OodSignalBreakdown:
+    """ood_signal_breakdown() with allow_uncalibrated_fallback fixed to
+    Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK -- the one fallback policy OodScorer.score()
+    ever uses. Extracted so its two breakdown calls (decision thresholds vs. smell
+    thresholds) share the exact same call shape and can't drift apart on anything but the
+    one argument that's actually supposed to differ between them: `thresholds`."""
+    return ood_signal_breakdown(
+        scores,
+        thresholds,
+        calibration_status,
+        allow_uncalibrated_fallback=Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK,
+    )
 
 
 class OodScorer:
@@ -319,12 +341,24 @@ class OodScorer:
         return build_tfidf_vectorizer(self._stats)
 
     def score(
-        self, text: str, embedding: npt.NDArray[np.float64], pred_idx: int
+        self,
+        text: str,
+        embedding: npt.NDArray[np.float64],
+        pred_idx: int,
+        smell_thresholds: SmellThresholds = _NO_SMELL_THRESHOLDS,
     ) -> OodMetrics | None:
         """None when this specific prediction can't be scored (empty knn_train_embeddings --
         the predicted class, or the whole model, has zero stored k-NN training points),
         distinct from OodScorer itself being absent (load() returning None for "no
-        ood_stats.npz at all"). Otherwise the four OOD signals, thresholded and rounded."""
+        ood_stats.npz at all"). Otherwise the four OOD signals, thresholded and rounded.
+
+        `in_distribution` is decided from ONE breakdown, against this model's decision
+        thresholds (resolve_ood_thresholds()) -- unchanged from before this method grew
+        smell_thresholds. `smells` is decided from a SECOND, independent breakdown against
+        the resolved smell thresholds (smell_thresholds.json, falling back to the decision
+        thresholds when absent) -- so a permissive smell_thresholds.json can move `smells`
+        without ever being able to move `in_distribution`/`review_route`. See
+        docs/superpowers/specs/2026-07-26-smell-thresholds-design.md."""
         train_distances = self._train_mahalanobis_distances
         if len(train_distances) == 0:
             log.warning(
@@ -347,14 +381,17 @@ class OodScorer:
             tfidf_cosine_z=tfidf_z,
         )
         maha_p_theoretical = mahalanobis_chi2_p_value_from_distance(squared_distance, self._stats)
-        thresholds = resolve_ood_thresholds(self._stats)
+        decision_thresholds = resolve_ood_thresholds(self._stats)
         calibration_status = resolve_ood_calibration_status(self._stats)
-        breakdown = ood_signal_breakdown(
-            scores,
-            thresholds,
-            calibration_status,
-            allow_uncalibrated_fallback=Settings.OOD_ALLOW_UNCALIBRATED_FALLBACK,
+
+        breakdown = _breakdown_with_settings_fallback(
+            scores, decision_thresholds, calibration_status
         )
+        smell_signal_thresholds = resolve_smell_thresholds(smell_thresholds, decision_thresholds)
+        smell_breakdown = _breakdown_with_settings_fallback(
+            scores, smell_signal_thresholds, calibration_status
+        )
+
         return OodMetrics(
             mahalanobis_p_value=round(scores.mahalanobis_p, 6),
             mahalanobis_p_value_theoretical=round(maha_p_theoretical, 6),
@@ -368,5 +405,5 @@ class OodScorer:
             cosine_calibration_status=calibration_status.cosine,
             knn_distance_calibration_status=calibration_status.knn_distance,
             tfidf_calibration_status=calibration_status.tfidf_cosine,
-            smells=_smells_from_breakdown(breakdown),
+            smells=_smells_from_breakdown(smell_breakdown),
         )
