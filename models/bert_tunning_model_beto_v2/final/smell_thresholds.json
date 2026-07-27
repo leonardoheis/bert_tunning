@@ -2,9 +2,9 @@
   "thresholds": {
     "mahalanobis_p": 0.05,
     "cosine": 3.0,
-    "knn_distance": 8.0,
+    "knn_distance": 12.0,
     "tfidf_cosine": 1.0,
-    "svm_margin": 0.2
+    "svm_margin": 0.85
   },
   "mahalanobis_status": "calibrated"
 }
